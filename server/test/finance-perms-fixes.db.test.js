@@ -132,6 +132,22 @@ test('an account never opens below zero and is switched off only once it holds n
   assert.equal(updated.isActive, false);
 });
 
+// fina05 / money04: the Overview's money in/out and the Cash Flow tab count ONE population — the active accounts,
+// the same ones the cash held is made of. An emptied account with past sales and expenses can be switched off;
+// both screens then leave its rows out alike, for every window.
+test('the Overview money in/out equals the Cash Flow tab when a switched-off account has rows', async () => {
+  const acc = await newAccount('Test off', 9_000);
+  await finance.recordExpense({ accountId: acc.id, amount: 9_000, category: 'Transport', description: 'Spent before closing', occurredAt: eatDay(Date.now()) }, ctx.admin);
+  assert.equal(await balanceOf(acc.id), 0);
+  await finance.updateAccount(acc.id, { isActive: false });
+  const over = await finance.overview('today');
+  for (const period of ['today', 'week', 'month', 'all']) {
+    const cf = await finance.cashflow({ period });
+    assert.equal(over.flow[period].moneyIn, cf.moneyIn, `${period}: money in`);
+    assert.equal(over.flow[period].moneyOut, cf.moneyOut, `${period}: money out`);
+  }
+});
+
 test('a second press of a transfer that emptied the account is "already recorded", not "only holds 0"', async () => {
   const a = await newAccount('Test empty', 6_100);
   const b = await newAccount('Test fill', 0);

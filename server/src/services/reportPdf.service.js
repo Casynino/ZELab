@@ -199,6 +199,21 @@ function inShort(d, cfg) {
   return lines;
 }
 
+// The profit and loss statement's lines. Every line is on the page, so it adds up as read (audit repor01): boxes
+// sold before a buying price was set are in sales but not in profit, and stock lost comes off the net profit.
+function statementRows(f) {
+  const noCostRevenue = f.noCost?.revenue || 0;
+  return [
+    { label: 'Sales (revenue)', value: f.revenue },
+    noCostRevenue > 0 && { label: 'No buying price (not in profit)', value: -noCostRevenue, style: 'less' },
+    { label: 'Cost of the boxes sold', value: -f.cogs, style: 'less' },
+    { label: 'Gross profit', value: f.grossProfit, style: 'total' },
+    { label: 'Business expenses', value: -f.expenses, style: 'less' },
+    (f.stockLoss || 0) > 0 && { label: 'Stock lost', value: -f.stockLoss, style: 'less' },
+    { label: 'Net profit', value: f.netProfit, style: 'grand' },
+  ].filter(Boolean);
+}
+
 function render(kindKey, d) {
   const cfg = KINDS[kindKey];
   const f = d.finance;
@@ -221,9 +236,11 @@ function render(kindKey, d) {
   r.section('Profit and loss', 'what was sold, what the boxes cost and what was left');
   const days = ex.byDay.length || 1;
   const best = [...ex.byDay].sort((a, b) => b.revenue - a.revenue)[0];
+  // Over the sales whose cost is known, the same figure as the Gross profit tile above (audit repor01).
+  const noCostRevenue = f.noCost?.revenue || 0;
   const ratioTiles = [
-    { label: 'Gross margin', value: oneDp(share(f.grossProfit, f.revenue)), sub: 'of sales' },
-    { label: 'Net margin', value: oneDp(share(f.netProfit, f.revenue)), sub: 'after expenses' },
+    { label: 'Gross margin', value: oneDp(share(f.grossProfit, f.revenue - noCostRevenue)), sub: noCostRevenue > 0 ? 'of sales with a buying price' : 'of sales' },
+    { label: 'Net margin', value: oneDp(share(f.netProfit, f.revenue)), sub: (f.stockLoss || 0) > 0 ? 'after expenses and stock lost' : 'after expenses' },
   ];
   if (kindKey === 'yearly') {
     const bm = d.summary.bestRevenue;
@@ -246,13 +263,7 @@ function render(kindKey, d) {
     r.statement({
       title: 'Profit and loss statement',
       w: r.half,
-      rows: [
-        { label: 'Sales (revenue)', value: f.revenue },
-        { label: 'Cost of the boxes sold', value: -f.cogs, style: 'less' },
-        { label: 'Gross profit', value: f.grossProfit, style: 'total' },
-        { label: 'Business expenses', value: -f.expenses, style: 'less' },
-        { label: 'Net profit', value: f.netProfit, style: 'grand' },
-      ],
+      rows: statementRows(f),
     }),
     r.highlights({ items: ratioTiles, perRow: 2, w: r.half }),
   );
@@ -447,7 +458,7 @@ function render(kindKey, d) {
   if (d.attention.length) r.add(r.callout({ title: `${plural(d.attention.length, 'item', 'items')}`, items: d.attention, tone: 'attention' }));
   else r.add(r.callout({ title: 'All clear', items: ['Nothing is waiting for approval, overdue or running low.'], tone: 'insight' }));
 
-  return r.done('Generated automatically by ZELab from recorded transactions. Profit is sales less the cost of the boxes sold, less expenses.');
+  return r.done('Generated automatically by ZELab from recorded transactions. Profit is sales with a buying price less the cost of the boxes sold, less expenses and stock lost.');
 }
 
 const dailyPdf = (d) => render('daily', d);
@@ -455,4 +466,4 @@ const weeklyPdf = (d) => render('weekly', d);
 const monthlyPdf = (d) => render('monthly', d);
 const yearlyPdf = (d) => render('yearly', d);
 
-module.exports = { dailyPdf, weeklyPdf, monthlyPdf, yearlyPdf, inShort, headlineFigures };
+module.exports = { dailyPdf, weeklyPdf, monthlyPdf, yearlyPdf, inShort, headlineFigures, statementRows };

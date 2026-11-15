@@ -778,6 +778,9 @@ async function command() {
       revenue: fin.revenue,
       grossProfit: fin.grossProfit,
       expenses: fin.expenses,
+      // Stock lost today (written off, or bought and damaged / never received): the Net profit card says it, so
+      // gross − expenses − stock lost = net reads true on Home (audit money03).
+      stockLoss: fin.stockLoss ?? 0,
       netProfit: fin.netProfit,
       // Boxes sold before a buying price was set: in revenue, not in profit (said on the page).
       noCost: fin.noCost || { boxes: 0, revenue: 0 },

@@ -74,19 +74,58 @@ test('a settled-order sale with no ledger row is a gap; one from before the epoc
   assert.deepEqual(await fin.ledgerGaps(), { missingIncome: false, untaggedIncome: false, missingPayout: false }, 'rolled back');
 });
 
+// A counter sale made unpaid and paid later has only a SalePayment row (a refund adds a SaleRefund row).
+// The full pass counts those as covered, so the check must too — or every Finance and Home read would run
+// the whole self-heal again for nothing, for good (audit money00 / repor02).
+test('a sale whose only money row is a later payment or a refund is not a gap', { skip }, async () => {
+  const prisma = require('../src/config/prisma');
+  const fin = require('../src/services/finance.service');
+  const reports = require('../src/services/reports.service');
+  const epoch = await reports.financeEpoch();
+  const counter = await prisma.sale.findFirst({
+    where: { status: { not: 'CANCELLED' }, type: 'CASH', salesRepId: null, settlementId: null, amountPaid: { gt: 0 }, ...(epoch ? { soldAt: { gte: epoch } } : {}) },
+    orderBy: { soldAt: 'desc' },
+  });
+  assert.ok(counter, 'the copy has a paid counter sale since the epoch');
+  for (const refType of ['SalePayment', 'SaleRefund']) {
+    const gaps = await inRolledBackTx(prisma, async (tx) => {
+      // As if the sale had been made with nothing paid and the money collected (or handed back) later.
+      await tx.financeTransaction.deleteMany({ where: { refType: { in: ['Sale', 'SalePayment', 'SaleRefund'] }, refId: counter.id } });
+      const before = await fin.ledgerGaps(tx);
+      assert.equal(before.missingIncome, true, 'with no money row at all it is a gap');
+      const acc = await tx.businessAccount.findFirst({ where: { isActive: true } });
+      await tx.financeTransaction.create({
+        data: {
+          txnNumber: `TEST-GAP-${refType}`, accountId: acc.id, direction: 'IN',
+          type: 'WAREHOUSE_SALE', amount: 1000, refType, refId: counter.id, occurredAt: new Date(),
+        },
+      });
+      return fin.ledgerGaps(tx);
+    });
+    assert.equal(gaps.missingIncome, false, `a ${refType} row covers the sale, as the full pass reads it`);
+  }
+  assert.equal((await fin.ledgerGaps()).missingIncome, false, 'rolled back');
+});
+
 test('a sale row that lost its brand is a gap only when its sale is all one brand', { skip }, async () => {
   const prisma = require('../src/config/prisma');
   const fin = require('../src/services/finance.service');
+  const reports = require('../src/services/reports.service');
+  const epoch = await reports.financeEpoch();
   const rows = await prisma.financeTransaction.findMany({ where: { refType: 'Sale', brandId: { not: null } }, take: 5, orderBy: { occurredAt: 'desc' } });
   assert.ok(rows.length, 'the copy has brand-tagged sale income');
   for (const row of rows) {
     const items = await prisma.saleItem.findMany({ where: { saleId: row.refId }, select: { product: { select: { brandId: true } } } });
     const brands = new Set(items.map((i) => i.product?.brandId).filter(Boolean));
+    // The pass only re-tags rows of the sales it reads: not cancelled, CASH, settled or counter, since the epoch.
+    const sale = await prisma.sale.findUnique({ where: { id: row.refId } });
+    const read = Boolean(sale && sale.status !== 'CANCELLED' && sale.type === 'CASH'
+      && (sale.settlementId || !sale.salesRepId) && (!epoch || sale.soldAt >= epoch));
     const gaps = await inRolledBackTx(prisma, async (tx) => {
       await tx.financeTransaction.update({ where: { id: row.id }, data: { brandId: null } });
       return fin.ledgerGaps(tx);
     });
-    assert.equal(gaps.untaggedIncome, brands.size === 1);
+    assert.equal(gaps.untaggedIncome, read && brands.size === 1, row.txnNumber);
     assert.equal(gaps.missingIncome, false);
   }
 });

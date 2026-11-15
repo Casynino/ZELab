@@ -523,7 +523,8 @@ function backfillShared() {
 // sale ledger row, those sales' items, every paid withdrawal) before Finance and Home can answer, and on
 // almost every read it finds nothing. This asks the same three questions the pass acts on, with the same
 // conditions, without moving the rows:
-//   missingIncome  — a settled-order or counter sale since the epoch with money in and no ledger row;
+//   missingIncome  — a settled-order or counter sale since the epoch with money in and no ledger row
+//                    (a Sale, SalePayment or SaleRefund row covers it, the same set the pass reads);
 //   untaggedIncome — a sale ledger row with no brand whose sale is all one brand (the pass tags those);
 //   missingPayout  — a PAID withdrawal since the epoch with no ledger row.
 // The epoch is compared as UTC wall time, the way Prisma stores DateTime, whatever the session time zone.
@@ -542,7 +543,8 @@ async function ledgerGaps(db = prisma) {
         WHERE s."status" <> 'CANCELLED' AND s."type" = 'CASH'
           AND (s."settlementId" IS NOT NULL OR s."salesRepId" IS NULL) ${saleSince}
           AND ROUND(CASE WHEN s."settlementId" IS NOT NULL THEN s."total" ELSE s."amountPaid" END, 2) > 0
-          AND NOT EXISTS (SELECT 1 FROM "finance_transactions" f WHERE f."refType" = 'Sale' AND f."refId" = s."id")
+          AND NOT EXISTS (SELECT 1 FROM "finance_transactions" f
+                          WHERE f."refType" IN ('Sale', 'SalePayment', 'SaleRefund') AND f."refId" = s."id")
       ) AS "missingIncome",
       EXISTS (
         SELECT 1 FROM "finance_transactions" f JOIN "sales" s ON s."id" = f."refId"
@@ -606,18 +608,27 @@ const endOfTodayEat = () => eatDayAt(eatDateOf(Date.now()), DAY_MS - 1);
 // account could pay out more than it held and a supplier's bill could fall with no money leaving; a day after
 // today comes off the balance now but lands in a later month's cash flow. A day picked on go-live day itself
 // counts from the moment the books started.
-async function bookDate(v) {
+// `words` lets another dated record keep the same rule in its own words (a cargo's arrival day, ARRIVAL_WORDS).
+const MONEY_WORDS = {
+  after: (today) => `Money cannot be dated after today (${today}). Record it on the day it really moves.`,
+  before: (start) => `The books start on ${start}. Money from before that day is already in the opening balances, so pick a date from ${start} to today.`,
+};
+// A cargo's arrival day (audit money06, 15 Nov 2026): its damaged and missing boxes are stock lost on that day, so a
+// day after today or before the books started moved their value out of every profit figure.
+const ARRIVAL_WORDS = {
+  after: (today) => `The cargo cannot arrive after today (${today}). Pick the day it really arrived.`,
+  before: (start) => `The books start on ${start}, so pick an arrival day from ${start} to today.`,
+};
+async function bookDate(v, words = MONEY_WORDS) {
   const when = resolveOccurredAt(v);
   if (Number.isNaN(when.getTime())) throw ApiError.badRequest('That date cannot be read. Pick a day like 2026-11-15.');
   if (when > endOfTodayEat()) {
-    throw ApiError.badRequest(`Money cannot be dated after today (${eatDateOf(Date.now())}). Record it on the day it really moves.`);
+    throw ApiError.badRequest(words.after(eatDateOf(Date.now())));
   }
   const epoch = await reports.financeEpoch();
   if (epoch && when < epoch) {
     if (String(v) === eatDateOf(epoch)) return new Date(epoch);
-    throw ApiError.badRequest(
-      `The books start on ${eatDateOf(epoch)}. Money from before that day is already in the opening balances, so pick a date from ${eatDateOf(epoch)} to today.`,
-    );
+    throw ApiError.badRequest(words.before(eatDateOf(epoch)));
   }
   return when;
 }
@@ -2262,9 +2273,12 @@ async function overview(period = 'month', shared = {}) {
   const cashPosition = round2(accounts.reduce((s, a) => s + a.balance, 0));
 
   // Money in / out for each window (from the epoch onward).
+  // Active accounts only — the same population as the Cash Flow tab (flowBetween), the owner's money (ownerFigures)
+  // and the cash held, so the Overview's money in/out and the Cash Flow tab never disagree when an account with
+  // past rows is switched off (audit fina05 / money04, 15 Nov 2026).
   const flowFor = async (p) => {
     const r = periodRange(p);
-    const base = epochWhere(r, epoch);
+    const base = { ...epochWhere(r, epoch), account: { is: { isActive: true } } };
     const [inAgg, outAgg, owner] = await Promise.all([
       prisma.financeTransaction.aggregate({ where: { ...base, direction: 'IN', type: { notIn: NON_TRADE_TYPES } }, _sum: { amount: true } }),
       prisma.financeTransaction.aggregate({ where: { ...base, direction: 'OUT', type: { notIn: NON_TRADE_TYPES } }, _sum: { amount: true } }),
@@ -2759,6 +2773,8 @@ async function overview(period = 'month', shared = {}) {
 module.exports = {
   // The dashboard builds its month-by-month cash series on this.
   flowBetween,
+  bookDate,
+  ARRIVAL_WORDS,
   ensureDefaults,
   backfillFromHistory,
   ledgerGaps,

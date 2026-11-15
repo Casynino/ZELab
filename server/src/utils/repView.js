@@ -7,6 +7,9 @@ const COST_KEYS = new Set([
   'unitCost', 'costTotal', 'purchasePrice', 'costPrice', 'profit', 'grossProfit', 'stockValue', 'margin',
   // Added 11 Nov 2026 (GET /sales summaries carried these): the cost of goods and the margins by any name.
   'cost', 'landedUnitCost', 'cogs', 'costOfSold', 'inventoryValue', 'grossMargin', 'netProfit',
+  // Added 15 Nov 2026 (audit ui-re06): the boxes sold before a buying price was set — the owner's accounting
+  // figure, carried in the GET /sales summary.
+  'noCost', 'noCostRevenue', 'noCostBoxes',
 ]);
 
 // CallMeBot keys (audit ui-r02 / perm02): anyone holding a rep's key and number can send his phone WhatsApp

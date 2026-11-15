@@ -114,6 +114,10 @@ test('the whole journey: draft → purchase (straight on its way) → cost → r
   await rejectsWith(purchase.receiveCargo(po.id, { clientKey: key('x2'), items: [{ itemId: ia.id, received: 2, damaged: 5, note: 'x' }] }, ctx.admin), 400, /damaged/);
   await rejectsWith(purchase.receiveCargo(po.id, { clientKey: key('x3'), items: [{ itemId: ia.id, received: 2, damaged: 1 }] }, ctx.admin), 400, /what is wrong/);
   await rejectsWith(purchase.receiveCargo(po.id, { clientKey: key('x4'), items: [{ itemId: ia.id }] }, ctx.admin), 400, /at least one/);
+  // The arrival day stays inside the books (audit money06): not after today, not before the books started.
+  const eatDay = (ms) => new Date(ms + 3 * 3_600_000).toISOString().slice(0, 10);
+  await rejectsWith(purchase.receiveCargo(po.id, { clientKey: key('x5'), arrivedAt: eatDay(Date.now() + 86_400_000), items: [{ itemId: ia.id, received: 1 }] }, ctx.admin), 400, /after today/);
+  await rejectsWith(purchase.receiveCargo(po.id, { clientKey: key('x6'), arrivedAt: '2020-01-01', items: [{ itemId: ia.id, received: 1 }] }, ctx.admin), 400, /books start/);
   assert.equal(await stockOf(ctx.a.id), stockA, 'refusals add nothing');
 
   // First part: 50 of A arrive, 2 damaged. The same press twice at once: stock comes in once.
@@ -143,7 +147,7 @@ test('the whole journey: draft → purchase (straight on its way) → cost → r
 
   // Second part, another day: the rest of A arrives except 10 that will never come; B arrives in full.
   now = (await purchase.receiveCargo(po.id, {
-    clientKey: key(2), arrivedAt: '2026-12-21',
+    clientKey: key(2), arrivedAt: eatDay(Date.now()),
     items: [{ itemId: ia.id, received: 40, missing: 10 }, { itemId: ib.id, received: 50 }],
   }, ctx.admin)).order;
   assert.equal(now.status, 'RECEIVED', 'every box is received or missing: complete');

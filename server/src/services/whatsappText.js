@@ -331,7 +331,18 @@ owner.yearlyReport = (d) => {
   const loss = Array.isArray(d.lossMonths) ? d.lossMonths : [];
   const build = ({ leaders, weakest }) => doc(
     lines(bold('ZELAB — YEARLY REPORT'), d.year),
-    lines(`Revenue: ${money(d.revenue)}`, `Gross Profit: ${money(d.grossProfit)}`, `Expenses: ${money(d.expenses)}`, `Net Profit: ${money(d.netProfit)}`, `Boxes Sold: ${boxes(d.boxes)}`),
+    // Read top to bottom it adds up (audit repor01): revenue − no buying price − cost of goods = gross profit;
+    // − expenses − stock lost = net profit. The no-buying-price and stock-lost lines only when there is one.
+    lines(
+      `Revenue: ${money(d.revenue)}`,
+      d.noCostRevenue > 0 && `No Buying Price: ${money(d.noCostRevenue)} (not in profit)`,
+      d.cogs != null && `Cost of Goods: ${money(d.cogs)}`,
+      `Gross Profit: ${money(d.grossProfit)}`,
+      `Expenses: ${money(d.expenses)}`,
+      d.stockLoss > 0 && `Stock Lost: ${money(d.stockLoss)}`,
+      `Net Profit: ${money(d.netProfit)}`,
+      `Boxes Sold: ${boxes(d.boxes)}`,
+    ),
     growth !== null && `Revenue Growth: ${growth > 0 ? '+' : ''}${growth}% on ${d.prevLabel}`,
     lines(
       d.bestMonth && `Best Month: ${d.bestMonth.name} — ${money(d.bestMonth.netProfit)} profit`,

@@ -183,6 +183,21 @@ test('a long yearly text drops the leaders first and never the link', () => {
   assert.match(text, /Loss Months: Mar/);
 });
 
+// Audit repor01: the yearly text adds up as read — no-buying-price sales are said, and stock lost sits between the
+// expenses and the net profit (gross − expenses − stock lost = net).
+test('the yearly text names no-buying-price sales and stock lost, so its lines add up', () => {
+  const text = owner.yearlyReport({
+    year: '2026', revenue: 48_000_000, noCostRevenue: 15_505_000, cogs: 19_982_009, grossProfit: 12_512_991, expenses: 8_701_481, stockLoss: 1_055_139,
+    netProfit: 2_756_371, boxes: 900, cashBalance: 1, growthPct: null, lossMonths: [], link: LINK,
+  });
+  assert.match(text, /Revenue: TSh 48,000,000\nNo Buying Price: TSh 15,505,000 \(not in profit\)\nCost of Goods: TSh 19,982,009\nGross Profit: TSh 12,512,991\nExpenses: TSh 8,701,481\nStock Lost: TSh 1,055,139\nNet Profit: TSh 2,756,371/);
+  assert.equal(48_000_000 - 15_505_000 - 19_982_009, 12_512_991);
+  assert.equal(12_512_991 - 8_701_481 - 1_055_139, 2_756_371);
+  assert.ok(text.length <= MAX_REPORT_CHARS, `${text.length} chars`);
+  const plain = owner.yearlyReport({ year: '2025', revenue: 1, grossProfit: 1, netProfit: 1, expenses: 1, boxes: 1, cashBalance: 1, growthPct: null, lossMonths: [], link: LINK });
+  assert.ok(!plain.includes('Stock Lost') && !plain.includes('No Buying Price'), 'only when there is one');
+});
+
 test('no loss month reads "None", and a year with no growth figure leaves the line out', () => {
   const text = owner.yearlyReport({ year: '2025', revenue: 1, grossProfit: 1, netProfit: 1, expenses: 1, boxes: 1, cashBalance: 1, growthPct: null, lossMonths: [], link: LINK });
   assert.match(text, /Loss Months: None/);

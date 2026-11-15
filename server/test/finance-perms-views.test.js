@@ -40,6 +40,9 @@ test('a rep is sent no cost and no stock-control levels', () => {
   assert.equal(rep.items[0].unitCost, undefined);
   assert.equal(rep.costTotal, undefined);
   assert.equal(rep.total, 30000);
+  // The GET /sales summary's "sold before a buying price was set" figure is the owner's (audit ui-re06).
+  const summary = forRole({ user: { role: 'SALES_REP' } }, { revenue: 300000, boxes: 10, noCost: { boxes: 10, revenue: 300000 }, noCostRevenue: 1, noCostBoxes: 2 });
+  assert.deepEqual(summary, { revenue: 300000, boxes: 10 });
 });
 
 // ── The dashboard for staff ──────────────────────────────────────────────────────────────────────────
@@ -50,7 +53,7 @@ const install = (path, exports) => {
 const command = () => ({
   accounts: [{ id: 'a1', name: 'M-Pesa', balance: 500000 }],
   totalFunds: 500000,
-  today: { revenue: 90000, grossProfit: 54000, expenses: 1000, netProfit: 53000, moneyIn: 90000, moneyOut: 1000, netCash: 89000, boxesSold: 3 },
+  today: { revenue: 90000, grossProfit: 54000, expenses: 1000, stockLoss: 500, netProfit: 52500, moneyIn: 90000, moneyOut: 1000, netCash: 89000, boxesSold: 3 },
   week: { revenue: 1, grossProfit: 1, boxes: 1 },
   month: { revenue: 2, grossProfit: 2, boxes: 2 },
   brands: [{ name: 'OHIS', revenueMonth: 5, grossProfitMonth: 3, marginMonth: 60, inventoryValue: 9 }],

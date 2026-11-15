@@ -802,6 +802,10 @@ async function undoPurchase(id, { reason } = {}, actor) {
 // `clientKey` is one per press of the form: a double tap or a retry finds it recorded and adds nothing.
 async function receiveCargo(id, { items = [], notes, arrivedAt, clientKey } = {}, actor) {
   if (!clientKey) throw ApiError.badRequest('Refresh the page and try again.');
+  // The arrival day stays inside the books, the rule every money date keeps (audit money06): from the day the
+  // books started to today in Dar es Salaam.
+  const finance = require('./finance.service'); // lazy: avoids an import cycle
+  const when = arrivedAt ? await finance.bookDate(arrivedAt, finance.ARRIVAL_WORDS) : new Date();
   return prisma.$transaction(async (tx) => {
     await lockOrder(tx, id);
     if (await tx.purchaseReceipt.findUnique({ where: { clientKey }, select: { id: true } })) {
@@ -871,7 +875,6 @@ async function receiveCargo(id, { items = [], notes, arrivedAt, clientKey } = {}
       select: { productId: true, packagingUnitId: true },
     });
     const baseUnitOf = new Map(baseUnits.map((b) => [b.productId, b.packagingUnitId]));
-    const when = arrivedAt ? new Date(arrivedAt) : new Date();
 
     const receipt = await tx.purchaseReceipt.create({
       data: {

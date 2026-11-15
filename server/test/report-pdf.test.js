@@ -34,7 +34,7 @@ stub('../src/services/reports.service', { financeEpoch: async () => null });
 
 const data = require('../src/services/reportData.service');
 const kit = require('../src/services/reportKit');
-const { dailyPdf, weeklyPdf, monthlyPdf } = require('../src/services/reportPdf.service');
+const { dailyPdf, weeklyPdf, monthlyPdf, statementRows } = require('../src/services/reportPdf.service');
 const daily = require('../src/services/dailyBusinessReport.service');
 
 const pagesOf = (buf) => (buf.toString('latin1').match(/\/Type \/Page(?!s)/g) || []).length;
@@ -139,6 +139,26 @@ test('daily, weekly and monthly all draw, with the logo, and run to several page
     assert.ok(pagesOf(pdf) >= 2, `${name} has several pages, got ${pagesOf(pdf)}`);
     assert.match(pdf.toString('latin1'), /\/Subtype \/Image/, `${name} carries the logo`);
   }
+});
+
+// Audit repor01: the statement adds up as read. Boxes sold before a buying price was set are a line of their own
+// between sales and cost, and stock lost a line between expenses and net profit; neither shows when it is zero.
+test('the profit and loss statement adds up line by line, with no-buying-price sales and stock lost', async () => {
+  const f = {
+    revenue: 15_791_000, noCost: { boxes: 516, revenue: 15_475_000 }, cogs: 165_000, grossProfit: 151_000,
+    expenses: 1_587_980, stockLoss: 324_139, netProfit: -1_761_119,
+  };
+  const rows = statementRows(f);
+  assert.deepEqual(rows.map((r) => r.label), [
+    'Sales (revenue)', 'No buying price (not in profit)', 'Cost of the boxes sold', 'Gross profit',
+    'Business expenses', 'Stock lost', 'Net profit',
+  ]);
+  const at = (label) => rows.find((r) => r.label === label).value;
+  assert.equal(at('Sales (revenue)') + at('No buying price (not in profit)') + at('Cost of the boxes sold'), at('Gross profit'));
+  assert.equal(at('Gross profit') + at('Business expenses') + at('Stock lost'), at('Net profit'));
+  // Neither extra line when there is nothing to say.
+  assert.deepEqual(statementRows(report().finance).map((r) => r.label), ['Sales (revenue)', 'Cost of the boxes sold', 'Gross profit', 'Business expenses', 'Net profit']);
+  assert.ok(isPdf(await dailyPdf(report({ finance: { ...report().finance, ...f } }))));
 });
 
 test('a quiet period (no sales, no money, no reps, no accounts) still draws', async () => {

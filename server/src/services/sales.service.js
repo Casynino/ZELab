@@ -398,8 +398,9 @@ async function listSales(filters, pagination) {
       include: {
         customer: { select: { id: true, name: true, region: true } },
         salesRep: { include: { user: { select: { name: true } } } },
-        // baseQuantity: Returns > Customer return tells counter sales apart by their boxes.
-        items: { select: { id: true, baseQuantity: true, unitCost: true } },
+        // baseQuantity: Returns > Customer return tells counter sales apart by their boxes. lineTotal: the list
+        // shows a sale's profit over its lines with a known buying price, as the sale itself does (audit money02).
+        items: { select: { id: true, baseQuantity: true, unitCost: true, lineTotal: true } },
       },
       skip: pagination.skip,
       take: pagination.take,

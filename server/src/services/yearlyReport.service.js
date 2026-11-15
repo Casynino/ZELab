@@ -136,9 +136,12 @@ function buildWhatsAppText(d, link) {
   return require('./whatsappText').owner.yearlyReport({
     year: d.period.label,
     revenue: d.finance.revenue,
+    cogs: d.finance.cogs,
     grossProfit: d.finance.grossProfit,
     netProfit: d.finance.netProfit,
     expenses: d.finance.expenses,
+    stockLoss: d.finance.stockLoss || 0,
+    noCostRevenue: d.finance.noCost?.revenue || 0,
     boxes: d.finance.boxesSold,
     // The balance at the END of the period the message is labelled with, the figure its PDF's cash
     // statement ("Balance at the end") and the Cash Flow page show. It quoted the accounts at the time of
