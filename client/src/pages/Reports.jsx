@@ -73,36 +73,43 @@ function SalesReport({ data }) {
 }
 
 // The same net profit as the Dashboard and Finance (15 Nov 2026): gross profit − expenses − stock lost. The rows add
-// up as read; discounts are already inside revenue, so they are a note under it, never a line of their own.
+// up as read (audit ui-ad03 / money03): boxes sold before a buying price was set are in revenue, so they are taken
+// off on their own line before the cost of goods — never in gross profit. Discounts are already inside revenue, so
+// they are a note under it, never a line of their own. Each note sits on its own line under its label, so the
+// figures stay on screen on a phone (ui-ad05).
 function ProfitReport({ data }) {
   const stockLoss = data.stockLoss ?? data.shrinkageAndDamageValue ?? 0;
+  const noCost = data.noCost || { boxes: 0, revenue: 0 };
   const rows = [
     { k: 'Revenue', v: data.revenue, note: data.discounts > 0 ? `after ${formatCurrency(data.discounts)} of discounts` : null },
+    noCost.revenue > 0 && {
+      k: 'Sold with no buying price', v: -noCost.revenue,
+      note: `${formatNumber(noCost.boxes)} ${noCost.boxes === 1 ? 'box' : 'boxes'} — not in profit`,
+    },
     { k: 'Cost of goods sold', v: -data.cogs },
     { k: 'Gross profit', v: data.grossProfit, strong: true },
     { k: 'Expenses', v: -(data.expenses || 0) },
     { k: 'Stock lost', v: -stockLoss, note: 'written off, or bought and damaged / never received' },
     { k: 'Net profit', v: data.netProfit, strong: true },
-  ];
+  ].filter(Boolean);
   return (
     <Card>
-      <CardHeader title="Profit & loss" subtitle={`Gross margin ${formatPercent(data.grossMargin)} · ${data.orders} orders`} />
+      <CardHeader title="Profit & loss" subtitle={`Gross margin ${formatPercent(data.grossMargin)}${noCost.revenue > 0 ? ' on sales with a known cost' : ''} · ${data.orders} orders`} />
       <Table>
         <TBody>
           {rows.map((r) => (
             <TR key={r.k}>
-              <TD className={r.strong ? 'font-semibold text-foreground' : 'font-medium text-muted'}>
+              <TD className={`whitespace-normal ${r.strong ? 'font-semibold text-foreground' : 'font-medium text-muted'}`}>
                 {r.k}
-                {r.note && <span className="ml-2 text-xs font-normal text-faint">{r.note}</span>}
+                {r.note && <span className="block text-xs font-normal text-faint">{r.note}</span>}
               </TD>
-              <TD className={`text-right tabular-nums ${r.strong ? 'font-bold text-foreground' : 'font-semibold'}`}>
+              <TD className={`text-right align-top tabular-nums ${r.strong ? 'font-bold text-foreground' : 'font-semibold'}`}>
                 {r.v < 0 ? `−${formatCurrency(-r.v)}` : formatCurrency(r.v)}
               </TD>
             </TR>
           ))}
         </TBody>
       </Table>
-      <NoCostNote noCost={data.noCost} className="px-4 pb-4 pt-3" />
     </Card>
   );
 }

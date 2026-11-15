@@ -1,6 +1,28 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { statementRows, poPayCap } from './financeFigures.js';
+import { statementRows, poPayCap, saleProfit } from './financeFigures.js';
+
+// Audit money02 / ui-ad02: the Sales list showed a Pepa sale (no buying price, cost 0) as profit = total.
+test('a listed sale with no buying price has no known profit; a mixed one counts only its priced lines', () => {
+  const pepa = { total: 60000, costTotal: 0, subtotal: 60000, discount: 0, items: [{ unitCost: 0, baseQuantity: 2, lineTotal: 60000 }] };
+  assert.deepEqual(saleProfit(pepa), { profit: null, unknownBoxes: 2 });
+  const priced = { total: 30000, costTotal: 12000, subtotal: 30000, discount: 0, items: [{ unitCost: 12000, baseQuantity: 1, lineTotal: 30000 }] };
+  assert.deepEqual(saleProfit(priced), { profit: 18000, unknownBoxes: 0 });
+  // 10% discount shared by line value: the priced line is worth 27,000 of the 90,000 total.
+  const mixed = {
+    total: 90000, costTotal: 12000, subtotal: 100000, discount: 10000,
+    items: [{ unitCost: 12000, baseQuantity: 1, lineTotal: 30000 }, { unitCost: 0, baseQuantity: 2, lineTotal: 70000 }],
+  };
+  assert.deepEqual(saleProfit(mixed), { profit: 15000, unknownBoxes: 2 });
+  // A line handed back in full (no boxes left) is not a box with no buying price.
+  const back = {
+    total: 30000, costTotal: 12000, subtotal: 30000, discount: 0,
+    items: [{ unitCost: 12000, baseQuantity: 1, lineTotal: 30000 }, { unitCost: 0, baseQuantity: 0, lineTotal: 0 }],
+  };
+  assert.deepEqual(saleProfit(back), { profit: 18000, unknownBoxes: 0 });
+  // A row without its lines (an old cached page) keeps the old figure.
+  assert.deepEqual(saleProfit({ total: 5000, costTotal: 2000 }), { profit: 3000, unknownBoxes: 0 });
+});
 
 const EPOCH = '2026-07-05T09:36:54.333Z';
 

@@ -17,6 +17,7 @@ import ItemLines from '@/components/ItemLines';
 import QuickSale from '@/components/QuickSale';
 import SaleRefund from '@/components/SaleRefund';
 import { refundable } from '@/lib/saleRefund';
+import { saleProfit } from '@/lib/financeFigures';
 import {
   PageHeader, Card, PageSpinner, EmptyState, Badge, Button, Modal, Field, Select, Input, NumberInput,
   Pagination, LoadError, Table, THead, TBody, TR, TH, TD, RowsOrTable, RowList, RowItem, PageTabs,
@@ -192,8 +193,10 @@ function ReceivePayment({ sale }) {
   const owed = Number(sale.balanceDue) || 0;
   const [amount, setAmount] = useState(String(owed));
   const [accountId, setAccountId] = useState('');
-  // One key per opening of this form: a double tap records the payment once.
-  const [clientKey] = useState(() => `pay-${sale.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  // One key per payment: a double tap records it once, and each payment that went through gets a fresh key,
+  // so a second payment typed in the same open window is recorded, not taken for a repeat of the first.
+  const newKey = () => `pay-${sale.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const [clientKey, setClientKey] = useState(newKey);
   const brands = [...new Set((sale.items || []).map((i) => i.product?.brandId).filter(Boolean))];
   const brandId = brands.length === 1 ? brands[0] : null;
   const { data: accounts = [] } = useQuery({
@@ -206,6 +209,8 @@ function ReceivePayment({ sale }) {
     mutationFn: async () => unwrap(await api.post(`/sales/${sale.id}/payments`, { amount: amt, accountId: chosen, clientKey })).data,
     onSuccess: (res) => {
       const left = Number(res?.payment?.balanceDue) || 0;
+      setClientKey(newKey());
+      setAmount(String(left));
       toast.success(`${formatCurrency(amt)} received into ${accounts.find((a) => a.id === chosen)?.name || 'the account'}${left > 0 ? ` — ${formatCurrency(left)} still owed` : ' — paid in full'}`);
       refreshAfter(qc, 'sale');
       ['sales', 'sale', 'finance', 'dashboard', 'customers', 'customer'].forEach((k) => qc.invalidateQueries({ queryKey: [k] }));
@@ -453,6 +458,19 @@ const STATUS_TONE = { PAID: 'emerald', PARTIAL: 'amber', UNPAID: 'rose', CANCELL
 // which belongs to stock requests and would be refused by the sales filter.
 const STATUS_ORDER = ['PAID', 'PARTIAL', 'UNPAID', 'CANCELLED'];
 
+// A listed sale's profit, as its detail shows it (audit money02): only lines with a known buying price count. A sale
+// sold wholly before a buying price was set has no profit to show ("not known"); a mixed one says part is left out.
+function RowProfit({ profit, unknownBoxes, dead }) {
+  if (profit == null) return <span className="text-faint">profit not known</span>;
+  return (
+    <span className={dead ? 'text-faint' : 'text-emerald-400'}
+      title={unknownBoxes > 0 ? `${unknownBoxes} ${unknownBoxes === 1 ? 'box was' : 'boxes were'} sold before a buying price was set — not in this profit` : undefined}>
+      profit {formatCurrency(profit)}
+      {unknownBoxes > 0 && <span className={dead ? 'text-faint' : 'text-amber-300'}> (part)</span>}
+    </span>
+  );
+}
+
 function Chip({ active, tone, label, count, onClick }) {
   return (
     <button
@@ -522,6 +540,8 @@ function SalesList({ tabs }) {
   // rows on screen — the server adds them up over the whole set. Cancelled
   // sales are listed but earn nothing, so the money leaves them out.
   const sum = data?.meta?.summary;
+  // Sold before a buying price was set: in what came in, never in what was kept — its own line, so the sum adds up.
+  const noCostRevenue = Number(sum?.noCost?.revenue) || 0;
   const period = sum?.firstAt
     ? (formatDate(sum.firstAt) === formatDate(sum.lastAt)
         ? `on ${formatDate(sum.firstAt)}`
@@ -576,8 +596,11 @@ function SalesList({ tabs }) {
             },
             isAdmin && {
               label: 'Profit kept', value: shown(formatCurrency(sum?.profit ?? 0)), icon: TrendingUp,
+              // The margin is over the sales whose cost is known (a box with no buying price is not in profit).
               sub: (sum?.sales ?? 0) > 0
-                ? `${formatPercent(sum.margin)} margin on the same ${formatNumber(sum.sales)} ${saleWord(sum.sales)}`
+                ? (sum.noCost?.revenue ?? 0) > 0
+                  ? `${formatPercent(sum.margin)} margin on sales with a known cost`
+                  : `${formatPercent(sum.margin)} margin on the same ${formatNumber(sum.sales)} ${saleWord(sum.sales)}`
                 : nothing,
               ring: (sum?.profit ?? 0) > 0 ? 'ring-emerald-500/25' : (sum?.profit ?? 0) < 0 ? 'ring-rose-500/30' : 'ring-white/[0.08]',
               glow: (sum?.profit ?? 0) > 0 ? 'from-emerald-500/[0.12]' : (sum?.profit ?? 0) < 0 ? 'from-rose-500/[0.14]' : 'from-white/[0.03]',
@@ -633,12 +656,18 @@ function SalesList({ tabs }) {
                     <dt className="text-muted">Brought in</dt>
                     <dd className="whitespace-nowrap font-bold tabular-nums text-sky-300">{formatCurrency(sum.revenue)}</dd>
                   </div>
+                  {noCostRevenue > 0 && (
+                    <div className="flex items-baseline justify-between gap-3">
+                      <dt className="text-muted"><span className="mr-1 text-white/40">−</span>Sold with no buying price <span className="text-[11px] text-amber-300">(not in profit)</span></dt>
+                      <dd className="whitespace-nowrap font-bold tabular-nums text-amber-300">{formatCurrency(noCostRevenue)}</dd>
+                    </div>
+                  )}
                   <div className="flex items-baseline justify-between gap-3">
                     <dt className="text-muted"><span className="mr-1 text-white/40">−</span>The stock cost</dt>
                     <dd className="whitespace-nowrap font-bold tabular-nums text-foreground">{formatCurrency(sum.cost)}</dd>
                   </div>
                   <div className="flex items-baseline justify-between gap-3 border-t border-white/[0.08] pt-1">
-                    <dt className="text-muted"><span className="mr-1 text-white/40">=</span>The business kept <span className="text-[11px]">· {formatPercent(sum.margin)}</span></dt>
+                    <dt className="text-muted"><span className="mr-1 text-white/40">=</span>The business kept <span className="text-[11px]">· {formatPercent(sum.margin)}{noCostRevenue > 0 ? ' of priced sales' : ''}</span></dt>
                     <dd className={`whitespace-nowrap text-[15px] font-bold tabular-nums ${sum.profit > 0 ? 'text-emerald-300' : sum.profit < 0 ? 'text-rose-300' : 'text-foreground'}`}>{formatCurrency(sum.profit)}</dd>
                   </div>
                 </dl>
@@ -647,6 +676,15 @@ function SalesList({ tabs }) {
                     <p className="text-[11px] text-muted">Brought in</p>
                     <p className="whitespace-nowrap text-lg font-bold leading-tight tabular-nums text-sky-300">{formatCurrency(sum.revenue)}</p>
                   </div>
+                  {noCostRevenue > 0 && (
+                    <>
+                      <span className="pb-0.5 text-lg font-light text-white/30" aria-label="minus">−</span>
+                      <div>
+                        <p className="text-[11px] text-muted">Sold with no buying price <span className="text-amber-300">(not in profit)</span></p>
+                        <p className="whitespace-nowrap text-lg font-bold leading-tight tabular-nums text-amber-300">{formatCurrency(noCostRevenue)}</p>
+                      </div>
+                    </>
+                  )}
                   <span className="pb-0.5 text-lg font-light text-white/30" aria-label="minus">−</span>
                   <div>
                     <p className="text-[11px] text-muted">The stock cost</p>
@@ -657,7 +695,7 @@ function SalesList({ tabs }) {
                     <p className="text-[11px] text-muted">The business kept</p>
                     <p className={`whitespace-nowrap text-lg font-bold leading-tight tabular-nums ${sum.profit > 0 ? 'text-emerald-300' : sum.profit < 0 ? 'text-rose-300' : 'text-foreground'}`}>
                       {formatCurrency(sum.profit)}
-                      <span className="ml-2 text-xs font-medium text-muted">{formatPercent(sum.margin)} of what it took</span>
+                      <span className="ml-2 text-xs font-medium text-muted">{formatPercent(sum.margin)} of {noCostRevenue > 0 ? 'the sales with a known cost' : 'what it took'}</span>
                     </p>
                   </div>
                 </div>
@@ -716,7 +754,7 @@ function SalesList({ tabs }) {
                 <RowList>
                   {data.data.map((s) => {
                     const meta = SALE_STATUS_META[s.status] || {};
-                    const profit = s.total - (s.costTotal || 0);
+                    const { profit, unknownBoxes } = saleProfit(s);
                     const dead = s.status === 'CANCELLED';
                     return (
                       <RowItem
@@ -733,7 +771,7 @@ function SalesList({ tabs }) {
                             <span className="min-w-0 truncate text-faint">{s.salesRep?.user?.name || 'No rep'}{s.type && s.type !== 'CASH' ? ` · ${s.type}` : ''}</span>
                             <span className={clsx('shrink-0 tabular-nums', dead && 'line-through')}>
                               {/* Profit is the owner's figure (staff never see costs). */}
-                              {isAdmin && <span className={dead ? 'text-faint' : 'text-emerald-400'}>profit {formatCurrency(profit)}</span>}
+                              {isAdmin && <RowProfit profit={profit} unknownBoxes={unknownBoxes} dead={dead} />}
                               {s.balanceDue > 0 && <span className={dead ? 'text-faint' : 'text-amber-300'}>{isAdmin ? ' · ' : ''}owes {formatCurrency(s.balanceDue)}</span>}
                             </span>
                           </span>
@@ -756,7 +794,7 @@ function SalesList({ tabs }) {
                   <TBody>
                     {data.data.map((s) => {
                       const meta = SALE_STATUS_META[s.status] || {};
-                      const profit = s.total - (s.costTotal || 0);
+                      const { profit, unknownBoxes } = saleProfit(s);
                       // A cancelled sale is struck through and dimmed: it is still
                       // part of the record, but none of the totals above count it.
                       const dead = s.status === 'CANCELLED';
@@ -770,9 +808,14 @@ function SalesList({ tabs }) {
                           <TD>{s.salesRep?.user?.name || '—'}</TD>
                           <TD className={money('text-foreground')}>
                             {formatCurrency(s.total)}
-                            {isAdmin && <div className={clsx('mt-0.5 text-[11px] xl:hidden', dead ? 'text-faint' : 'text-emerald-400')}>profit {formatCurrency(profit)}</div>}
+                            {isAdmin && <div className="mt-0.5 text-[11px] xl:hidden"><RowProfit profit={profit} unknownBoxes={unknownBoxes} dead={dead} /></div>}
                           </TD>
-                          {isAdmin && <TD className={clsx(money('font-semibold text-emerald-400'), 'hidden xl:table-cell')}>{formatCurrency(profit)}</TD>}
+                          {isAdmin && (
+                            <TD className={clsx(money(profit == null ? 'text-faint' : 'font-semibold text-emerald-400'), 'hidden xl:table-cell')}>
+                              {profit == null ? <span className="font-normal">Not known</span> : formatCurrency(profit)}
+                              {unknownBoxes > 0 && profit != null && <div className="mt-0.5 text-[11px] font-normal text-amber-300">{formatNumber(unknownBoxes)} {unknownBoxes === 1 ? 'box' : 'boxes'} not in it</div>}
+                            </TD>
+                          )}
                           <TD className={money(s.balanceDue > 0 ? 'text-amber-300' : 'text-faint')}>{formatCurrency(s.balanceDue)}</TD>
                           <TD>
                             <Badge className={meta.cls}>{meta.label}</Badge>

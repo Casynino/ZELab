@@ -296,7 +296,7 @@ function Delta({ pct, goodWhenDown = false }) {
   );
 }
 
-function MonthCard({ label, icon: Icon, tone, value, delta, beforeLabel, goodWhenDown = false, note }) {
+function MonthCard({ label, icon: Icon, tone, value, delta, beforeLabel, goodWhenDown = false, note, extra }) {
   return (
     <div className="card p-3.5 sm:p-4">
       <div className="flex items-center gap-2">
@@ -311,6 +311,7 @@ function MonthCard({ label, icon: Icon, tone, value, delta, beforeLabel, goodWhe
         <Delta pct={delta} goodWhenDown={goodWhenDown} />
         <span className="text-[11px] text-faint">{note || `last month ${beforeLabel}`}</span>
       </div>
+      {extra && <p className="mt-1 text-[11px] leading-snug text-faint">{extra}</p>}
     </div>
   );
 }
@@ -360,9 +361,11 @@ function Analysis({ a, navigate }) {
         <MonthCard label="Expenses" icon={Receipt} tone="bg-orange-500/15 text-orange-300"
           value={formatCurrency(month.expenses)} delta={growth.expenses}
           beforeLabel={formatCurrency(lastMonth.expenses)} goodWhenDown />
+        {/* Gross − expenses − stock lost = net: the stock lost is said on the card, so the cards add up (money03). */}
         <MonthCard label="Net profit" icon={Coins} tone="bg-violet-500/15 text-violet-300"
           value={formatCurrency(month.netProfit)} delta={growth.netProfit}
-          beforeLabel={formatCurrency(lastMonth.netProfit)} />
+          beforeLabel={formatCurrency(lastMonth.netProfit)}
+          extra={(month.stockLoss ?? 0) > 0 ? `after ${formatCurrency(month.stockLoss)} of stock lost` : null} />
         <MonthCard label="Boxes sold" icon={Boxes} tone="bg-brand-500/15 text-brand-600"
           value={formatNumber(month.boxes)} delta={growth.boxes}
           beforeLabel={formatNumber(lastMonth.boxes)} />
@@ -806,12 +809,12 @@ export default function Dashboard() {
                 ))}
               </div>
             )}
-            <div className="mt-2.5 grid gap-x-5 gap-y-1.5 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+            <div className="mt-2.5 grid grid-cols-1 gap-x-5 gap-y-1.5 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
               {heroAccounts.map((a) => {
                 const share = totalFunds > 0 ? Math.round((a.balance / totalFunds) * 100) : 0;
                 return (
                   <button key={a.id} onClick={() => navigate('/finance?tab=accounts')}
-                    className="flex w-full cursor-pointer items-center gap-2 text-left transition hover:opacity-80">
+                    className="flex w-full min-w-0 cursor-pointer items-center gap-2 text-left transition hover:opacity-80">
                     <span className={clsx('h-2 w-2 shrink-0 rounded-full', HERO_DOT[a._i % HERO_DOT.length])} />
                     <span className="min-w-0 flex-1 truncate text-[13px] text-muted">{a.name}</span>
                     <span className={clsx('shrink-0 text-[13px] font-bold tabular-nums', a.balance < 0 ? 'text-rose-300' : 'text-foreground')}>
@@ -878,7 +881,9 @@ export default function Dashboard() {
         <StatCard compact label="Revenue" value={formatCurrency(today.revenue)} icon={TrendingUp} tone="sky" />
         {isAdmin && <StatCard compact label="Gross profit" value={formatCurrency(today.grossProfit)} icon={Wallet} tone="emerald" onClick={() => navigate('/finance?tab=profit')} />}
         {isAdmin && <StatCard compact label="Expenses" value={formatCurrency(today.expenses)} icon={Receipt} tone="amber" onClick={() => navigate('/finance?tab=expenses')} />}
-        {isAdmin && <StatCard compact label="Net profit" value={formatCurrency(today.netProfit)} icon={Scale} tone={today.netProfit >= 0 ? 'violet' : 'rose'} />}
+        {/* Gross − expenses − stock lost = net: the stock lost is said on the card, so the cards add up (money03). */}
+        {isAdmin && <StatCard compact label="Net profit" value={formatCurrency(today.netProfit)} icon={Scale} tone={today.netProfit >= 0 ? 'violet' : 'rose'}
+          hint={(today.stockLoss ?? 0) > 0 ? `after ${formatCurrency(today.stockLoss)} of stock lost` : undefined} />}
         <StatCard
           compact
           label="Boxes sold"
@@ -938,13 +943,15 @@ export default function Dashboard() {
                 tone: 'text-foreground',
               },
             ].filter(Boolean);
+            // The margin stays; the boxes with no buying price are said on a line of their own that wraps (ui-ad07).
             const profitCell = cells.find((c) => c.label === 'Gross profit');
-            if (profitCell && (shown.noCost?.boxes ?? 0) > 0) profitCell.sub = `${formatNumber(shown.noCost.boxes)} boxes with no buying price — not in profit`;
+            if (profitCell && (shown.noCost?.boxes ?? 0) > 0) profitCell.note = `${formatNumber(shown.noCost.boxes)} boxes with no buying price — not in profit`;
             return cells.map((c) => (
               <div key={c.label} className="flex items-baseline justify-between gap-3 px-4 py-2.5">
                 <div className="min-w-0">
                   <p className="text-[10px] font-semibold uppercase tracking-wider text-muted">{c.label}</p>
                   <p className="truncate text-[11px] text-faint">{c.sub}</p>
+                  {c.note && <p className="text-[11px] leading-snug text-amber-300/90">{c.note}</p>}
                 </div>
                 <p className={clsx('shrink-0 text-base font-bold tabular-nums', c.tone)}>{c.value}</p>
               </div>
@@ -1058,15 +1065,16 @@ export default function Dashboard() {
           <div><h2 className="text-sm font-semibold uppercase tracking-wide text-muted">Trend</h2><p className="text-xs text-faint">Where the money has been going, and who is bringing it in.</p></div>
 
           <Card>
-            <CardHeader title="Revenue and gross profit" subtitle="Last 30 days" />
+            {/* Profit is the owner's figure: warehouse staff see the revenue line only (ui-ad04). */}
+            <CardHeader title={isAdmin ? 'Revenue and gross profit' : 'Revenue'} subtitle="Last 30 days" />
             <div className="px-2 pb-2">
               <TrendChart
                 data={charts.daily}
                 height={240}
                 series={[
                   { key: 'revenue', name: 'Revenue', color: '#38bdf8' },
-                  { key: 'profit', name: 'Gross profit', color: '#34d399' },
-                ]}
+                  isAdmin && { key: 'profit', name: 'Gross profit', color: '#34d399' },
+                ].filter(Boolean)}
               />
             </div>
           </Card>
@@ -1145,7 +1153,7 @@ export default function Dashboard() {
             <PeriodTabs value={period} onChange={setPeriod} options={Object.values(periods).filter((o) => o.available)} />
             <p className="w-full text-xs text-faint">
               Sales made {shown.key === 'today' ? 'today' : shown.key === 'week' ? 'this week' : 'this month'} only — not
-              money in an account, and not the all-time figures on the Finance page. The stock figures below are what the
+              money in an account{isAdmin ? ', and not the all-time figures on the Finance page' : ''}. The stock figures below are what the
               brand holds right now.
             </p>
           </div>
@@ -1155,20 +1163,23 @@ export default function Dashboard() {
               // The top product of the window on show, not the month's under every tab (audit admin-ops-1).
               const top = b[`topProduct${shown.suffix}`] ?? (shown.suffix === 'Month' ? b.topProduct : null);
               return (
-                <button key={b.brandId} onClick={() => navigate('/finance?tab=profit')} className={`w-full rounded-2xl border ${t.ring} ${t.bg} p-4 text-left transition hover:bg-elevated`}>
+                // Staff never see profit, margin or stock at cost, and Finance is the owner's: their card opens Inventory.
+                <button key={b.brandId} onClick={() => navigate(isAdmin ? '/finance?tab=profit' : '/inventory')} className={`w-full rounded-2xl border ${t.ring} ${t.bg} p-4 text-left transition hover:bg-elevated`}>
                   <div className="mb-3 flex items-center gap-2">
                     <span className={`h-2.5 w-2.5 rounded-full ${t.dot}`} />
                     <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${t.badge}`}>{b.name}</span>
                     <span className="ml-auto text-[11px] font-medium text-faint">{shown.label}</span>
                   </div>
-                  <div className="grid grid-cols-2 gap-2.5 xl:grid-cols-3">
+                  <div className={clsx('grid grid-cols-2 gap-2.5', isAdmin && 'xl:grid-cols-3')}>
                     <Mini label="Revenue" value={formatCurrency(b[`revenue${shown.suffix}`])} sub={`${formatNumber(b[`boxesSold${shown.suffix}`])} boxes sold`} />
                     {/* A box sold before a buying price was set is in revenue, never in profit or margin. */}
-                    <Mini label="Gross profit" value={formatCurrency(b[`grossProfit${shown.suffix}`])}
-                      sub={(b[`noCost${shown.suffix}`]?.boxes ?? 0) > 0
-                        ? `${formatNumber(b[`noCost${shown.suffix}`].boxes)} boxes with no buying price — not in profit`
-                        : `${b[`margin${shown.suffix}`]}% margin`} />
-                    <Mini label="Inventory value" value={formatCurrency(b.inventoryValue)} />
+                    {isAdmin && (
+                      <Mini label="Gross profit" value={formatCurrency(b[`grossProfit${shown.suffix}`])}
+                        sub={(b[`noCost${shown.suffix}`]?.boxes ?? 0) > 0
+                          ? `${formatNumber(b[`noCost${shown.suffix}`].boxes)} boxes with no buying price — not in profit`
+                          : `${b[`margin${shown.suffix}`]}% margin`} />
+                    )}
+                    {isAdmin && <Mini label="Inventory value" value={formatCurrency(b.inventoryValue)} />}
                     <Mini label="In warehouse" value={`${formatNumber(b.warehouseBoxes)} boxes`} />
                     <Mini label="With reps" value={`${formatNumber(b.repBoxes)} boxes`} />
                     <Mini label="Top product" value={top ? top.name.replace(/civlily|ohis/i, '').trim().slice(0, 18) : '—'} sub={top ? formatCurrency(top.revenue) : 'no sales yet'} />

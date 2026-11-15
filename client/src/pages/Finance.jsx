@@ -754,9 +754,17 @@ function Overview({ onNavigate, onOwnerMoney }) {
         </div>
 
         <div className="order-last grid grid-cols-2 gap-x-4 gap-y-3 border-t border-white/[0.07] pt-4 sm:col-span-2 sm:flex sm:flex-wrap sm:items-start sm:justify-start sm:gap-5 lg:gap-7 2xl:order-none 2xl:col-span-1 2xl:justify-center 2xl:border-l 2xl:border-t-0 2xl:pl-6 2xl:pt-0"
-          title={`Earned = sales − cost of goods − expenses${(data.stockLoss ?? 0) > 0 ? ' − stock lost' : ''}, ${words} — the same net profit as Home and Reports.${(data.noCost?.boxes ?? 0) > 0 ? ` ${data.noCost.boxes} boxes sold before a buying price was set are in sales but not in Earned.` : ''} Rep pay is yours, not the business's.`}>
+          title={`Earned = sales${(data.noCost?.revenue ?? 0) > 0 ? ' − sold with no buying price' : ''} − cost of goods − expenses${(data.stockLoss ?? 0) > 0 ? ' − stock lost' : ''}, ${words} — the same net profit as Home and Reports.${(data.noCost?.boxes ?? 0) > 0 ? ` ${data.noCost.boxes} boxes sold before a buying price was set are in sales but not in Earned.` : ''} Rep commission and bonus paid from an account are expenses; stock lost is taken off too.`}>
           <Term label="Sales" value={formatCurrency(data.revenue)} tone="text-foreground" dot="bg-sky-400"
             caption={`${formatNumber(data.boxesSold ?? 0)} boxes`} />
+          {/* Sold before a buying price was set: in sales, never in Earned — its own term, so the sum adds up (money03). */}
+          {(data.noCost?.revenue ?? 0) > 0 && (
+            <>
+              <Op>−</Op>
+              <Term label="No buying price" sign="− " value={formatCurrency(data.noCost.revenue)} tone="text-amber-300" dot="bg-white/40"
+                caption={`${formatNumber(data.noCost.boxes)} boxes · not in profit`} />
+            </>
+          )}
           <Op>−</Op>
           <Term label="Cost of goods" sign="− " value={formatCurrency(data.cogs)} tone="text-foreground" dot="bg-rose-400"
             caption={<>gross <span className={`tabular-nums ${data.grossProfit >= 0 ? 'text-white/80' : 'text-rose-300'}`}>{formatCurrency(data.grossProfit)}</span></>} />
@@ -802,7 +810,8 @@ function Overview({ onNavigate, onOwnerMoney }) {
 
       {/* ── Six small figures ── */}
       {/* Colour only where it carries meaning: in green, out red, an amount owed amber. */}
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-6">
+      {/* Six across only from 2xl: at xl a laptop with the sidebar open cut the figures off (ui-ad06). */}
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 2xl:grid-cols-6">
         <Tile label="Money in" value={formatCurrency(flow.moneyIn)} tone="text-emerald-300" caption={`collected ${words}`}
           title={`What the business collected ${words}`} onClick={() => onNavigate?.('cashflow')} />
         <Tile label="Money out" value={formatCurrency(flow.moneyOut)} tone="text-rose-300" caption={`paid ${words}`}
@@ -958,7 +967,7 @@ function Overview({ onNavigate, onOwnerMoney }) {
                 const allUnknown = nc.boxes > 0 && costed <= 0;
                 return (
                   <div key={b.brandId}
-                    title={`Sales over ${period === 'all' ? 'the whole period' : words}, not money sitting in an account — most of it has already gone back out to buy stock. Out of every 100 shillings of ${b.name} sold, ${keptPct} stayed in the business after paying for the boxes.${(b.commission ?? 0) > 0 ? ` Reps earned ${formatCurrency(b.commission)} on these sales, which you pay yourself.` : ''}`}>
+                    title={`Sales over ${period === 'all' ? 'the whole period' : words}, not money sitting in an account — most of it has already gone back out to buy stock. Out of every 100 shillings of ${b.name} sold, ${keptPct} stayed in the business after paying for the boxes.${(b.commission ?? 0) > 0 ? ` Reps earned ${formatCurrency(b.commission)} on these sales; it is an expense when paid from an account.` : ''}`}>
                     <div className="flex items-baseline gap-2">
                       <span className={`h-2 w-2 shrink-0 self-center rounded-full ${ACCOUNT_DOT[(brandIdx.get(b.brandId) ?? buckets.length + i) % ACCOUNT_DOT.length]}`} />
                       <span className="text-[13px] font-semibold text-foreground">{b.name}</span>
@@ -971,6 +980,7 @@ function Overview({ onNavigate, onOwnerMoney }) {
                     </div>
                     <p className="mt-1.5 text-[11px] text-white/50">
                       <span className="whitespace-nowrap">Sales <span className="tabular-nums text-white/80">{formatCurrency(b.revenue)}</span></span>{' '}
+                      {nc.revenue > 0 && <><span className="whitespace-nowrap">− no buying price <span className="tabular-nums text-amber-300">{formatCurrency(nc.revenue)}</span></span>{' '}</>}
                       <span className="whitespace-nowrap">− goods <span className="tabular-nums text-white/80">{formatCurrency(b.cogs)}</span></span>
                     </p>
                     {nc.boxes > 0 && (
@@ -1045,15 +1055,15 @@ function Overview({ onNavigate, onOwnerMoney }) {
                         <div className="mt-2 grid grid-cols-3 gap-2 border-t border-white/[0.06] pt-2">
                           <div className="min-w-0">
                             <p className="text-[10px] text-white/50">Came in</p>
-                            <p className="truncate text-xs font-semibold tabular-nums text-emerald-300">{formatCurrency(b.moneyIn)}</p>
+                            <p className="break-words text-[11px] font-semibold leading-tight tabular-nums sm:text-xs text-emerald-300">{formatCurrency(b.moneyIn)}</p>
                           </div>
                           <div className="min-w-0">
                             <p className="text-[10px] text-white/50">Went out</p>
-                            <p className="truncate text-xs font-semibold tabular-nums text-rose-300">{formatCurrency(b.moneyOut)}</p>
+                            <p className="break-words text-[11px] font-semibold leading-tight tabular-nums sm:text-xs text-rose-300">{formatCurrency(b.moneyOut)}</p>
                           </div>
                           <div className="min-w-0">
                             <p className="text-[10px] text-white/50">Profit in it</p>
-                            <p className="truncate text-xs font-semibold tabular-nums text-white/90">{formatCurrency(b.profitPart)}</p>
+                            <p className="break-words text-[11px] font-semibold leading-tight tabular-nums sm:text-xs text-white/90">{formatCurrency(b.profitPart)}</p>
                           </div>
                         </div>
                       )}
@@ -1221,7 +1231,7 @@ function Overview({ onNavigate, onOwnerMoney }) {
       </div>
 
       <p className="text-[11px] leading-relaxed text-white/50">
-        Earned is sales − cost of goods − expenses. Rep commission and bonus paid from an account are expenses. Buying stock is not an expense — it counts as goods the day a box sells.
+        Earned is sales − sold with no buying price − cost of goods − expenses − stock lost. Rep commission and bonus paid from an account are expenses. Buying stock is not an expense — it counts as goods the day a box sells.
       </p>
     </div>
   );
@@ -2045,9 +2055,17 @@ function ProfitTab({ accounts = [] }) {
         <StripTitle eyebrow="Profit" title={periodTitle} sub={windowLabel} />
 
         <div className="order-last grid grid-cols-2 gap-x-4 gap-y-3 border-t border-white/[0.07] pt-4 sm:col-span-2 sm:flex sm:items-start sm:justify-between sm:gap-5 2xl:order-none 2xl:col-span-1 2xl:border-l 2xl:border-t-0 2xl:pl-6 2xl:pt-0"
-          title="Gross profit = revenue − cost of goods. Rep commission is reported beside it, never taken off: you pay reps yourself.">
+          title={`Gross profit = revenue${(t.noCost?.revenue ?? 0) > 0 ? ' − sold with no buying price' : ''} − cost of goods. Rep commission is reported beside it, never taken off here; paid from an account, it is an expense.`}>
           <Term label="Revenue" value={formatCurrency(t.revenue)} tone="text-foreground" dot="bg-sky-400"
             caption={`${formatNumber(t.boxes)} boxes sold`} />
+          {/* Sold before a buying price was set: in revenue, never in profit — its own term, so the sum adds up (money03). */}
+          {(t.noCost?.revenue ?? 0) > 0 && (
+            <>
+              <Op>−</Op>
+              <Term label="No buying price" sign="− " value={formatCurrency(t.noCost.revenue)} tone="text-amber-300" dot="bg-white/40"
+                caption={`${formatNumber(t.noCost.boxes)} boxes · not in profit`} />
+            </>
+          )}
           <Op>−</Op>
           <Term label="Cost of goods" sign="− " value={formatCurrency(t.cost)} tone="text-foreground" dot="bg-rose-400"
             caption="at cost when each box sold" />
@@ -2065,7 +2083,7 @@ function ProfitTab({ accounts = [] }) {
           <div className="min-w-0">
             <p className="text-[11px] font-medium text-white/55">Earned on sales</p>
             <p className={`mt-0.5 whitespace-nowrap text-xl font-bold leading-tight tabular-nums ${t.contribution >= 0 ? 'text-foreground' : 'text-rose-300'}`}>{t.contributionMargin}%</p>
-            <p className="mt-0.5 text-[11px] text-white/50">margin on every sale</p>
+            <p className="mt-0.5 text-[11px] text-white/50">{(t.noCost?.revenue ?? 0) > 0 ? 'margin on sales with a known cost' : 'margin on every sale'}</p>
           </div>
         </div>
         {/* Boxes sold before a buying price was set: in revenue, never in profit or margin (15 Nov 2026). */}
@@ -2080,7 +2098,7 @@ function ProfitTab({ accounts = [] }) {
       {/* ── Four small figures: what reps earned, and what the stock on hand could still make ── */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <Tile whole label="Reps earned" value={formatCurrency(t.commission)} tone="text-amber-300"
-          caption="you pay this, not the business" title={`Commission on the boxes settled ${words} — reported, never taken off the profit`} />
+          caption="an expense once paid from an account" title={`Commission on the boxes settled ${words} — reported, never taken off the gross profit`} />
         <Tile whole label="Inventory value (cost)" value={formatCurrency(data.inventoryValue.costValue)}
           caption={`${formatNumber(data.inventoryValue.units)} boxes on hand`} title="Every box on hand, at what it cost" />
         <Tile whole label="Potential revenue" value={formatCurrency(data.inventoryValue.potentialRevenue)}
@@ -2096,7 +2114,11 @@ function ProfitTab({ accounts = [] }) {
             <div className="grid grid-cols-1 gap-x-8 gap-y-6 sm:grid-cols-2">
               {data.byBrand.map((b, i) => {
                 const stock = stockByBrand.get(b.brandId);
-                const cogsPct = b.revenue > 0 ? Math.min(100, Math.max(0, (b.cost / b.revenue) * 100)) : 0;
+                // Over the sales with a known cost, like the margin beside it: a brand sold wholly before a buying
+                // price was set draws no bar, never a full "all kept" one.
+                const costed = b.revenue - (b.noCost?.revenue || 0);
+                const cogsPct = costed > 0 ? Math.min(100, Math.max(0, (b.cost / costed) * 100)) : 0;
+                const allUnknown = (b.noCost?.boxes ?? 0) > 0 && costed <= 0;
                 return (
                   <div key={b.brandId} className="min-w-0">
                     <div className="flex items-baseline gap-2">
@@ -2107,11 +2129,12 @@ function ProfitTab({ accounts = [] }) {
                         title="earned on sales">{b.contributionMargin}%</span>
                     </div>
                     <div className="mt-2 flex h-1.5 w-full overflow-hidden rounded-full bg-white/[0.07]">
-                      <div className="h-full bg-rose-400/45" style={{ width: `${cogsPct}%` }} />
-                      <div className="h-full bg-emerald-400" style={{ width: `${Math.max(0, 100 - cogsPct)}%` }} />
+                      {!allUnknown && <div className="h-full bg-rose-400/45" style={{ width: `${cogsPct}%` }} />}
+                      {!allUnknown && <div className="h-full bg-emerald-400" style={{ width: `${Math.max(0, 100 - cogsPct)}%` }} />}
                     </div>
                     <div className="mt-2.5 space-y-1">
                       <Line label="Revenue">{formatCurrency(b.revenue)}</Line>
+                      {(b.noCost?.revenue ?? 0) > 0 && <Line label="− No buying price" tone="text-amber-300">{formatCurrency(b.noCost.revenue)}</Line>}
                       <Line label="− Goods" tone="text-muted">{formatCurrency(b.cost)}</Line>
                       <Line label="= Earned" strong rule tone={b.contribution >= 0 ? 'text-emerald-300' : 'text-rose-300'}>{formatCurrency(b.contribution)}</Line>
                     </div>
