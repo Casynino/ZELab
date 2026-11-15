@@ -88,6 +88,10 @@ async function applyDuePenalties() {
     if (paused.has(s.id)) return false;
     const clock = fineClockStart(s);
     if (clock > now) return false;
+    // After an extension the count of charged days restarts (audit reps04), but the cheap count above covers
+    // the whole order — it would say "nothing new" and skip the first late day past the new deadline. Those
+    // few orders always go to the locked check, which counts exactly.
+    if (fineCountFrom(s)) return true;
     return penaltyDaysDue(clock, now) > (chargedSoFar.get(s.id) || 0);
   };
 

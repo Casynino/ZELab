@@ -53,12 +53,13 @@ const answer = () => ({
 });
 const has = (v, word) => JSON.stringify(v).includes(word);
 
-test('warehouse staff never receive a rep\'s CallMeBot key, in any nesting; everything else stays', () => {
+test('warehouse staff never receive a rep\'s CallMeBot key, in any nesting, nor a cost; everything else stays', () => {
   const out = forRole({ user: { role: 'WAREHOUSE_STAFF' } }, answer());
   assert.equal(has(out, 'SECRET'), false);
   assert.equal(out.data[0].salesRep.whatsappPhone, '255700');
   assert.equal(out.data[0].salesRep.user.name, 'Paul');
-  assert.equal(out.data[0].cost, 1000, 'staff still see costs');
+  // Staff see no purchase cost either (15 Nov 2026: what it cost is the owner's — finance-perms).
+  assert.equal(out.data[0].cost, undefined);
 });
 
 test('a rep receives neither keys (not even his own) nor costs', () => {
