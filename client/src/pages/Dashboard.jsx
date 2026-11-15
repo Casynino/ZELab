@@ -121,11 +121,11 @@ const HERO_DOT = ['bg-brand-400', 'bg-violet-400', 'bg-cyan-300', 'bg-amber-300'
 // the attention list rather than sending you off to hunt for it.
 function ReviewWithdrawals({ items, onClose }) {
   const qc = useQueryClient();
-  // A BONUS withdrawal (14 Nov 2026) comes out of the bonus, not commission, and only the owner pays one
-  // (the server refuses anyone else); staff may still reject it. Same rule as the Commissions page.
+  // Paying takes the money out of a business account, and only the owner pays a withdrawal, commission or bonus
+  // (15 Nov 2026 — the server refuses anyone else); staff may still reject one. Same rule as the Commissions page.
   const isAdmin = useAuth().user?.role === ROLES.ADMIN;
   const isBonus = (w) => w.source === 'BONUS';
-  const payable = (w) => !isBonus(w) || isAdmin;
+  const payable = () => isAdmin;
   const [busy, setBusy] = useState(null);
   // Reject asks once more, as it does on Commissions (audit money-flows-5): the rep is told at once.
   const [rejecting, setRejecting] = useState(null);
@@ -236,9 +236,9 @@ function ReviewWithdrawals({ items, onClose }) {
 
         {/* The same words as the Commissions window (audit money-flows-5). */}
         <p className="text-[11px] leading-snug text-faint">
-          Pay asks which account the money leaves (Cash, Airtel Money or M-Pesa), takes it from there and tells the rep it
+          Pay asks which business account the money leaves, takes it from there and tells the rep it
           has been paid. Send the money first.
-          {!isAdmin && items.some(isBonus) && ' Only the owner pays a bonus withdrawal.'}
+          {!isAdmin && ' Only the owner pays a withdrawal.'}
         </p>
       </div>
       {paying && <PayWithdrawalModal w={paying} onClose={() => setPaying(null)} onDone={() => { refreshAfter(qc, 'payout'); onClose(); }} />}
@@ -565,6 +565,10 @@ export default function Dashboard() {
   const [reviewing, setReviewing] = useState(null); // pending commission requests
   const navigate = useNavigate();
   const { user } = useAuth();
+  // The money on this page — the accounts, money in and out, profit, expenses, stock at cost and the analysis — is
+  // the owner's (15 Nov 2026). Warehouse staff get the work waiting, the sales and the boxes; the server sends them
+  // nothing else.
+  const isAdmin = user?.role === ROLES.ADMIN;
   const { data, isLoading, isError, refetch } = useQuery({
     ...pageQueries.dashboardCommand(),
     refetchInterval: STEADY, // live business status
@@ -577,6 +581,7 @@ export default function Dashboard() {
     ...pageQueries.dashboardAnalysis(),
     refetchInterval: STEADY * 4,
     retry: 1,
+    enabled: isAdmin,
   });
 
   if (isLoading) return <PageSpinner label="Building your command center…" />;
@@ -585,7 +590,7 @@ export default function Dashboard() {
   if (isError && !data) return <LoadError what="the dashboard" onRetry={refetch} />;
   if (!data) return <PageSpinner label="Building your command center…" />;
 
-  const { accounts, totalFunds, today, week, month, brands, reps, attention, inventory, charts} = data;
+  const { accounts = [], totalFunds, today, week, month, brands, reps, attention, inventory, charts} = data;
   // The same three windows everywhere on this page: the same figures, the same
   // names for them, whether they are being read as a total or brand by brand.
   const periods = {
@@ -739,6 +744,7 @@ export default function Dashboard() {
              holding both made the card tall enough to push the day's business
              off the screen. The card now answers one question, the one it is
              named for: how much is there, and which pocket is holding it. ── */}
+      {isAdmin && (
       <div className="card mb-3 overflow-hidden sm:mb-4">
         <div className="flex flex-col gap-3 p-4 sm:p-5 lg:flex-row lg:items-center lg:gap-6">
           <div className="min-w-0 lg:w-[16rem] lg:shrink-0">
@@ -807,6 +813,7 @@ export default function Dashboard() {
           </button>
         </div>
       </div>
+      )}
 
 
       {/* ── Today's business (all from Finance) ──
@@ -828,7 +835,7 @@ export default function Dashboard() {
             <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
               <div>
                 <h2 className="text-sm font-semibold uppercase tracking-wide text-muted">Today's business</h2>
-                <p className="text-xs text-faint">Money in and out since midnight, straight from Finance.</p>
+                <p className="text-xs text-faint">{isAdmin ? 'Money in and out since midnight, straight from Finance.' : 'Sales since midnight.'}</p>
               </div>
               {cmp && (
                 // "Daily average" is looser than the figure behind it, which is
@@ -850,11 +857,11 @@ export default function Dashboard() {
           </>
         );
       })()}
-      <div className="mb-5 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+      <div className={clsx('mb-5 grid grid-cols-2 gap-3', isAdmin && 'md:grid-cols-3 xl:grid-cols-6')}>
         <StatCard compact label="Revenue" value={formatCurrency(today.revenue)} icon={TrendingUp} tone="sky" />
-        <StatCard compact label="Gross profit" value={formatCurrency(today.grossProfit)} icon={Wallet} tone="emerald" onClick={() => navigate('/finance?tab=profit')} />
-        <StatCard compact label="Expenses" value={formatCurrency(today.expenses)} icon={Receipt} tone="amber" onClick={() => navigate('/finance?tab=expenses')} />
-        <StatCard compact label="Net profit" value={formatCurrency(today.netProfit)} icon={Scale} tone={today.netProfit >= 0 ? 'violet' : 'rose'} />
+        {isAdmin && <StatCard compact label="Gross profit" value={formatCurrency(today.grossProfit)} icon={Wallet} tone="emerald" onClick={() => navigate('/finance?tab=profit')} />}
+        {isAdmin && <StatCard compact label="Expenses" value={formatCurrency(today.expenses)} icon={Receipt} tone="amber" onClick={() => navigate('/finance?tab=expenses')} />}
+        {isAdmin && <StatCard compact label="Net profit" value={formatCurrency(today.netProfit)} icon={Scale} tone={today.netProfit >= 0 ? 'violet' : 'rose'} />}
         <StatCard
           compact
           label="Boxes sold"
@@ -863,7 +870,7 @@ export default function Dashboard() {
           tone="brand"
           hint="settled today"
         />
-        <StatCard compact label="Cash flow" value={formatCurrency(today.netCash)} icon={today.netCash >= 0 ? ArrowDownLeft : ArrowUpRight} tone={today.netCash >= 0 ? 'emerald' : 'rose'} hint={`in ${formatCurrency(today.moneyIn)} · out ${formatCurrency(today.moneyOut)}`} onClick={() => navigate('/finance?tab=cashflow')} />
+        {isAdmin && <StatCard compact label="Cash flow" value={formatCurrency(today.netCash)} icon={today.netCash >= 0 ? ArrowDownLeft : ArrowUpRight} tone={today.netCash >= 0 ? 'emerald' : 'rose'} hint={`in ${formatCurrency(today.moneyIn)} · out ${formatCurrency(today.moneyOut)}`} onClick={() => navigate('/finance?tab=cashflow')} />}
       </div>
 
       {/* ── The running total: today, this week, or this month ──
@@ -884,14 +891,16 @@ export default function Dashboard() {
           </div>
           <div className="flex items-center gap-3">
             <PeriodTabs value={period} onChange={setPeriod} options={Object.values(periods).filter((o) => o.available)} />
-            <button type="button" onClick={() => navigate('/finance')}
-              className="tap-phone shrink-0 cursor-pointer text-xs font-medium text-brand-500 transition duration-200 hover:underline">
-              Open Finance →
-            </button>
+            {isAdmin && (
+              <button type="button" onClick={() => navigate('/finance')}
+                className="tap-phone shrink-0 cursor-pointer text-xs font-medium text-brand-500 transition duration-200 hover:underline">
+                Open Finance →
+              </button>
+            )}
           </div>
         </div>
 
-        <div className="glass-list grid grid-cols-1 divide-y divide-white/[0.06] sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+        <div className={clsx('glass-list grid grid-cols-1 divide-y divide-white/[0.06] sm:divide-x sm:divide-y-0', isAdmin ? 'sm:grid-cols-3' : 'sm:grid-cols-2')}>
           {(() => {
             const margin = shown.revenue > 0 ? (shown.grossProfit / shown.revenue) * 100 : null;
             const cells = [
@@ -899,7 +908,7 @@ export default function Dashboard() {
                 label: 'Revenue', value: formatCurrency(shown.revenue),
                 sub: `${formatNumber(shown.boxes)} boxes settled`, tone: 'text-foreground',
               },
-              {
+              isAdmin && {
                 label: 'Gross profit', value: formatCurrency(shown.grossProfit),
                 sub: margin == null ? 'no sales yet' : `${margin.toFixed(1)}% margin`,
                 tone: shown.grossProfit >= 0 ? 'text-emerald-300' : 'text-rose-400',
@@ -909,7 +918,7 @@ export default function Dashboard() {
                 sub: shown.revenue > 0 ? `${formatCurrency(Math.round(shown.revenue / Math.max(1, shown.boxes)))} a box` : 'nothing settled yet',
                 tone: 'text-foreground',
               },
-            ];
+            ].filter(Boolean);
             return cells.map((c) => (
               <div key={c.label} className="flex items-baseline justify-between gap-3 px-4 py-2.5">
                 <div className="min-w-0">
@@ -930,7 +939,7 @@ export default function Dashboard() {
              still standing against a rep's name, and where the money goes.
              It is read from /dashboard/analysis, which is a separate trip —
              if that trip fails, this region is simply not here. ── */}
-      {analysis && <Analysis a={analysis} navigate={navigate} />}
+      {isAdmin && analysis && <Analysis a={analysis} navigate={navigate} />}
 
       {/* ── Where every box is ──
           Five separate stat cards stated the same total five ways and never
@@ -951,8 +960,17 @@ export default function Dashboard() {
           <div className="p-5">
             <div className="flex flex-wrap items-end justify-between gap-3">
               <div>
-                <p className="text-3xl font-bold tabular-nums text-foreground">{formatCurrency(inventory.costValue)}</p>
-                <p className="mt-0.5 text-xs text-faint">stock value · at cost · selling {formatCurrency(inventory.sellingValue)}</p>
+                {isAdmin ? (
+                  <>
+                    <p className="text-3xl font-bold tabular-nums text-foreground">{formatCurrency(inventory.costValue)}</p>
+                    <p className="mt-0.5 text-xs text-faint">stock value · at cost · selling {formatCurrency(inventory.sellingValue)}</p>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-3xl font-bold tabular-nums text-foreground">{formatCurrency(inventory.sellingValue)}</p>
+                    <p className="mt-0.5 text-xs text-faint">stock at selling price</p>
+                  </>
+                )}
               </div>
               <p className="text-sm font-semibold tabular-nums text-muted">
                 {formatNumber(inventory.units)} boxes in stock

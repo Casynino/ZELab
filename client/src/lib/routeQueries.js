@@ -53,7 +53,9 @@ export function routeQueries(pathname, search, role) {
 
   switch (pathname) {
     case '/':
-      return rep ? [['dashboardMe'], ['bonusMe']] : [['dashboardCommand'], ['dashboardAnalysis']];
+      // The analysis (margins, expenses, money by month) is the owner's; staff are refused it (15 Nov 2026).
+      if (rep) return [['dashboardMe'], ['bonusMe']];
+      return admin ? [['dashboardCommand'], ['dashboardAnalysis']] : [['dashboardCommand']];
     case '/stock-requests':
       if (rep) return [['stockRequestsMine']];
       return [['stockRequestsWaiting'], ['stockRequests', { page: pageParam(params), status: pickParam(params, 'status', REQUEST_CHIPS) }]];

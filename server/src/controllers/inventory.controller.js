@@ -267,6 +267,14 @@ const balances = asyncHandler(async (req, res) => {
     }),
   };
 
+  // Stock valued at cost is the owner's (audit ui-r03, 15 Nov 2026): staff get the boxes, not what they cost.
+  if (req.user?.role !== 'ADMIN') {
+    const noValue = ({ value, ...rest }) => rest; // eslint-disable-line no-unused-vars
+    const { totalValue: _tv, ...countsOnly } = summary; // eslint-disable-line no-unused-vars
+    return paginated(res, paged.map(noValue), {
+      page: pagination.page, limit: pagination.limit, total, summary: { ...countsOnly, holders: summary.holders.map(noValue) },
+    });
+  }
   return paginated(res, paged, { page: pagination.page, limit: pagination.limit, total, summary });
 });
 

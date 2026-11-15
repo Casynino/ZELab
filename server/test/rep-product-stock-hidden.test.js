@@ -62,14 +62,22 @@ test('a rep cannot sort the products by cost', async () => {
   assert.deepEqual(seenPagination.orderBy, { sellingPrice: 'asc' });
 });
 
-test('the owner and warehouse staff still get stock, balances, costs and the cost sort', async () => {
+test('the owner and warehouse staff still get stock and balances; only the owner gets costs and the cost sort', async () => {
   for (const role of ['ADMIN', 'WAREHOUSE_STAFF']) {
     const list = await call(ctrl.list, role, { query: { sortBy: 'purchasePrice', sortDir: 'asc' } });
-    assert.deepEqual(seenPagination.orderBy, { purchasePrice: 'asc' }, role);
     assert.equal(list.data[0].warehouseBase, 174);
-    assert.equal(list.data[0].purchasePrice, '12000');
     const one = await call(ctrl.get, role);
     assert.equal(one.data.repBalances.length, 2);
     assert.equal(one.data.warehouseBalances[0].baseQuantity, 172);
+    if (role === 'ADMIN') {
+      assert.deepEqual(seenPagination.orderBy, { purchasePrice: 'asc' }, role);
+      assert.equal(list.data[0].purchasePrice, '12000');
+      assert.equal(one.data.purchasePrice, '12000');
+    } else {
+      // What it cost is the owner's (15 Nov 2026, audit perm05): no buying price, and no sorting by it.
+      assert.deepEqual(seenPagination.orderBy, { name: 'asc' }, role);
+      assert.equal(list.data[0].purchasePrice, undefined);
+      assert.equal(one.data.purchasePrice, undefined);
+    }
   }
 });

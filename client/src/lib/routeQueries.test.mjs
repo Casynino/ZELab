@@ -7,6 +7,8 @@ const names = (list) => list.map(([n]) => n);
 test('each person is sent ahead to what their own page asks for', () => {
   assert.deepEqual(names(routeQueries('/', '', 'ADMIN')), ['dashboardCommand', 'dashboardAnalysis']);
   assert.deepEqual(names(routeQueries('/', '', 'SALES_REP')), ['dashboardMe', 'bonusMe']);
+  // The analysis is the owner's; staff are not sent it, so it is not asked for (15 Nov 2026).
+  assert.deepEqual(names(routeQueries('/', '', 'WAREHOUSE_STAFF')), ['dashboardCommand']);
   assert.deepEqual(names(routeQueries('/stock-requests', '', 'SALES_REP')), ['stockRequestsMine']);
   assert.deepEqual(routeQueries('/stock-requests', '', 'WAREHOUSE_STAFF'), [['stockRequestsWaiting'], ['stockRequests', { page: 1, status: '' }]]);
   assert.deepEqual(names(routeQueries('/commissions', '', 'SALES_REP')), ['commissionsInsights', 'commissionsMine', 'withdrawalsMine', 'bonusMe']);
