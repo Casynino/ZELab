@@ -8,6 +8,7 @@ const inventory = require('./inventory.service');
 const notification = require('./notification.service');
 const { nextDocNumber } = require('../utils/numbering');
 const { toNumber, round2, formatCurrency } = require('../utils/money');
+const { boxCount, isAre } = require('../utils/words');
 const { dayjs } = require('../utils/dates');
 const { dateTime } = require('./whatsappText'); // "14 Nov 2026 | 07:09 EAT", as the other rep notices
 const { compareProducts, compareBrands } = require('../utils/productOrder');
@@ -157,7 +158,12 @@ function decorate(s) {
   const returned = round2(toNumber(s.returnedValue));
   // Outstanding = order value minus what's been settled AND returned. Returns
   // discharge the rep's liability just like settlement does.
-  const balance = round2(Math.max(0, toNumber(s.assignedValue) - paid - returned));
+  // A closed order owes nothing: it closes only when every box is settled or returned, and each settled box was
+  // paid at the price asked when it was submitted. The money sum can still be off when the price changed
+  // during the order (returned boxes are valued at today's price, the order at its issue price), which showed
+  // a closed order with 0 boxes left as still owing (audit reps-05). Until each line keeps its issue price,
+  // the close rule decides.
+  const balance = settled ? 0 : round2(Math.max(0, toNumber(s.assignedValue) - paid - returned));
   // Extension state, so every screen shows the same story: which programme the
   // order is on, and what a late day now costs.
   const penalty = require('./penalty.service');
@@ -423,7 +429,9 @@ async function orderBreakdown(s, client = prisma) {
 
   const orderValue = toNumber(s.assignedValue);
   const settledValue = toNumber(s.settledValue);
-  const outstanding = Math.max(0, round2(orderValue - settledValue - returnedValue));
+  // A closed order with no box left owes nothing, whatever a price change did to the sum (see decorate, reps-05).
+  const closedOut = s.status === 'SETTLED' && remainingBoxes === 0;
+  const outstanding = closedOut ? 0 : Math.max(0, round2(orderValue - settledValue - returnedValue));
 
   return {
     // The fixed product order every list uses (Pepa, OHIS, Civlily; then the curated order in each brand),
@@ -712,7 +720,7 @@ async function settleBoxesTx(tx, { settlementId, productId, packagingUnitId, box
 
   const remaining = await productOutstanding(tx, s, productId);
   if (boxes > remaining) {
-    throw ApiError.badRequest(`Only ${remaining} box(es) of ${product.name} are still outstanding on this order`);
+    throw ApiError.badRequest(`Only ${boxCount(remaining)} of ${product.name} ${isAre(remaining)} still outstanding on this order`);
   }
 
   const sale = await sales.createSaleTx(
@@ -881,8 +889,8 @@ async function addStockToRep(salesRepId, payload, actor) {
     title: 'New stock added',
     message:
       result.mode === 'attached'
-        ? `ZELab added ${result.boxes} box(es) of ${result.productName} to your active order ${result.settlementNumber}. Your settlement has been updated.`
-        : `ZELab issued ${result.boxes} box(es) of ${result.productName} to you — new order ${result.settlementNumber}.`,
+        ? `ZELab added ${boxCount(result.boxes)} of ${result.productName} to your active order ${result.settlementNumber}. Your settlement has been updated.`
+        : `ZELab issued ${boxCount(result.boxes)} of ${result.productName} to you — new order ${result.settlementNumber}.`,
     whatsapp: { kind: 'STOCK_ADDED', product: result.productName, boxes: result.boxes, order: result.settlementNumber, attached: result.mode === 'attached' },
     entityType: 'Settlement',
     entityId: result.settlement.id,
@@ -910,7 +918,7 @@ async function settle(id, actor, { notes } = {}) {
     const bd = await orderBreakdown(s, tx);
     if (bd.totals.remainingBoxes > 0) {
       throw ApiError.badRequest(
-        `Cannot close yet — ${bd.totals.remainingBoxes} box(es) are still unaccounted. Every box must be settled or returned (outstanding ${formatCurrency(bd.totals.outstanding)}).`,
+        `Cannot close yet — ${boxCount(bd.totals.remainingBoxes)} ${isAre(bd.totals.remainingBoxes)} still unaccounted. Every box must be settled or returned (outstanding ${formatCurrency(bd.totals.outstanding)}).`,
       );
     }
 

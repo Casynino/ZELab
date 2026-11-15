@@ -37,8 +37,10 @@ const stripCosts = (value) => stripKeys(value, COST_KEYS);
 const stripSecrets = (value) => stripKeys(value, SECRET_KEYS);
 
 // A rep also never sees the stock-control levels (audit perm06): they came along inside the product of every
-// stock request and return, though GET /products already left them out. Nor anyone's WhatsApp key.
-const REP_KEYS = new Set([...COST_KEYS, ...SECRET_KEYS, 'minStockLevel', 'reorderQuantity']);
+// stock request and return, though GET /products already left them out. Nor anyone's WhatsApp key. Nor the
+// owner's private note on why he opened an emergency withdrawal window, or who opened it (audit reps-04 /
+// ui-re01): the full rep row rides along in /auth/me, settlements, requests, sales, returns and fines.
+const REP_KEYS = new Set([...COST_KEYS, ...SECRET_KEYS, 'minStockLevel', 'reorderQuantity', 'emergencyWindowReason', 'emergencyWindowById']);
 
 // Warehouse staff see no purchase price, cost, profit or margin either (audit perm05 / ui-r03 / purc07, 15 Nov 2026:
 // "what it cost is the owner's" — the purchase-order rule, now on every answer): products, sales, inventory and the

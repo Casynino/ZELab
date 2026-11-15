@@ -1158,9 +1158,10 @@ export default function SalesRepProfile() {
                     <div>
                       <div className="font-medium text-foreground">{p.settlementNumber}</div>
                       <div className="text-xs text-faint">
-                        {/* A manual deduction and a return-expiry fine are not late — say what they are. */}
-                        {p.daysOverdue > 0
-                          ? `${p.daysOverdue} day${p.daysOverdue !== 1 ? 's' : ''} overdue`
+                        {/* A manual deduction and a return-expiry fine are not late — say what they are. Late days
+                            are the days charged, not the day number, which starts again after an extension (ui-re02). */}
+                        {(p.lateDays ?? p.daysOverdue) > 0
+                          ? `${p.lateDays ?? p.daysOverdue} late day${(p.lateDays ?? p.daysOverdue) !== 1 ? 's' : ''}`
                           : `${p.fines} charge${p.fines !== 1 ? 's' : ''}`}
                         {p.exemptPendingReturn ? ' · exempt (return under review)' : ''}
                       </div>

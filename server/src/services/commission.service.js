@@ -5,6 +5,7 @@ const ApiError = require('../utils/ApiError');
 const notification = require('./notification.service');
 const { penaltyBreakdownForReps } = require('./penalty.service');
 const { toNumber, round2, formatCurrency, MAX_COMMISSION_CHANGE } = require('../utils/money');
+const { compareBrands } = require('../utils/productOrder');
 
 // Commission settings:
 //   commission.amountPerThreshold  (default 250000 TZS) — the MINIMUM WITHDRAWAL,
@@ -118,6 +119,13 @@ function rateMoment(orderWhen, productCreatedAt) {
   return Number.isFinite(born) && born > order ? born : order;
 }
 
+// What every read that prices a settled line must select from its product: the brand (which rate) AND the
+// product's creation date (rateMoment). One constant for every pricing read — earnedForRep, the every-rep batch
+// (computeForReps), earnedBetween and earnedLinesForRep — so no path can leave createdAt out again: the batch
+// once did, and paid Pepa on an older order the 5,000 fallback in the wallet and the withdrawal limit while
+// the order and the notice said 6,000 (audit repor00 / reps-00, 15 Nov 2026).
+const PRICED_PRODUCT = { createdAt: true, brand: { select: { name: true } } };
+
 // ── Admin writes ─────────────────────────────────────────────────────────────
 
 async function listRates() {
@@ -217,7 +225,7 @@ async function earnedForRep(salesRepId, { since = null } = {}) {
       },
       select: {
         baseQuantity: true,
-        product: { select: { createdAt: true, brand: { select: { name: true } } } },
+        product: { select: PRICED_PRODUCT },
         sale: { select: { soldAt: true, settlement: { select: { issuedAt: true } } } },
       },
     }),
@@ -263,7 +271,9 @@ function priceItems(items, rates) {
         amount: round2(b.amount),
         rate: b.rates.size === 1 ? [...b.rates][0] : null,
       }))
-      .sort((a, b) => b.amount - a.amount),
+      // Equal amounts in the owner's brand order (Pepa, OHIS, Civlily…), so every path lists them the same
+      // way whatever order the database returned the lines in (audit repor04).
+      .sort((a, b) => b.amount - a.amount || compareBrands(a.brand, b.brand)),
   };
 }
 
@@ -308,7 +318,7 @@ async function earnedBetween(start, end) {
     },
     select: {
       baseQuantity: true,
-      product: { select: { createdAt: true, brand: { select: { name: true } } } },
+      product: { select: PRICED_PRODUCT },
       sale: { select: { salesRepId: true, soldAt: true, settlement: { select: { issuedAt: true } } } },
     },
   });
@@ -343,7 +353,7 @@ async function earnedLinesForRep(salesRepId, start, end) {
     },
     select: {
       baseQuantity: true,
-      product: { select: { name: true, createdAt: true, brand: { select: { name: true } } } },
+      product: { select: { name: true, ...PRICED_PRODUCT } },
       sale: { select: { soldAt: true, settlement: { select: { issuedAt: true } } } },
     },
   });
@@ -435,7 +445,7 @@ async function computeForReps(salesRepIds) {
         where: { sale: { is: { salesRepId: { in: ids }, settlementId: { not: null }, status: { not: 'CANCELLED' } } } },
         select: {
           baseQuantity: true,
-          product: { select: { brand: { select: { name: true } } } },
+          product: { select: PRICED_PRODUCT },
           sale: { select: { salesRepId: true, soldAt: true, settlement: { select: { issuedAt: true } } } },
         },
       })

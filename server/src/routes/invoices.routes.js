@@ -8,8 +8,11 @@ const validate = require('../middleware/validate');
 const ctrl = require('../controllers/invoices.controller');
 
 const router = express.Router();
-// The invoice tool is a staff tool (Sales > Invoice): the admin and the warehouse, never a rep.
-const issuers = requireRoles(ROLES.WAREHOUSE_STAFF);
+// The invoice tool: Sales > Invoice for the admin and the warehouse, and Invoice in a rep's own menu (reps have
+// no Sales page and make invoices for their customers). Every number comes from the one shared counter, so a
+// rep's invoice never repeats anyone's number, and each number is audit-logged with who asked for it (ui-re00:
+// limiting this to staff left the rep's menu item failing with 403 on every press).
+const issuers = requireRoles(ROLES.WAREHOUSE_STAFF, ROLES.SALES_REP);
 
 const numberBody = {
   body: z.object({

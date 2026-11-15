@@ -124,12 +124,17 @@ export default function DailyReports() {
               <RowList>
                 {data.data.map((r) => {
                   const opening = r.type === 'OPENING';
+                  // Each figure says what it is, as the old row did ("Sales TSh 0 · collected TSh 0"): a bare
+                  // "sales ·" read as a word with its amount missing (audit ui-re05).
+                  const said = opening
+                    ? `Cash on hand ${formatCurrency(r.cashOnHand || 0)}`
+                    : `Sales ${formatCurrency(r.salesAmount || 0)} · collected ${formatCurrency(r.cashCollected || 0)}`;
                   return (
                     <RowItem
                       key={r.id}
                       title={staff ? (r.salesRep?.user?.name || '—') : formatDate(r.reportDate)}
                       figure={formatCurrency(opening ? (r.cashOnHand || 0) : (r.salesAmount || 0))}
-                      sub={[staff ? formatDate(r.reportDate) : null, opening ? 'cash on hand' : `sales · collected ${formatCurrency(r.cashCollected || 0)}`].filter(Boolean).join(' · ')}
+                      sub={[staff ? formatDate(r.reportDate) : null, said].filter(Boolean).join(' · ')}
                       badge={<Badge className={opening ? 'bg-amber-500/15 text-amber-300' : 'bg-indigo-500/15 text-indigo-300'}>{r.type}</Badge>}
                       extra={(r.openingNote || r.closingNote) && <span className="mt-1 block truncate text-[11px] text-faint">{r.openingNote || r.closingNote}</span>}
                     />

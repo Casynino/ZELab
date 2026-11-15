@@ -18,7 +18,12 @@ const keys = new Set();
 const prismaStub = {
   notification: {
     create: async ({ data }) => { notices.push(data); return { id: `n${notices.length}`, ...data }; },
-    findFirst: async () => null,
+    // Finds a saved notice the way Postgres would: every plain field asked for must match (unread and
+    // "the owner's copy" are the defaults of a new row).
+    findFirst: async ({ where = {} } = {}) => notices.find((n) => Object.entries(where).every(([k, v]) => {
+      const have = k in n ? n[k] : ({ isRead: false, userId: null })[k];
+      return have === v;
+    })) || null,
   },
   setting: { findUnique: async ({ where }) => ({ 'whatsapp.phone': { value: '255700000000' }, 'whatsapp.apikey': { value: 'ownerkey' } })[where.key] || null },
   salesRepresentative: {
@@ -111,5 +116,28 @@ test('the owner is warned once per deadline, and again after the order is given 
   assert.equal(c.queued, 1, 'the new deadline gets its own warning');
   const owner = logged.filter((r) => r.type === 'DEADLINE_IMMINENT');
   assert.equal(owner.length, 2);
+  orders = [];
+});
+
+// repor03 (15 Nov 2026): the owner's bell notice "A fine is about to start" was made again at every check (every
+// 5 minutes, on every instance) once he had read it, because its guard only looked for an unread copy.
+test('the owner\'s "fine is about to start" bell notice is made once per deadline, read or not', async () => {
+  reset();
+  const warned = () => notices.filter((n) => n.title === 'A fine is about to start');
+  orders = [order(new Date(Date.now() + 30 * 60_000))];
+  await wa.deadlineWarnings();
+  assert.equal(warned().length, 1);
+  warned()[0].isRead = true; // he opens the bell and reads it
+  await wa.deadlineWarnings(); // the next checks inside the hour
+  await wa.deadlineWarnings();
+  assert.equal(warned().length, 1, 'reading it does not bring it back');
+
+  // The order is given more time: its new deadline is warned about once more.
+  orders = [order(new Date(Date.now() + 45 * 60_000))];
+  await wa.deadlineWarnings();
+  await wa.deadlineWarnings();
+  assert.equal(warned().length, 2, 'one notice for the new deadline');
+  assert.notEqual(warned()[0].entityId, warned()[1].entityId);
+  assert.ok(warned().every((n) => n.userId == null), 'the owner\'s copy');
   orders = [];
 });

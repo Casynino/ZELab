@@ -4,7 +4,7 @@ import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Cell, PieChart, Pie,
 } from 'recharts';
 import { formatCurrency, formatNumber } from '@/lib/format';
-import { RED, SERIES } from '@/lib/brand';
+import { VIOLET, VIOLET_LIGHT, violetA } from '@/lib/brand';
 
 // ===========================================================================
 // The rep's commission page as pictures (Nino, 10 Nov 2026: "don't just show
@@ -103,13 +103,18 @@ export function EarningsCard({ insights }) {
           <YAxis tick={AXIS} tickLine={false} axisLine={false} tickFormatter={compact} width={46} />
           <Tooltip content={<MoneyTip />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
           <Bar dataKey="earned" radius={[6, 6, 0, 0]} maxBarSize={34}>
-            {months.map((m, i) => <Cell key={m.key} fill={i === bestIdx ? RED : 'rgba(238,49,36,0.42)'} />)}
+            {/* Earnings in violet, not the house red that reads as money owed (Nino, 15 Nov 2026; ui-re04). */}
+            {months.map((m, i) => <Cell key={m.key} fill={i === bestIdx ? VIOLET : violetA(0.42)} />)}
           </Bar>
         </BarChart>
       </ResponsiveContainer>
     </InsightCard>
   );
 }
+
+// What he earned, by brand: led by violet, with no red or coral in it — red reads as money owed, and commission
+// and earnings are violet (Nino, 15 Nov 2026; audit ui-re04).
+const EARN_SERIES = [VIOLET, '#38bdf8', '#f59e0b', '#10b981', '#c4b5fd', '#facc15', '#94a3b8'];
 
 /** Where the commission comes from, by brand — a donut with the share of each. */
 export function BrandCard({ insights }) {
@@ -126,7 +131,7 @@ export function BrandCard({ insights }) {
           <ResponsiveContainer width="100%" height="100%">
             <PieChart>
               <Pie data={rows} dataKey="earned" nameKey="brand" innerRadius={38} outerRadius={56} paddingAngle={rows.length > 1 ? 3 : 0} stroke="none">
-                {rows.map((r, i) => <Cell key={r.brand} fill={SERIES[i % SERIES.length]} />)}
+                {rows.map((r, i) => <Cell key={r.brand} fill={EARN_SERIES[i % EARN_SERIES.length]} />)}
               </Pie>
             </PieChart>
           </ResponsiveContainer>
@@ -135,7 +140,7 @@ export function BrandCard({ insights }) {
             <span className="text-[10px] uppercase tracking-wide text-faint">TSh</span>
           </div>
         </div>
-        <Legend rows={rows.map((r, i) => ({ label: r.brand, sub: `${r.share}%`, value: formatCurrency(r.earned), color: SERIES[i % SERIES.length] }))} />
+        <Legend rows={rows.map((r, i) => ({ label: r.brand, sub: `${r.share}%`, value: formatCurrency(r.earned), color: EARN_SERIES[i % EARN_SERIES.length] }))} />
       </div>
     </InsightCard>
   );
@@ -201,8 +206,9 @@ export function TopProductsCard({ insights }) {
             <p className="mt-3 text-[24px] font-bold leading-none tabular-nums text-white">{formatCurrency(first.earned)}</p>
             <p className="mt-1 text-[11px] text-white/45">{formatNumber(first.boxes)} boxes</p>
           </div>
-          <div style={{ filter: 'drop-shadow(0 0 8px rgba(238,49,36,0.4))' }}>
-            <Ring size={76} stroke={7} total={100} segments={[{ value: share, color: RED }]}>
+          {/* Its share of what he earned: violet, as all earnings are (ui-re04). */}
+          <div style={{ filter: `drop-shadow(0 0 8px ${violetA(0.45)})` }}>
+            <Ring size={76} stroke={7} total={100} segments={[{ value: share, color: VIOLET_LIGHT }]}>
               <span className="text-base font-bold leading-none tabular-nums text-white">{Math.round(share)}%</span>
               <span className="mt-1 text-[9px] text-white/45">of earned</span>
             </Ring>

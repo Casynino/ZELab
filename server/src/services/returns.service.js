@@ -7,6 +7,7 @@ const settlement = require('./settlement.service');
 const notification = require('./notification.service');
 const { nextDocNumber } = require('../utils/numbering');
 const { toNumber } = require('../utils/money');
+const { boxCount, isAre } = require('../utils/words');
 const { eatDayBounds } = require('../utils/dates');
 const { rearmedReminderStage } = require('../utils/reminders');
 const { keyedId, isUniqueClash } = require('../utils/clientKey');
@@ -86,10 +87,10 @@ async function validateSettlementLines(client, settlementId, salesRepId, lines, 
     if (baseQuantity > remaining) {
       throw ApiError.badRequest(
         pending > 0
-          ? `Only ${Math.max(0, remaining)} box(es) of ${name} can still be returned on order ${stl.settlementNumber} — ${pending} box(es) are locked in a pending return.`
+          ? `Only ${boxCount(Math.max(0, remaining))} of ${name} can still be returned on order ${stl.settlementNumber} — ${boxCount(pending)} ${isAre(pending)} locked in a pending return.`
           : inSettlement > 0
-            ? `Only ${Math.max(0, remaining)} box(es) of ${name} can still be returned on order ${stl.settlementNumber} — ${inSettlement} box(es) are in a settlement waiting for ZELab.`
-            : `Only ${Math.max(0, remaining)} box(es) of ${name} remain to return on order ${stl.settlementNumber}`,
+            ? `Only ${boxCount(Math.max(0, remaining))} of ${name} can still be returned on order ${stl.settlementNumber} — ${boxCount(inSettlement)} ${isAre(inSettlement)} in a settlement waiting for ZELab.`
+            : `Only ${boxCount(Math.max(0, remaining))} of ${name} ${Math.max(0, remaining) === 1 ? 'remains' : 'remain'} to return on order ${stl.settlementNumber}`,
       );
     }
   }
@@ -320,7 +321,7 @@ async function createReturn(payload, actor) {
       severity: 'INFO',
       title: 'Return approval required',
       forStaff: true, // staff decide returns
-      message: `${submitterName} submitted a return of ${totalBoxes} box(es): ${itemList}. Please verify and approve.`,
+      message: `${submitterName} submitted a return of ${boxCount(totalBoxes)}: ${itemList}. Please verify and approve.`,
       entityType: 'Return',
       entityId: ret.id,
     }).catch(() => {});
@@ -370,7 +371,7 @@ async function approveReturn(id, actor) {
         const afterThis = await settlement.productOutstanding(tx, stl, productId);
         if (afterThis < 0) {
           const name = ret.items.find((l) => l.productId === productId)?.product?.name || 'a product';
-          throw ApiError.conflict(`Only ${Math.max(0, afterThis + n)} box(es) of ${name} are still on order ${stl.settlementNumber} — this return can no longer be approved as it is.`);
+          throw ApiError.conflict(`Only ${boxCount(Math.max(0, afterThis + n))} of ${name} ${isAre(Math.max(0, afterThis + n))} still on order ${stl.settlementNumber} — this return can no longer be approved as it is.`);
         }
       }
     }
@@ -480,7 +481,7 @@ async function approveReturn(id, actor) {
       type: 'GENERAL',
       severity: 'INFO',
       title: 'Return approved',
-      message: `Your return of ${totalBoxes} box(es) (${ret.returnNumber}) has been approved and added to inventory.${closed ? ` Order ${order.settlementNumber} is now fully closed.` : ''}`,
+      message: `Your return of ${boxCount(totalBoxes)} (${ret.returnNumber}) has been approved and added to inventory.${closed ? ` Order ${order.settlementNumber} is now fully closed.` : ''}`,
       whatsapp: { kind: 'RETURN_APPROVED', number: ret.returnNumber, boxes: totalBoxes, closed, order: order?.settlementNumber },
       entityType: 'Return',
       entityId: id,
@@ -554,7 +555,7 @@ async function rejectReturn(id, actor, reason) {
       type: 'GENERAL',
       severity: 'WARNING',
       title: 'Return rejected',
-      message: `Your return of ${totalBoxes} box(es) (${updated.returnNumber}) was not accepted.${reason ? ` Reason: ${reason}` : ' Please contact the administrator.'}`,
+      message: `Your return of ${boxCount(totalBoxes)} (${updated.returnNumber}) was not accepted.${reason ? ` Reason: ${reason}` : ' Please contact the administrator.'}`,
       whatsapp: { kind: 'RETURN_REJECTED', number: updated.returnNumber, boxes: totalBoxes, reason },
       entityType: 'Return',
       entityId: id,

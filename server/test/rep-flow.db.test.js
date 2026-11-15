@@ -98,7 +98,7 @@ test('ui-r00 / ui-r01: a double tap on Settle, Settle several, Request and Retur
 
   // A press from another window is a new submission, checked as usual: 2 of the 3 boxes are already waiting.
   const other = await submission.submit(order.id, { ...one, boxes: 2, clientKey: 'a-different-window' }, ctx.repActor).catch((e) => e);
-  assert.match(String(other.message), /Only 1 box\(es\) .* can still be submitted/);
+  assert.match(String(other.message), /Only 1 box of .* can still be submitted/);
 
   // Request stock.
   const unit = await boxUnitOf(ctx.ohis.id);
@@ -215,6 +215,23 @@ test('reps01: Pepa added to an order opened before the Pepa rate earns 6,000 a b
   // OHIS on the same old order keeps the rate of the order's own date.
   const ohisLine = view.order.lines.find((l) => l.productId === ctx.ohis.id);
   assert.equal(ohisLine.commissionPerBox, Number(await commission.rateForBrandAt('OHIS', '2026-11-14T18:00:00Z')));
+
+  // repor00 / reps-00: the every-rep batch behind Home, Commissions, the wallet and withdrawals prices the same
+  // boxes the same way — it used to pay these two 5,000 each while the order and the notice said 6,000.
+  const batch = await commission.computeForRep(ctx.rep.id);
+  assert.deepEqual(batch.earnedByBrand.find((b) => b.brand === 'Pepa'), { brand: 'Pepa', boxes: 2, amount: 12000, rate: 6000 });
+  const alone = await commission.earnedForRep(ctx.rep.id);
+  assert.deepEqual(batch.earnedByBrand, alone.byBrand, 'batch and one-rep read give the same brands, figures and order');
+  assert.equal(batch.grossEarned, alone.earned);
+  const others = (await prisma.salesRepresentative.findMany({ select: { id: true }, take: 5 })).map((r) => r.id);
+  assert.deepEqual((await commission.computeForReps([...others, ctx.rep.id])).get(ctx.rep.id), batch, 'read with other reps, the same');
+
+  // ui-re03: the approval notice counts boxes in plain English.
+  await pause(500); // the notice is written after the approval returns
+  const notice = await prisma.notification.findFirst({ where: { userId: ctx.rep.userId, title: 'Settlement approved', message: { contains: 'Pepa' } }, orderBy: { createdAt: 'desc' } });
+  assert.match(notice.message, /Your settlement of 2 boxes of Pepa/);
+  assert.match(notice.message, /\(2 boxes × TSh\s6,000\)/);
+  assert.doesNotMatch(notice.message, /box\(es\)/);
 });
 
 test('reps06 / reps07 / ui-r06: current names on approvals, the fixed product order, and the closing return says so', async () => {

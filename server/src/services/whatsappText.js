@@ -31,7 +31,12 @@ const { compareBrands, compareProducts } = require('../utils/productOrder');
 const MAX_REPORT_CHARS = 690;
 
 // ── small words ──────────────────────────────────────────────────────────────
-const money = (n) => `TSh ${Math.round(Number(n) || 0).toLocaleString('en-US')}`;
+// Below zero the sign goes in front, "-TSh 685,000", as the app writes it (audit ui-re03: the same approval
+// read "Available Balance: TSh -685,000" on WhatsApp and "-TSh 685,000" in the app).
+const money = (n) => {
+  const v = Math.round(Number(n) || 0);
+  return `${v < 0 ? '-' : ''}TSh ${Math.abs(v).toLocaleString('en-US')}`;
+};
 const eat = (d) => dayjs.utc(d || new Date()).add(3, 'hour'); // the business's clock (UTC+3)
 const dateTime = (d) => eat(d).format('D MMM YYYY | HH:mm [EAT]'); // 10 Nov 2026 | 14:32 EAT
 const dateOnly = (d) => eat(d).format('D MMM YYYY'); // 10 Nov 2026

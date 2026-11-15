@@ -14,6 +14,7 @@ const finance = require('./finance.service');
 const notification = require('./notification.service');
 const { nextDocNumber } = require('../utils/numbering');
 const { toNumber, round2, formatCurrency } = require('../utils/money');
+const { boxCount, isAre } = require('../utils/words');
 const { keyedId, isUniqueClash } = require('../utils/clientKey');
 
 // ── Submit (PENDING — no Sale, no impact) ────────────────────────────────────
@@ -87,8 +88,8 @@ async function submitLineTx(tx, settlementId, payload, actor, { id = null } = {}
       throw ApiError.badRequest(`These ${product.name} boxes are already sent and waiting for ZELab to approve — nothing more to submit on this order.`);
     }
     throw ApiError.badRequest(inReturn > 0
-      ? `Only ${Math.max(0, available)} box(es) of ${product.name} can still be submitted on this order — ${inReturn} box(es) are in a return waiting for ZELab.`
-      : `Only ${Math.max(0, available)} box(es) of ${product.name} can still be submitted on this order${inSettlement > 0 ? ` — ${inSettlement} box(es) are already sent and waiting for ZELab` : ''}`);
+      ? `Only ${boxCount(Math.max(0, available))} of ${product.name} can still be submitted on this order — ${boxCount(inReturn)} ${isAre(inReturn)} in a return waiting for ZELab.`
+      : `Only ${boxCount(Math.max(0, available))} of ${product.name} can still be submitted on this order${inSettlement > 0 ? ` — ${boxCount(inSettlement)} ${isAre(inSettlement)} already sent and waiting for ZELab` : ''}`);
   }
 
   const amount = round2(baseQuantity * toNumber(product.sellingPrice));
@@ -127,7 +128,7 @@ function tellOwner(results, actor) {
       severity: 'INFO',
       title: 'New settlement awaiting approval',
       forStaff: true, // staff approve settlements today (D32)
-      message: `${repName} submitted ${sub.boxes} box(es) of ${product.name} (${formatCurrency(sub.amount)}) on order ${s.settlementNumber}. Verify the money and approve.`,
+      message: `${repName} submitted ${boxCount(sub.boxes)} of ${product.name} (${formatCurrency(sub.amount)}) on order ${s.settlementNumber}. Verify the money and approve.`,
       entityType: 'Settlement',
       entityId: s.id,
     }).catch(() => {});
@@ -141,7 +142,7 @@ function tellOwner(results, actor) {
     severity: 'INFO',
     title: 'New settlement awaiting approval',
     forStaff: true, // staff approve settlements today (D32)
-    message: `${repName} submitted ${results.length} products (${boxes} box(es), ${formatCurrency(total)}) on order ${s.settlementNumber}. Verify the money and approve.`,
+    message: `${repName} submitted ${results.length} products (${boxCount(boxes)}, ${formatCurrency(total)}) on order ${s.settlementNumber}. Verify the money and approve.`,
     entityType: 'Settlement',
     entityId: s.id,
   }).catch(() => {});
@@ -278,15 +279,15 @@ async function approve(submissionId, actor) {
     const earned = round2(sub.boxes * perBox);
     const c = await commission.computeForRep(sub.salesRepId);
     figures = { earned, available: c.available };
-    earnedLine = `You earned ${formatCurrency(earned)} commission (${sub.boxes} box(es) × ${formatCurrency(perBox)}). Available balance: ${formatCurrency(c.available)}.`;
+    earnedLine = `You earned ${formatCurrency(earned)} commission (${boxCount(sub.boxes)} × ${formatCurrency(perBox)}). Available balance: ${formatCurrency(c.available)}.`;
   } catch { /* rule optional */ }
   notification.notifyUser(rep?.userId, {
     type: 'GENERAL',
     severity: 'INFO',
     title: 'Settlement approved',
     message: closed
-      ? `Your settlement of ${sub.boxes} box(es) of ${productName} was approved and order ${out.dec.settlementNumber} is now fully closed. ${earnedLine}`
-      : `Your settlement of ${sub.boxes} box(es) of ${productName} (${formatCurrency(sub.amount)}) was approved. ${earnedLine}`,
+      ? `Your settlement of ${boxCount(sub.boxes)} of ${productName} was approved and order ${out.dec.settlementNumber} is now fully closed. ${earnedLine}`
+      : `Your settlement of ${boxCount(sub.boxes)} of ${productName} (${formatCurrency(sub.amount)}) was approved. ${earnedLine}`,
     whatsapp: {
       kind: 'SETTLEMENT_APPROVED',
       boxes: sub.boxes,
@@ -338,7 +339,7 @@ async function reject(submissionId, actor, reason) {
     type: 'GENERAL',
     severity: 'WARNING',
     title: 'Settlement rejected',
-    message: `Your settlement of ${sub.boxes} box(es) of ${productName} was rejected. Please review and resubmit.${reason ? ` Reason: ${reason}` : ''}`,
+    message: `Your settlement of ${boxCount(sub.boxes)} of ${productName} was rejected. Please review and resubmit.${reason ? ` Reason: ${reason}` : ''}`,
     whatsapp: { kind: 'SETTLEMENT_REJECTED', boxes: sub.boxes, product: productName, reason },
     entityType: 'Settlement',
     entityId: sub.settlementId,
