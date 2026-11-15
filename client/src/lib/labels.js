@@ -73,18 +73,21 @@ export function bonusTrack(bonus) {
 // `from` is the EAT start of its period (21:00 UTC the day before), so read in the device's own zone a
 // phone or laptop set to UTC named the 12 Nov daily "Wednesday, 11 Nov" and October's report
 // "September 2026" (final audit, 12 Nov 2026). The EAT day is taken first, then formatted as a plain date.
+// A daily report is named by the day it ENDS on: since 15 Nov 2026 it covers 21:00 the evening before to
+// 21:00 on its day (audit repo01), so its `from` falls on the day before and named the 12 Nov report
+// "Wednesday, 11 Nov". Older dailies (00:00 to 23:59) end on their day too.
 const eatDate = (value) => dayjs(eatISODate(value));
 export function reportPeriodLabel(r) {
   const from = eatDate(r.from);
   const to = eatDate(r.to);
-  if (r.type === 'DAILY') return from.format('dddd, D MMM YYYY');
+  if (r.type === 'DAILY') return to.format('dddd, D MMM YYYY');
   if (r.type === 'MONTHLY') return from.format('MMMM YYYY');
   if (r.type === 'YEARLY') return `The year ${from.format('YYYY')}`;
   return `${from.format('D MMM')} – ${to.format('D MMM YYYY')}`;
 }
-// The month a report's period starts in, the archive's group heading.
+// The month a report's period starts in (a daily's: the day it is named by), the archive's group heading.
 export function reportMonthLabel(r) {
-  return eatDate(r.from).format('MMMM YYYY');
+  return eatDate(r.type === 'DAILY' ? r.to : r.from).format('MMMM YYYY');
 }
 
 // The bonus row on Home once a tier is reached (audit, 12 Nov 2026): it showed the NEXT tier's 13% and

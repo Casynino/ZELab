@@ -121,6 +121,28 @@ test('repo00: every signed-in request starts the due checks, and a failure there
   delete require.cache[require.resolve('../src/utils/device')];
 });
 
+// ── repo01 ─────────────────────────────────────────────────────────────────────────────────────────
+// The daily report runs 21:00 the evening before to 21:00 on its day (Tanzania time), so the reports tile
+// time: each starts the very millisecond the one before it ends, across a month's end too, and nothing
+// recorded between 21:00 and midnight falls between two reports any more.
+test('repo01: daily report windows run 21:00 to 21:00 and each starts where the one before ended', () => {
+  const daily = fresh('../src/services/dailyBusinessReport.service');
+  const { dayjs } = require('../src/utils/dates');
+  const w = (key) => daily.reportWindow(dayjs.utc(`${key}T12:00:00`).startOf('day'));
+  assert.equal(w('2026-12-01').start.toISOString(), '2026-11-30T18:00:00.000Z', '21:00 on 30 Nov, Tanzania time');
+  assert.equal(w('2026-12-01').end.toISOString(), '2026-12-01T17:59:59.999Z', 'up to the 21:00 cut-off');
+  const days = ['2026-11-29', '2026-11-30', '2026-12-01', '2026-12-02'];
+  for (let i = 1; i < days.length; i += 1) {
+    const before = w(days[i - 1]);
+    const next = w(days[i]);
+    assert.equal(next.start.getTime(), before.end.getTime() + 1, `${days[i]} starts where ${days[i - 1]} ended`);
+    assert.equal(next.end.getTime() + 1 - next.start.getTime(), 24 * 3600 * 1000, 'exactly 24 hours');
+  }
+  // a sale at 22:30 on 5 Nov is in the 6 Nov report (the audit's 405,000 of settlements fell in none)
+  const late = new Date('2026-11-05T19:30:00Z');
+  assert.ok(late > w('2026-11-05').end && late >= w('2026-11-06').start && late <= w('2026-11-06').end);
+});
+
 // ── repo04 ─────────────────────────────────────────────────────────────────────────────────────────
 test('repo04: a report whose WhatsApp failed is sent once more under <key>:retry, with its own text and PDF', async () => {
   const { dayjs } = require('../src/utils/dates');

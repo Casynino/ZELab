@@ -112,6 +112,9 @@ test("a return's 24 h decision never reads 'due now' to the rep (the clock runs 
 test('archived reports are named on the Tanzanian calendar in any device time zone', () => {
   const rows = {
     daily: { type: 'DAILY', from: '2026-11-11T21:00:00.000Z', to: '2026-11-12T20:59:59.999Z' },
+    // since 15 Nov 2026 a daily covers 21:00 the evening before to 21:00 on its day (audit repo01)
+    daily2100: { type: 'DAILY', from: '2026-11-11T18:00:00.000Z', to: '2026-11-12T17:59:59.999Z' },
+    firstOfMonth: { type: 'DAILY', from: '2026-11-30T18:00:00.000Z', to: '2026-12-01T17:59:59.999Z' },
     monthly: { type: 'MONTHLY', from: '2026-09-30T21:00:00.000Z', to: '2026-10-31T20:59:59.999Z' },
     january: { type: 'MONTHLY', from: '2026-12-31T21:00:00.000Z', to: '2027-01-31T20:59:59.999Z' },
     yearly: { type: 'YEARLY', from: '2024-12-31T21:00:00.000Z', to: '2025-12-31T20:59:59.999Z' },
@@ -129,6 +132,9 @@ test('archived reports are named on the Tanzanian calendar in any device time zo
       assert.equal(reportPeriodLabel(rows.yearly), 'The year 2025', tz);
       assert.equal(reportPeriodLabel(rows.weekly), '2 Nov – 8 Nov 2026', tz);
       assert.equal(reportMonthLabel(rows.daily), 'November 2026', tz);
+      assert.equal(reportPeriodLabel(rows.daily2100), 'Thursday, 12 Nov 2026', tz);
+      assert.equal(reportPeriodLabel(rows.firstOfMonth), 'Tuesday, 1 Dec 2026', tz);
+      assert.equal(reportMonthLabel(rows.firstOfMonth), 'December 2026', tz);
     }
   } finally {
     if (saved === undefined) delete env.TZ; else env.TZ = saved;
