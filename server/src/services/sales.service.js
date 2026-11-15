@@ -4,9 +4,9 @@ const prisma = require('../config/prisma');
 const env = require('../config/env');
 const ApiError = require('../utils/ApiError');
 const inventory = require('./inventory.service');
-const { nextDocNumber } = require('../utils/numbering');
+const { nextDocNumber, withDocNumberRetry } = require('../utils/numbering');
 const { round2, toNumber, formatCurrency } = require('../utils/money');
-const { dayjs, eatNow, eatDayBounds } = require('../utils/dates');
+const { dayjs, eatDayBounds } = require('../utils/dates');
 const { DEFAULT_REGION, regionWhere } = require('../constants/regions');
 
 const SALE_INCLUDE = {
@@ -41,6 +41,70 @@ async function assertCashBack(tx, takes, what) {
   for (const accountId of [...byAccount.keys()].sort()) {
     if (!skip.has(accountId)) await finance.assertFunds(tx, accountId, byAccount.get(accountId), what);
   }
+}
+
+// ── The money a sale brought in, and giving it back (15 Nov 2026) ───────────────────────────────────────
+// The ledger is permanent (owner's rule, business-money-only): a cancel or a refund never deletes or edits the
+// sale's money rows. It writes a dated contra row — same account, same kind, minus the amount handed back,
+// occurredAt = the moment it was handed back — exactly like Reverse does for typed-in entries. So the sale's
+// day keeps the money that came in, the refund day shows the money that went back, and both carry who did it.
+// Every row of a sale's money is filed under refType 'Sale' / refId = the sale: the takings at the till, a
+// payment collected later (recordSalePayment), and these contra rows.
+
+// What each account still holds of this sale's money: its rows netted per account (contra rows included),
+// newest takings first. Rows dated before the books began (the finance epoch) are history in no balance, so
+// nothing is given back from them (the same rule Reverse follows).
+async function saleMoneyHeld(tx, saleId) {
+  const reports = require('./reports.service'); // eslint-disable-line global-require
+  const epoch = await reports.financeEpoch();
+  const rows = await tx.financeTransaction.findMany({
+    where: { refType: 'Sale', refId: saleId, direction: 'IN' },
+    orderBy: [{ occurredAt: 'asc' }, { createdAt: 'asc' }],
+    include: { account: { select: { id: true, name: true } } },
+  });
+  const byAccount = new Map();
+  for (const r of rows) {
+    if (epoch && new Date(r.occurredAt) < epoch) continue;
+    const amt = toNumber(r.amount);
+    const cur = byAccount.get(r.accountId)
+      || { accountId: r.accountId, account: r.account?.name || null, type: r.type, brandId: r.brandId || null, amount: 0, last: 0 };
+    cur.amount = round2(cur.amount + amt);
+    if (amt > 0) {
+      cur.type = r.type;
+      cur.brandId = r.brandId || cur.brandId;
+      cur.last = Math.max(cur.last, new Date(r.occurredAt).getTime());
+    }
+    byAccount.set(r.accountId, cur);
+  }
+  return [...byAccount.values()].filter((a) => a.amount > 0).sort((a, b) => b.last - a.last);
+}
+
+// Write the contra rows for money handed back: one per account, dated now, never touching the originals.
+async function writeMoneyBack(tx, sale, takes, { category, words, actor, notes }) {
+  const made = [];
+  for (const t of takes) {
+    if (!(t.amount > 0)) continue;
+    const txnNumber = await nextDocNumber(tx.financeTransaction, 'txnNumber', 'FTX');
+    made.push(await tx.financeTransaction.create({
+      data: {
+        txnNumber,
+        accountId: t.accountId,
+        direction: 'IN',
+        type: t.type || 'WAREHOUSE_SALE',
+        amount: round2(-t.amount),
+        brandId: t.brandId || null,
+        category,
+        description: `${words} — ${sale.saleNumber}`.slice(0, 500),
+        reference: sale.saleNumber,
+        refType: 'Sale',
+        refId: sale.id,
+        notes: notes ? String(notes).slice(0, 2000) : null,
+        occurredAt: new Date(),
+        createdById: actor ? actor.id : null,
+      },
+    }));
+  }
+  return made;
 }
 
 function priceLine(input, product, packaging) {
@@ -325,7 +389,7 @@ async function listSales(filters, pagination) {
         customer: { select: { id: true, name: true, region: true } },
         salesRep: { include: { user: { select: { name: true } } } },
         // baseQuantity: Returns > Customer return tells counter sales apart by their boxes.
-        items: { select: { id: true, baseQuantity: true } },
+        items: { select: { id: true, baseQuantity: true, unitCost: true } },
       },
       skip: pagination.skip,
       take: pagination.take,
@@ -349,7 +413,8 @@ async function listSales(filters, pagination) {
   const whereAnyType = { ...where };
   delete whereAnyType.type;
 
-  const [agg, boxAgg, cancelled, unpaid, byStatusRows, byTypeRows, first, last] = await Promise.all([
+  const reports = require('./reports.service'); // eslint-disable-line global-require
+  const [agg, boxAgg, cancelled, unpaid, byStatusRows, byTypeRows, first, last, noCostRows] = await Promise.all([
     prisma.sale.aggregate({ where: moneyWhere, _sum: { total: true, costTotal: true, balanceDue: true }, _count: true }),
     prisma.saleItem.aggregate({ where: { sale: { is: moneyWhere } }, _sum: { baseQuantity: true } }),
     prisma.sale.count({ where: { AND: [where, { status: 'CANCELLED' }] } }),
@@ -358,17 +423,25 @@ async function listSales(filters, pagination) {
     prisma.sale.groupBy({ by: ['type'], where: whereAnyType, _count: { _all: true } }),
     prisma.sale.findFirst({ where, orderBy: { soldAt: 'asc' }, select: { soldAt: true } }),
     prisma.sale.findFirst({ where, orderBy: { soldAt: 'desc' }, select: { soldAt: true } }),
+    // Boxes sold before a buying price was set: in revenue, never in profit or margin.
+    reports.noCostLines(moneyWhere),
   ]);
   const revenue = round2(toNumber(agg._sum.total));
   const cost = round2(toNumber(agg._sum.costTotal));
+  const noCost = {
+    boxes: noCostRows.reduce((n, r) => n + r.boxes, 0),
+    revenue: round2(noCostRows.reduce((n, r) => n + r.revenue, 0)),
+  };
+  const costedRevenue = round2(revenue - noCost.revenue);
   const summary = {
     sales: agg._count,
     cancelled,
     unpaid,
     revenue,
     cost,
-    profit: round2(revenue - cost),
-    margin: revenue > 0 ? round2(((revenue - cost) / revenue) * 100) : 0,
+    noCost,
+    profit: round2(costedRevenue - cost),
+    margin: costedRevenue > 0 ? round2(((costedRevenue - cost) / costedRevenue) * 100) : 0,
     boxes: boxAgg._sum.baseQuantity || 0,
     owed: round2(toNumber(agg._sum.balanceDue)),
     byStatus: Object.fromEntries(byStatusRows.map((r) => [r.status, r._count._all])),
@@ -391,7 +464,7 @@ async function getSale(id) {
 // claim, stock, credit, order and money reversal — only the movement is filed as the
 // CUSTOMER_RETURN it is, with its own words on the sale.
 async function cancelSaleTx(tx, id, actor, reason, opts = {}) {
-  const { stockType = 'CORRECTION', stockNote = null, notesLine = null } = opts;
+  const { stockType = 'CORRECTION', stockNote = null, notesLine = null } = opts; // also: opts.refund, opts.out
   const seen = await tx.sale.findUnique({ where: { id }, select: { id: true, status: true } });
   if (!seen) throw ApiError.notFound('Sale not found');
   if (seen.status === 'CANCELLED') throw ApiError.badRequest('Sale is already cancelled');
@@ -452,15 +525,26 @@ async function cancelSaleTx(tx, id, actor, reason, opts = {}) {
     }
   }
 
-  // Reverse the money: remove the ledger income posted for this sale so the
-  // account gives the cash back. The backfill skips cancelled sales, so the
-  // row will never be re-created. The cash going back must be in the account
-  // (15 Nov 2026: no account below zero) — checked per account under its lock.
-  const incomeRows = await tx.financeTransaction.findMany({ where: { refType: 'Sale', refId: sale.id, direction: 'IN' }, select: { accountId: true, amount: true } });
-  await assertCashBack(tx, incomeRows.map((r) => ({ accountId: r.accountId, amount: toNumber(r.amount) })), `giving back the money of ${sale.saleNumber}`);
-  await tx.financeTransaction.deleteMany({ where: { refType: 'Sale', refId: sale.id, direction: 'IN' } });
+  // Give the money back: a dated contra row on every account that still holds this sale's money (its takings,
+  // any payment collected later, less refunds already made). The original rows stay in the ledger. The cash
+  // going back must be in the account (15 Nov 2026: no account below zero) — checked per account under its lock.
+  // The backfill skips cancelled sales (and a sale with any row), so nothing is re-created.
+  const held = await saleMoneyHeld(tx, sale.id);
+  await assertCashBack(tx, held.map((h) => ({ accountId: h.accountId, amount: h.amount })), `giving back the money of ${sale.saleNumber}`);
+  const contra = await writeMoneyBack(tx, sale, held, {
+    category: opts.refund ? 'Customer refund' : 'Sale cancelled',
+    words: opts.refund ? 'Refund to customer (every box back)' : 'Money back — sale cancelled',
+    notes: reason || null,
+    actor,
+  });
 
   const line = notesLine || (reason ? `Cancelled: ${reason}` : null);
+  // What went back from where, for the refund's own record (refundSale passes `out` and reads it).
+  if (opts.out) {
+    opts.out.moneyBack = held.map((h, i) => ({
+      txnNumber: contra[i]?.txnNumber || null, account: h.account, before: h.amount, after: 0, taken: h.amount, removed: false,
+    }));
+  }
   return tx.sale.update({
     where: { id: sale.id },
     data: { status: 'CANCELLED', balanceDue: 0, notes: line ? `${sale.notes || ''}\n${line}`.trim() : sale.notes },
@@ -469,7 +553,8 @@ async function cancelSaleTx(tx, id, actor, reason, opts = {}) {
 }
 
 async function cancelSale(id, actor, reason) {
-  return prisma.$transaction((tx) => cancelSaleTx(tx, id, actor, reason));
+  // A clash on the contra row's number rolls the whole cancel back; running it again is then safe.
+  return withDocNumberRetry(() => prisma.$transaction((tx) => cancelSaleTx(tx, id, actor, reason)));
 }
 
 // ── A customer brings boxes back from a counter sale: the sale and the money come out ──────────────
@@ -477,22 +562,18 @@ async function cancelSale(id, actor, reason) {
 // customer returns — the money returns too, so the sale is cancelled."
 //   • every box back  -> exactly what Cancel does (same code), the boxes filed as a CUSTOMER_RETURN;
 //   • some boxes back -> the lines, the sale and its cost get smaller (maths: utils/saleRefund.js), the
-//     boxes go back into the sale's warehouse, and the cash going back is taken off the sale's own IN
-//     row(s) in the ledger, on the account the sale was paid into.
-// Why the IN row is reduced rather than an OUT row added: the ledger row of a sale MIRRORS the sale (it
-// cannot be edited or deleted by hand, Cancel deletes it, the backfill re-creates it from the sale). A
-// smaller sale with a smaller row keeps every screen on one figure — the sale's revenue on its day, the
-// money in on the same day, the account balance, and the Sales summary; an OUT row would leave the sale's
-// day showing money in that its revenue no longer has, and a later Cancel would give the money back twice.
-// The history is kept in words on the row (its notes), on the sale (its notes), in the CUSTOMER_RETURN
-// stock rows, and in the audit log.
+//     boxes go back into the sale's warehouse, and the cash going back is written as a dated contra row on
+//     the account(s) the sale was paid into (15 Nov 2026 — the ledger is permanent: the sale's own money row
+//     is never lowered or deleted any more; the refund shows on the day it was handed over).
+// The history is also kept in words on the sale (its notes), in the CUSTOMER_RETURN stock rows, and in the
+// audit log.
 // One request per look at the sale: `version` is the sale's updatedAt as the window saw it. The claim
 // below moves it on, so a double tap, a second window or a Cancel at the same moment finds the sale
 // changed and stops with nothing written.
 const REP_SALE_REFUSED = "Rep sales are returned through the rep's order.";
 async function refundSale(id, { items, reason, version } = {}, actor) {
   const { planRefund, RefundInputError } = require('../utils/saleRefund'); // eslint-disable-line global-require
-  return prisma.$transaction(async (tx) => {
+  return withDocNumberRetry(() => prisma.$transaction(async (tx) => {
     const seen = await tx.sale.findUnique({
       where: { id },
       select: { id: true, status: true, salesRepId: true, settlementId: true, updatedAt: true },
@@ -549,21 +630,16 @@ async function refundSale(id, { items, reason, version } = {}, actor) {
     };
     const boxWord = plan.boxesBack === 1 ? 'box' : 'boxes';
     const said = reason ? `: ${reason}` : '';
-    const moneyRows = await tx.financeTransaction.findMany({
-      where: { refType: 'Sale', refId: id, direction: 'IN' },
-      orderBy: [{ occurredAt: 'desc' }, { createdAt: 'desc' }],
-      include: { account: { select: { id: true, name: true } } },
-    });
-
     if (plan.everything) {
+      const out = {};
       const done = await cancelSaleTx(tx, id, actor, reason, {
         stockType: 'CUSTOMER_RETURN',
         stockNote: `Customer return — refunded (${sale.saleNumber}, every box back)`,
         notesLine: `Customer returned every box — sale cancelled, ${formatCurrency(plan.cashBack)} refunded${said}`,
+        refund: true,
+        out,
       });
-      const ledger = moneyRows.map((r) => ({
-        txnNumber: r.txnNumber, account: r.account?.name || null, before: toNumber(r.amount), after: 0, taken: toNumber(r.amount), removed: true,
-      }));
+      const ledger = out.moneyBack || [];
       return { sale: done, refund: { everything: true, saleNumber: sale.saleNumber, boxes: plan.boxesBack, lines, refundValue: plan.refundValue, cashBack: plan.cashBack, owedCleared: plan.owedCleared, ledger, before, after: { total: 0, amountPaid: 0, balanceDue: 0, status: 'CANCELLED' }, reason: reason || null } };
     }
 
@@ -590,41 +666,28 @@ async function refundSale(id, { items, reason, version } = {}, actor) {
       });
     }
 
-    // The cash going back comes off the money this sale brought in, newest row first, never below zero — and
-    // only out of what each account really holds (15 Nov 2026).
-    {
-      let plan2 = plan.cashBack;
-      const takes = [];
-      for (const r of moneyRows) {
-        if (plan2 <= 0) break;
-        const take = round2(Math.min(toNumber(r.amount), plan2));
-        if (take > 0) takes.push({ accountId: r.accountId, amount: take });
-        plan2 = round2(plan2 - take);
-      }
-      await assertCashBack(tx, takes, `refunding ${sale.saleNumber}`);
-    }
-    // The cash going back comes off the money this sale brought in, newest row first, never below zero.
-    // A row is kept (at a smaller amount) rather than deleted: its refId is what stops the backfill from
-    // re-creating the sale's income at the full figure.
+    // The cash going back comes out of the money this sale brought in, account by account (newest takings first),
+    // never more than an account still holds of it — and only out of what the account really holds (15 Nov 2026).
+    // Each part is a dated contra row; the sale's own rows are left as they are.
+    const held = await saleMoneyHeld(tx, id);
     let left = plan.cashBack;
-    const ledger = [];
-    const today = eatNow().format('D MMM YYYY'); // the business's day, not the server's
-    for (const r of moneyRows) {
+    const takes = [];
+    for (const h of held) {
       if (left <= 0) break;
-      const amt = toNumber(r.amount);
-      const take = round2(Math.min(amt, left));
-      if (take <= 0) continue;
-      const after = round2(amt - take);
-      await tx.financeTransaction.update({
-        where: { id: r.id },
-        data: {
-          amount: after,
-          notes: `${r.notes ? `${r.notes}\n` : ''}Refund to customer ${today}: −${formatCurrency(take)} (${plan.boxesBack} ${boxWord} back)`,
-        },
-      });
-      ledger.push({ txnNumber: r.txnNumber, account: r.account?.name || null, before: amt, after, taken: take, removed: false });
+      const take = round2(Math.min(h.amount, left));
+      if (take > 0) takes.push({ ...h, take });
       left = round2(left - take);
     }
+    await assertCashBack(tx, takes.map((t) => ({ accountId: t.accountId, amount: t.take })), `refunding ${sale.saleNumber}`);
+    const contra = await writeMoneyBack(tx, sale, takes.map((t) => ({ ...t, amount: t.take })), {
+      category: 'Customer refund',
+      words: `Refund to customer (${plan.boxesBack} ${boxWord} back)`,
+      notes: reason || null,
+      actor,
+    });
+    const ledger = takes.map((t, i) => ({
+      txnNumber: contra[i]?.txnNumber || null, account: t.account, before: t.amount, after: round2(t.amount - t.take), taken: t.take, removed: false,
+    }));
 
     const updated = await tx.sale.update({
       where: { id },
@@ -645,7 +708,92 @@ async function refundSale(id, { items, reason, version } = {}, actor) {
         ledger, before, after: { ...plan.next }, reason: reason || null,
       },
     };
-  }, { timeout: 30000 });
+  }, { timeout: 30000 }));
+}
+
+// ── Money a customer pays later (15 Nov 2026) ─────────────────────────────────────────────────────────
+// The rest of a part-paid counter sale, or a payment on a credit sale, is received INTO the account the customer
+// paid into, in the same transaction that lowers what is owed — so the account holds exactly the money the sale
+// says was paid, and the zero rule judges real balances. The row is filed under the sale like its takings
+// (refType 'Sale'), so a later Cancel or refund gives this money back too. One payment at a time per sale (row
+// lock); `clientKey` makes a double tap record nothing the second time.
+async function recordSalePayment(id, { amount, accountId, clientKey, paidAt, method, reference, notes } = {}, actor) {
+  const finance = require('./finance.service'); // eslint-disable-line global-require
+  const credit = require('./credit.service'); // eslint-disable-line global-require
+  const amt = round2(toNumber(amount));
+  if (!(amt > 0)) throw ApiError.badRequest('Enter the amount the customer paid.');
+  if (!accountId) throw ApiError.badRequest('Choose the account the money was paid into.');
+  const when = paidAt ? new Date(paidAt) : new Date();
+  if (Number.isNaN(when.getTime())) throw ApiError.badRequest('Use a real date for when it was paid.');
+  if (when.getTime() > Date.now() + 5 * 60 * 1000) throw ApiError.badRequest('A payment cannot be dated in the future.');
+
+  return withDocNumberRetry(() => prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "sales" WHERE id = ${id} FOR UPDATE`;
+    const sale = await tx.sale.findUnique({
+      where: { id },
+      include: { items: { select: { product: { select: { brandId: true } } } }, creditSale: true, customer: { select: { name: true } } },
+    });
+    if (!sale) throw ApiError.notFound('Sale not found');
+    if (sale.status === 'CANCELLED') throw ApiError.badRequest('This sale is cancelled — nothing is owed on it.');
+    if (sale.salesRepId || sale.settlementId) throw ApiError.badRequest("A rep's sale is paid through the rep's order, not here.");
+    if (when < new Date(sale.soldAt)) throw ApiError.badRequest('A payment cannot be dated before the sale.');
+    if (sale.creditSale?.status === 'WRITTEN_OFF') throw ApiError.badRequest('This debt has been written off.');
+    const owed = round2(toNumber(sale.balanceDue));
+    if (!(owed > 0)) throw ApiError.badRequest('This sale is already fully paid.');
+    if (amt > owed + 0.001) {
+      throw ApiError.badRequest(`${formatCurrency(amt)} is more than is owed on ${sale.saleNumber} (${formatCurrency(owed)}).`);
+    }
+    const brands = new Set(sale.items.map((i) => i.product?.brandId).filter(Boolean));
+    const brandId = brands.size === 1 ? [...brands][0] : null;
+
+    // The money first: a wrong account (switched off, the commission record, another brand's wallet) or a repeat
+    // press stops here with nothing written.
+    const txn = await finance.recordTransaction({
+      accountId,
+      direction: 'IN',
+      type: 'WAREHOUSE_SALE',
+      amount: amt,
+      brandId,
+      category: 'Sale payment',
+      description: `Payment on ${sale.saleNumber}${sale.customer?.name ? ` — ${sale.customer.name}` : ''}`,
+      reference: sale.saleNumber,
+      refType: 'Sale',
+      refId: sale.id,
+      clientKey: clientKey || null,
+      notes: notes || null,
+      occurredAt: when,
+    }, actor, tx, { checkBrand: true });
+
+    const paid = round2(toNumber(sale.amountPaid) + amt);
+    if (sale.creditSale) {
+      // A credit sale also keeps its own payment list and balance (the Debts figures read them).
+      const c = sale.creditSale;
+      await tx.creditPayment.create({
+        data: {
+          creditSaleId: c.id,
+          amount: amt,
+          method: method || 'MOBILE_MONEY',
+          reference: reference || txn.txnNumber,
+          notes: notes || null,
+          paidAt: when,
+          receivedById: actor ? actor.id : null,
+        },
+      });
+      const cPaid = round2(toNumber(c.amountPaid) + amt);
+      const cBalance = round2(toNumber(c.principal) - cPaid);
+      await tx.creditSale.update({
+        where: { id: c.id },
+        data: { amountPaid: cPaid, balance: cBalance, status: credit.computeStatus({ balance: cBalance, amountPaid: cPaid, dueDate: c.dueDate }) },
+      });
+    }
+    const { status, balanceDue } = deriveStatus(toNumber(sale.total), paid);
+    const updated = await tx.sale.update({
+      where: { id },
+      data: { amountPaid: paid, balanceDue, status },
+      include: SALE_INCLUDE,
+    });
+    return { sale: updated, payment: { amount: amt, txnNumber: txn.txnNumber, accountId, balanceDue } };
+  }, { timeout: 30000 }));
 }
 
 // What the refund window needs besides the sale: the account(s) its money went into, and the refunds
@@ -664,7 +812,13 @@ async function saleMoneyAndRefunds(id) {
     }),
   ]);
   return {
-    paidInto: rows.map((r) => ({ accountId: r.account?.id || null, account: r.account?.name || null, amount: toNumber(r.amount) })),
+    // Net per account: what each account still holds of this sale's money (refund rows are minus figures).
+    paidInto: [...rows.reduce((m, r) => {
+      const k = r.account?.id || null;
+      const cur = m.get(k) || { accountId: k, account: r.account?.name || null, amount: 0 };
+      cur.amount = round2(cur.amount + toNumber(r.amount));
+      return m.set(k, cur);
+    }, new Map()).values()].filter((p) => p.amount !== 0),
     refunds: logs.map((l) => {
       const v = l.newValues || {};
       return { at: l.createdAt, by: l.user?.name || null, boxes: v.boxes || 0, cashBack: v.cashBack || 0, owedCleared: v.owedCleared || 0, everything: !!v.everything, lines: v.lines || [], reason: v.reason || null };
@@ -672,4 +826,4 @@ async function saleMoneyAndRefunds(id) {
   };
 }
 
-module.exports = { createSale, createSaleTx, listSales, getSale, cancelSale, cancelSaleTx, refundSale, saleMoneyAndRefunds, resolveSaleRegion, SALE_INCLUDE, REP_SALE_REFUSED };
+module.exports = { createSale, createSaleTx, listSales, getSale, cancelSale, cancelSaleTx, refundSale, recordSalePayment, saleMoneyAndRefunds, resolveSaleRegion, SALE_INCLUDE, REP_SALE_REFUSED };

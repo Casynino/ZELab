@@ -185,6 +185,59 @@ function NewSaleModal({ open, onClose }) {
   );
 }
 
+// The rest of a part-paid sale, received later (15 Nov 2026): the money lands in the account the customer paid
+// into, in the same step that lowers what is owed, so the account holds what the sale says was paid.
+function ReceivePayment({ sale }) {
+  const qc = useQueryClient();
+  const owed = Number(sale.balanceDue) || 0;
+  const [amount, setAmount] = useState(String(owed));
+  const [accountId, setAccountId] = useState('');
+  // One key per opening of this form: a double tap records the payment once.
+  const [clientKey] = useState(() => `pay-${sale.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  const brands = [...new Set((sale.items || []).map((i) => i.product?.brandId).filter(Boolean))];
+  const brandId = brands.length === 1 ? brands[0] : null;
+  const { data: accounts = [] } = useQuery({
+    queryKey: ['payment-accounts', brandId || ''],
+    queryFn: async () => unwrap(await api.get('/settlements/payment-accounts', { params: brandId ? { brandId } : undefined })).data,
+  });
+  const chosen = accounts.some((a) => a.id === accountId) ? accountId : (accounts[0]?.id || '');
+  const amt = Number(amount) || 0;
+  const pay = useMutation({
+    mutationFn: async () => unwrap(await api.post(`/sales/${sale.id}/payments`, { amount: amt, accountId: chosen, clientKey })).data,
+    onSuccess: (res) => {
+      const left = Number(res?.payment?.balanceDue) || 0;
+      toast.success(`${formatCurrency(amt)} received into ${accounts.find((a) => a.id === chosen)?.name || 'the account'}${left > 0 ? ` — ${formatCurrency(left)} still owed` : ' — paid in full'}`);
+      refreshAfter(qc, 'sale');
+      ['sales', 'sale', 'finance', 'dashboard', 'customers', 'customer'].forEach((k) => qc.invalidateQueries({ queryKey: [k] }));
+    },
+    onError: (e) => toast.error(apiError(e)),
+  });
+  const bad = !(amt > 0) || amt > owed || !chosen;
+  return (
+    <div className="space-y-3 rounded-lg border border-amber-500/30 bg-amber-500/[0.06] p-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <span className="font-medium text-foreground">Customer paying the rest?</span>
+        <span className="text-xs text-muted">Owed <span className="font-semibold tabular-nums text-amber-300">{formatCurrency(owed)}</span></span>
+      </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+        <Field label="Amount received">
+          <NumberInput min="0" max={owed} value={amount} onChange={(e) => setAmount(e.target.value)} />
+        </Field>
+        <Field label="Paid into">
+          <Select value={chosen} onChange={(e) => setAccountId(e.target.value)}>
+            {accounts.length === 0 && <option value="">No account for this brand</option>}
+            {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+          </Select>
+        </Field>
+        <Button className="max-sm:h-12 max-sm:w-full" loading={pay.isPending} disabled={bad || pay.isPending} onClick={() => pay.mutate()}>
+          Receive {amt > 0 ? formatCurrency(amt) : ''}
+        </Button>
+      </div>
+      {amt > owed && <p className="text-xs text-amber-300">More than is owed — enter at most {formatCurrency(owed)}.</p>}
+    </div>
+  );
+}
+
 function SaleDetail({ id, onClose }) {
   const qc = useQueryClient();
   const { user } = useAuth();
@@ -217,6 +270,9 @@ function SaleDetail({ id, onClose }) {
   });
 
   const cancelled = data?.status === 'CANCELLED';
+  // Money still owed on a counter (or credit) sale is collected here, by whoever sells — never on a rep's sale.
+  const canCollect = !!data && !cancelled && !data.salesRepId && Number(data.balanceDue) > 0
+    && [ROLES.ADMIN, ROLES.WAREHOUSE_STAFF].includes(user?.role);
   // A counter sale has two ways back (owner, 12 Nov 2026): the customer returned boxes (the money goes
   // back to him), or the sale was recorded by mistake. A rep's sale keeps the one Cancel it had.
   const counterSale = refundable(data);
@@ -263,8 +319,8 @@ function SaleDetail({ id, onClose }) {
               <p className="text-sm font-medium text-rose-400">Cancel {data.saleNumber}?</p>
               <p className="text-xs text-muted">
                 {data.items.reduce((n2_, it) => n2_ + it.quantity, 0)} box(es) go back into stock and the{' '}
-                {formatCurrency(data.amountPaid)} it banked is removed from the account. Sales cannot be edited,
-                so record the sale again afterwards with the correct amount.
+                {formatCurrency(data.amountPaid)} it banked goes back out of the account (a dated entry in the ledger;
+                the sale&apos;s own entry stays). Sales cannot be edited, so record the sale again afterwards with the correct amount.
                 {counterSale && (
                   <>
                     {' '}If the customer brought boxes back, use{' '}
@@ -289,27 +345,51 @@ function SaleDetail({ id, onClose }) {
             <THead><TR><TH>Item</TH><TH>Qty</TH><TH>Sell / box</TH><TH>Cost / box</TH><TH>Profit / box</TH><TH>Line profit</TH></TR></THead>
             <TBody>
               {data.items.map((it) => {
+                // A box sold before its product had a buying price has no known cost: no profit is shown for it.
+                const noCost = !(Number(it.unitCost) > 0) && it.baseQuantity > 0;
                 const lineProfit = it.lineTotal - it.unitCost * it.baseQuantity;
                 return (
                   <TR key={it.id}>
                     <TD className="font-medium text-foreground">{it.product.name}</TD>
                     <TD>{it.quantity > 0 ? `${formatNumber(it.quantity)} ${unitWord(it.quantity, it.packagingUnit.name)}` : <span className="text-faint">All returned</span>}</TD>
                     <TD>{formatCurrency(it.unitPrice)}</TD>
-                    <TD className="text-muted">{formatCurrency(it.unitCost)}</TD>
-                    <TD>{formatCurrency(it.unitPrice - it.unitCost)}</TD>
-                    <TD className="font-semibold text-emerald-500">{formatCurrency(lineProfit)}</TD>
+                    <TD className="text-muted">{noCost ? <span className="text-amber-300">No buying price</span> : formatCurrency(it.unitCost)}</TD>
+                    <TD>{noCost ? <span className="text-faint">—</span> : formatCurrency(it.unitPrice - it.unitCost)}</TD>
+                    <TD className="font-semibold text-emerald-500">{noCost ? <span className="font-normal text-faint">Not known</span> : formatCurrency(lineProfit)}</TD>
                   </TR>
                 );
               })}
             </TBody>
           </Table>
-          <div className="space-y-1.5 border-t border-white/[0.06] pt-3 text-sm">
-            <div className="flex justify-between"><span className="text-muted">Revenue</span><span className="font-semibold tabular-nums text-foreground">{formatCurrency(data.total)}</span></div>
-            <div className="flex justify-between"><span className="text-muted">Cost of goods</span><span className="tabular-nums text-muted">−{formatCurrency(data.costTotal)}</span></div>
-            <div className="flex justify-between border-t border-white/[0.06] pt-1.5"><span className="font-semibold text-foreground">Profit on this sale</span><span className="font-bold tabular-nums text-emerald-400">{formatCurrency(data.total - data.costTotal)}</span></div>
-            <div className="mt-1 flex justify-between"><span className="text-muted">Paid</span><span className="tabular-nums text-foreground">{formatCurrency(data.amountPaid)}</span></div>
-            <div className="flex justify-between"><span className="text-muted">Balance</span><span className={`tabular-nums ${data.balanceDue > 0 ? 'font-semibold text-amber-300' : 'text-faint'}`}>{formatCurrency(data.balanceDue)}</span></div>
-          </div>
+          {(() => {
+            // Profit counts only the lines whose cost is known; the rest is said, never shown as 100% kept.
+            const unknown = data.items.filter((it) => !(Number(it.unitCost) > 0) && it.baseQuantity > 0);
+            const unknownBoxes = unknown.reduce((n, it) => n + it.baseQuantity, 0);
+            const known = data.items.filter((it) => Number(it.unitCost) > 0);
+            const share = Number(data.subtotal) > 0 ? (Number(data.subtotal) - Number(data.discount || 0)) / Number(data.subtotal) : 1;
+            const knownRevenue = known.reduce((n, it) => n + Number(it.lineTotal) * share, 0);
+            const profit = knownRevenue - Number(data.costTotal);
+            return (
+              <div className="space-y-1.5 border-t border-white/[0.06] pt-3 text-sm">
+                <div className="flex justify-between"><span className="text-muted">Revenue</span><span className="font-semibold tabular-nums text-foreground">{formatCurrency(data.total)}</span></div>
+                <div className="flex justify-between"><span className="text-muted">Cost of goods</span><span className="tabular-nums text-muted">−{formatCurrency(data.costTotal)}</span></div>
+                <div className="flex justify-between border-t border-white/[0.06] pt-1.5">
+                  <span className="font-semibold text-foreground">Profit on this sale</span>
+                  {unknown.length && !known.length
+                    ? <span className="font-medium text-faint">Not known</span>
+                    : <span className="font-bold tabular-nums text-emerald-400">{formatCurrency(unknown.length ? profit : data.total - data.costTotal)}</span>}
+                </div>
+                {unknownBoxes > 0 && (
+                  <p className="text-xs text-amber-300">
+                    {formatNumber(unknownBoxes)} {unknownBoxes === 1 ? 'box was' : 'boxes were'} sold before a buying price was set — not in profit.
+                  </p>
+                )}
+                <div className="mt-1 flex justify-between"><span className="text-muted">Paid</span><span className="tabular-nums text-foreground">{formatCurrency(data.amountPaid)}</span></div>
+                <div className="flex justify-between"><span className="text-muted">Balance</span><span className={`tabular-nums ${data.balanceDue > 0 ? 'font-semibold text-amber-300' : 'text-faint'}`}>{formatCurrency(data.balanceDue)}</span></div>
+              </div>
+            );
+          })()}
+          {canCollect && <ReceivePayment sale={data} />}
           {refunds.length > 0 && (
             <div>
               <div className="mb-1 font-medium text-foreground">Returned by the customer</div>

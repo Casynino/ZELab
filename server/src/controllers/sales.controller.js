@@ -64,8 +64,9 @@ const create = asyncHandler(async (req, res) => {
   const sale = await salesService.createSale(payload, req.user);
   // A direct warehouse cash sale (no rep) is money into the business —
   // recorded against the chosen account, or the wallet this brand settles to,
-  // and kept alive past the response by background().
-  if (sale.type === 'CASH' && !sale.salesRepId) {
+  // and kept alive past the response by background(). A credit sale's down
+  // payment is money at the till too (15 Nov 2026: it reached no account).
+  if (!sale.salesRepId && (sale.type === 'CASH' || toNumber(sale.amountPaid) > 0)) {
     const wa = require('../services/whatsappNotify.service');
     wa.background(finance.recordSaleIncome({
       saleId: sale.id,
@@ -134,4 +135,16 @@ const refund = asyncHandler(async (req, res) => {
   return ok(res, { ...sale, refund: r });
 });
 
-module.exports = { create, list, get, cancel, refund };
+// The customer pays (some of) what is still owed: received into the chosen account, the sale's balance down.
+const recordPayment = asyncHandler(async (req, res) => {
+  const { sale, payment } = await salesService.recordSalePayment(req.params.id, req.body, req.user);
+  await audit.record(req, {
+    action: 'SALE_PAYMENT',
+    entityType: 'Sale',
+    entityId: req.params.id,
+    newValues: { saleNumber: sale.saleNumber, amount: payment.amount, txnNumber: payment.txnNumber, accountId: payment.accountId, balanceDue: payment.balanceDue },
+  });
+  return created(res, { ...sale, payment });
+});
+
+module.exports = { create, list, get, cancel, refund, recordPayment };
