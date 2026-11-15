@@ -351,7 +351,7 @@ function RepCard({ r, st, g, b, showBonus, i, onOpen }) {
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-1.5">
             <p className="truncate text-[13.5px] font-semibold leading-5 text-foreground" title={name}>{name}</p>
-            <span className={`inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 text-[9.5px] font-medium leading-4 ring-1 ${st.cls}`}>
+            <span className={`inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 text-[11px] font-medium leading-4 ring-1 ${st.cls}`}>
               {st.key === 'late'
                 ? <AlertTriangle className="h-2.5 w-2.5" />
                 : <span className={`h-1.5 w-1.5 rounded-full ${st.dot}`} />}

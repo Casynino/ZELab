@@ -272,11 +272,13 @@ function BusinessCard({ cmd }) {
       <p className="mt-1 text-[12px] text-white/50">
         Stock {formatCurrency(inv.costValue)} at cost · {formatNumber(inv.repBoxes)} boxes with reps
       </p>
-      <div className="mt-5 grid grid-cols-3 gap-2 border-t border-white/10 pt-4">
+      {/* A phone: one line each, the label left and the figure right. Three across, "TSh 19,567,035" (111 px)
+          could not fit a 98 px column and ran into the next figure (ui-a00). Three across from sm. */}
+      <div className="mt-5 grid grid-cols-1 gap-1.5 border-t border-white/10 pt-4 sm:grid-cols-3 sm:gap-2">
         {stats.map(([label, value]) => (
-          <div key={label} className="min-w-0">
+          <div key={label} className="flex min-w-0 items-baseline justify-between gap-3 sm:block">
             <p className="text-[11px] leading-snug text-white/45">{label}</p>
-            <p className="mt-0.5 text-[14px] font-semibold leading-snug tabular-nums text-white">{value}</p>
+            <p className="mt-0.5 whitespace-nowrap text-[14px] font-semibold leading-snug tabular-nums text-white">{value}</p>
           </div>
         ))}
       </div>
