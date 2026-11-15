@@ -6,6 +6,7 @@ const inventory = require('./inventory.service');
 const settlement = require('./settlement.service');
 const { nextDocNumber } = require('../utils/numbering');
 const { toNumber } = require('../utils/money');
+const { boxCount, isAre } = require('../utils/words');
 const { eatDayBounds } = require('../utils/dates');
 
 const TRANSFER_INCLUDE = {
@@ -122,7 +123,7 @@ async function createTransferTx(tx, payload, actor) {
           if (n > free) {
             const name = productMap.get(productId)?.name || 'this product';
             throw ApiError.badRequest(
-              `${owed} box(es) of ${name} are still owed on order ${owing.join(', ')}. Bring them back with a Return on that order — it closes the order and stops its fines.${free ? ` Only ${free} box(es) can be moved by transfer.` : ''}`,
+              `${boxCount(owed)} of ${name} ${isAre(owed)} still owed on order ${owing.join(', ')}. Bring them back with a Return on that order — it closes the order and stops its fines.${free ? ` Only ${boxCount(free)} can be moved by transfer.` : ''}`,
             );
           }
         }

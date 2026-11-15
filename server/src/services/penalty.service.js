@@ -226,13 +226,15 @@ async function penaltyBreakdownForReps(salesRepIds) {
       : [],
     // The daily fine actually charged on each order. Today's rate follows the order's extension state NOW,
     // so a closed order extended after its fines quoted 20,000 a day beside a 10,000 one-day fine.
+    // Counted too: the late days actually charged on the order (see lateDays below).
     ids.length
-      ? prisma.settlementPenalty.groupBy({ by: ['salesRepId', 'settlementId'], where: { salesRepId: { in: repIds }, settlementId: { in: ids }, status: 'APPLIED', kind: 'LATE_FINE' }, _max: { amount: true } })
+      ? prisma.settlementPenalty.groupBy({ by: ['salesRepId', 'settlementId'], where: { salesRepId: { in: repIds }, settlementId: { in: ids }, status: 'APPLIED', kind: 'LATE_FINE' }, _max: { amount: true }, _count: true })
       : [],
   ]);
   const sMap = new Map(settlements.map((s) => [s.id, s]));
   const pendingMap = new Map(pendingRets.map((r) => [r.settlementId, r._count]));
   const chargedRate = new Map(lateRates.map((r) => [`${r.salesRepId}|${r.settlementId}`, round2(toNumber(r._max.amount))]));
+  const lateDaysOf = new Map(lateRates.map((r) => [`${r.salesRepId}|${r.settlementId}`, Number(r._count) || 0]));
 
   const groupsOf = new Map();
   for (const g of grouped) {
@@ -253,6 +255,10 @@ async function penaltyBreakdownForReps(salesRepIds) {
           // 0 for manual deductions and return-expiry fines — they are not late,
           // so callers must not render them as overdue days.
           daysOverdue: g._max.daysOverdue || 0,
+          // The late days actually charged (APPLIED late fines). Not daysOverdue: day numbers start again after
+          // an extension, so an order fined a day before and a day after read "1 day overdue" beside two
+          // fines (audit ui-re02). 0 for a manual deduction or an order fined only for a late return.
+          lateDays: g.settlementId ? (lateDaysOf.get(`${repId}|${g.settlementId}`) || 0) : 0,
           fines: g._count,
           // A manual deduction has no daily rate. A closed order shows what it was charged; an open one the
           // rate its next fine will be charged at.

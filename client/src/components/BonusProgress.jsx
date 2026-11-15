@@ -1,6 +1,6 @@
 import clsx from 'clsx';
 import { formatCurrency, formatDate } from '@/lib/format';
-import { RED } from '@/lib/brand';
+import { VIOLET_LIGHT, violetA } from '@/lib/brand';
 import { Ring } from '@/components/Ring';
 
 // The sales bonuses as small rings, one for each (Nino, 11 Nov 2026: "there are two bonuses, so the pie
@@ -82,7 +82,10 @@ function BonusWallet({ p }) {
   );
 }
 
-const RED_LATER = 'rgba(238, 49, 36, 0.5)';
+// Violet, not the house red: a bonus is money earned, and red reads as money owed (Nino, 15 Nov 2026; audit
+// ui-re04). The bonus being worked towards is full violet, a later one paler; a reached one stays green.
+const NOW_RING = VIOLET_LIGHT;
+const LATER_RING = violetA(0.5);
 
 export default function BonusProgress({ p }) {
   // A tier switched off after a bonus was credited: no rings to draw, but the money is still his.
@@ -103,10 +106,10 @@ export default function BonusProgress({ p }) {
           const pct = t.reached
             ? 100
             : Math.max(0, Math.min(100, Math.round(Number.isFinite(t.progress) ? t.progress : (p.sales / Math.max(1, t.target)) * 100)));
-          const color = t.reached ? GREEN : current ? RED : RED_LATER;
+          const color = t.reached ? GREEN : current ? NOW_RING : LATER_RING;
           return (
             <div key={t.ruleId} className="flex min-w-0 flex-col items-center text-center">
-              <div style={{ filter: `drop-shadow(0 0 7px ${t.reached ? 'rgba(52,211,153,0.35)' : current ? 'rgba(238,49,36,0.42)' : 'rgba(238,49,36,0.16)'})` }}>
+              <div style={{ filter: `drop-shadow(0 0 7px ${t.reached ? 'rgba(52,211,153,0.35)' : current ? violetA(0.42) : violetA(0.16)})` }}>
                 <Ring size={84} stroke={7} total={100} segments={[{ value: pct, color }]}>
                   <span className={clsx('text-base font-bold leading-none tabular-nums', t.reached ? 'text-emerald-300' : 'text-foreground')}>{pct}%</span>
                 </Ring>

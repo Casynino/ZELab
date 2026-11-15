@@ -140,6 +140,14 @@ test('every rep\'s commission, bonus and fines read in one batch equal each rep 
   ]);
   for (const id of ids) {
     assert.deepEqual(all.get(id), await commission.computeForRep(id), `commission ${id}`);
+    // And the batch prices every box as earnedForRep does (its own read, its own select): it once left the
+    // product's createdAt out and paid Pepa on an order opened before Pepa existed 5,000 instead of 6,000
+    // (audit repor00). A rep off commission earns nothing in the batch, by design.
+    if (all.get(id).earnsCommission !== false) {
+      const alone = await commission.earnedForRep(id);
+      assert.deepEqual(all.get(id).earnedByBrand, alone.byBrand, `earned by brand ${id}`);
+      assert.equal(all.get(id).grossEarned, alone.earned, `earned ${id}`);
+    }
     // progressForRep is still the per-rep read (one sum query per start date): the batch must match it.
     assert.deepEqual(allBonus.get(id), await bonus.progressForRep(id, { heal: false }), `bonus ${id}`);
     assert.deepEqual(allFines.get(id), await penalty.penaltyBreakdownForRep(id), `fines ${id}`);

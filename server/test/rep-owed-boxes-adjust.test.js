@@ -52,9 +52,9 @@ test('a decrease at a rep\'s place that would take owed boxes is refused, naming
   state.moved.length = 0;
   const { err } = await call(ctrl.adjust, { ...base, location: repPlace, quantity: 5, direction: 'DECREASE' });
   assert.equal(err?.statusCode, 400);
-  assert.match(err.message, /6 box\(es\) of Pepa are still owed on order STL-1/);
+  assert.match(err.message, /6 boxes of Pepa are still owed on order STL-1/);
   assert.match(err.message, /Return on that order/);
-  assert.match(err.message, /Only 4 box\(es\) can be taken off this way/);
+  assert.match(err.message, /Only 4 boxes can be taken off this way/);
   assert.equal(state.moved.length, 0, 'nothing left the rep');
 });
 

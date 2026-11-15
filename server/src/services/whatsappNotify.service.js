@@ -877,14 +877,24 @@ async function deadlineWarnings(withinMinutes = DEADLINE_WARN_MINUTES) {
     const who = `${s.salesRep?.user?.name || 'A rep'} (${s.salesRep?.code || '—'})`;
     const outstanding = round2(toNumber(s.assignedValue) - toNumber(s.settledValue) - toNumber(s.returnedValue));
 
-    notification.createIfAbsent({
-      type: 'GENERAL',
-      severity: 'WARNING',
-      title: 'A fine is about to start',
-      message: `${who} has ${mins} minute${mins === 1 ? '' : 's'} left on order ${s.settlementNumber}. When the deadline passes it starts charging ${fmt(rate)} a day.`,
-      entityType: 'Settlement',
-      entityId: `deadlinewarn-${s.id}`,
-    }).catch(() => {});
+    // The owner's bell notice: once per order AND deadline, read or not (audit repor03). It went through
+    // createIfAbsent, which only looks for an UNREAD copy, so once he had read it every check (every 5 minutes,
+    // on every instance) made another for the rest of the hour. The deadline in the id warns again before a
+    // NEW deadline after an extension, as the WhatsApp below does.
+    const noticeId = `deadlinewarn-${s.id}-${new Date(s.deadlineAt).getTime()}`;
+    try {
+      const seen = await prisma.notification.findFirst({ where: { entityId: noticeId, userId: null }, select: { id: true } });
+      if (!seen) {
+        await notification.create({
+          type: 'GENERAL',
+          severity: 'WARNING',
+          title: 'A fine is about to start',
+          message: `${who} has ${mins} minute${mins === 1 ? '' : 's'} left on order ${s.settlementNumber}. When the deadline passes it starts charging ${fmt(rate)} a day.`,
+          entityType: 'Settlement',
+          entityId: noticeId,
+        });
+      }
+    } catch { /* the bell notice never stops the WhatsApp warning */ }
 
     const text = wt.owner.settlementDeadline({
       order: s.settlementNumber,

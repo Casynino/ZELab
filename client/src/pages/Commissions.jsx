@@ -509,7 +509,9 @@ function PenaltyBreakdown({ breakdown }) {
         {breakdown.map((p) => {
           // A manual deduction has no order, no days and no rate; an order fined only for a late return
           // (0 days) has no daily rate. Only a late order still open and not paused keeps accruing.
-          const days = Number(p.daysOverdue) || 0;
+          // The late days actually charged, not the day number: that starts again after an extension, so
+          // two fines read "1 day overdue" beside twice the daily fine (audit ui-re02).
+          const days = Number(p.lateDays ?? p.daysOverdue) || 0;
           const status = p.closed ? 'Order closed'
             : p.exemptPendingReturn ? 'Paused — return under review'
               : days > 0 ? 'Still accruing daily' : null;
@@ -519,7 +521,7 @@ function PenaltyBreakdown({ breakdown }) {
                 <p className="text-[15px] font-semibold text-foreground">{p.settlementNumber}</p>
                 <p className="mt-0.5 text-xs text-muted">
                   {!p.settlementId ? 'Deduction by ZELab'
-                    : days > 0 ? `${days} ${days === 1 ? 'day' : 'days'} overdue · ${formatCurrency(p.penaltyPerDay)} a day`
+                    : days > 0 ? `${days} late ${days === 1 ? 'day' : 'days'} · ${formatCurrency(p.penaltyPerDay)} a day`
                       : 'Return delay fine'}
                 </p>
                 {p.settlementId && status && (

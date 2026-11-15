@@ -52,9 +52,9 @@ test('the same product listed twice on an order return is checked on the total',
   created.returns.length = 0;
   await assert.rejects(
     returns.createReturn(ret([{ productId: 'p1', packagingUnitId: 'box', quantity: 2 }, { productId: 'p1', packagingUnitId: 'box', quantity: 2 }]), rep),
-    /Only 2 box\(es\) of Civlily Pepa Kubwa .* remain to return on order STL-20261107-0001/,
+    /Only 2 boxes of Civlily Pepa Kubwa .* remain to return on order STL-20261107-0001/,
   );
-  await assert.rejects(returns.createReturn(ret([{ productId: 'p1', packagingUnitId: 'box', quantity: 4 }]), rep), /Only 2 box\(es\)/);
+  await assert.rejects(returns.createReturn(ret([{ productId: 'p1', packagingUnitId: 'box', quantity: 4 }]), rep), /Only 2 boxes/);
   assert.equal(created.returns.length, 0, 'no return was saved, so no boxes are locked');
 });
 

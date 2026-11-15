@@ -22,3 +22,10 @@ export const SERIES = [RED, '#ff8d7d', '#f59e0b', '#38bdf8', '#a855f7', '#10b981
 
 /** `rgba()` from the house red at a given alpha. */
 export const redA = (a) => `rgba(${RED_RGB}, ${a})`;
+
+/** Commission and earnings are violet, never the house red, which reads as money owed (Nino, 15 Nov 2026).
+ *  Tailwind violet-500 / violet-400, for a chart bar or a ring that cannot take a class. */
+export const VIOLET = '#8b5cf6';
+export const VIOLET_LIGHT = '#a78bfa';
+export const VIOLET_RGB = '139, 92, 246';
+export const violetA = (a) => `rgba(${VIOLET_RGB}, ${a})`;

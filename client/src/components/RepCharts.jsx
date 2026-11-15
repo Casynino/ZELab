@@ -4,7 +4,7 @@ import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Cell, PieChart, Pie,
 } from 'recharts';
 import { formatCurrency, formatNumber } from '@/lib/format';
-import { RED, SERIES } from '@/lib/brand';
+import { RED, SERIES, VIOLET, violetA } from '@/lib/brand';
 
 // ===========================================================================
 // The rep's commission page as pictures (Nino, 10 Nov 2026: "don't just show
@@ -103,7 +103,8 @@ export function EarningsCard({ insights }) {
           <YAxis tick={AXIS} tickLine={false} axisLine={false} tickFormatter={compact} width={46} />
           <Tooltip content={<MoneyTip />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
           <Bar dataKey="earned" radius={[6, 6, 0, 0]} maxBarSize={34}>
-            {months.map((m, i) => <Cell key={m.key} fill={i === bestIdx ? RED : 'rgba(238,49,36,0.42)'} />)}
+            {/* Earnings in violet, not the house red that reads as money owed (Nino, 15 Nov 2026; ui-re04). */}
+            {months.map((m, i) => <Cell key={m.key} fill={i === bestIdx ? VIOLET : violetA(0.42)} />)}
           </Bar>
         </BarChart>
       </ResponsiveContainer>

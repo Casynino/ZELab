@@ -164,7 +164,7 @@ test('the yearly WhatsApp text: bold heading, best and weakest month, the loss m
   const text = yearly.buildWhatsAppText(await yearData(), LINK);
   assert.ok(text.startsWith('*ZELAB — YEARLY REPORT*\n2025'));
   assert.match(text, /Best Month: July 2025 — TSh 1,200,000 profit/);
-  assert.match(text, /Weakest Month: March 2025 — TSh -600,000/);
+  assert.match(text, /Weakest Month: March 2025 — -TSh 600,000/); // the sign in front, as the app writes it
   assert.match(text, /Loss Months: Mar/);
   assert.ok(text.endsWith(`Full Year Report (PDF):\n${LINK}`));
   assert.ok(text.length <= MAX_REPORT_CHARS, `${text.length} chars`);

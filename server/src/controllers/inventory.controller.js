@@ -9,6 +9,7 @@ const inventory = require('../services/inventory.service');
 const audit = require('../services/audit.service');
 const settlementSvc = require('../services/settlement.service');
 const { toNumber, round2 } = require('../utils/money');
+const { boxCount, isAre } = require('../utils/words');
 const { eatDayBounds } = require('../utils/dates');
 
 // A rep's boxes that an open order still owes come back through a Return on that order, never an
@@ -32,7 +33,7 @@ async function refuseOwedRepBoxes(tx, { location, productId, baseQuantity }) {
   if (baseQuantity > free) {
     const product = await tx.product.findUnique({ where: { id: productId }, select: { name: true } });
     throw ApiError.badRequest(
-      `${owed} box(es) of ${product?.name || 'this product'} are still owed on order ${owing.join(', ')}. Bring them back with a Return on that order — it closes the order and stops its fines.${free ? ` Only ${free} box(es) can be taken off this way.` : ''}`,
+      `${boxCount(owed)} of ${product?.name || 'this product'} ${isAre(owed)} still owed on order ${owing.join(', ')}. Bring them back with a Return on that order — it closes the order and stops its fines.${free ? ` Only ${boxCount(free)} can be taken off this way.` : ''}`,
     );
   }
 }

@@ -71,7 +71,7 @@ test('two products: two PENDING submissions, one bell notice, one WhatsApp messa
   ]);
   assert.notEqual(db.committed[0].submissionNumber, db.committed[1].submissionNumber, 'each line has its own number');
   assert.equal(calls.notify.length, 1);
-  assert.match(calls.notify[0].message, /submitted 2 products \(3 box\(es\), TSh\s95,000\) on order STL-20261110-0001/);
+  assert.match(calls.notify[0].message, /submitted 2 products \(3 boxes, TSh\s95,000\) on order STL-20261110-0001/);
   assert.equal(calls.waBatch.length, 1);
   assert.equal(calls.waSingle.length, 0, 'not one message per product');
 });
@@ -80,7 +80,7 @@ test('one line that does not fit saves NONE of the others', async () => {
   reset();
   await assert.rejects(
     svc.submitMany('ord1', { items: [{ productId: 'p1', boxes: 1, accountId: 'mpesa' }, { productId: 'p2', boxes: 3, accountId: 'airtel' }] }, rep), // only 2 of p2 are outstanding
-    /Only 2 box\(es\) of Civlily Pepa Kubwa/,
+    /Only 2 boxes of Civlily Pepa Kubwa/,
   );
   assert.equal(db.committed.length, 0, 'the first line was not kept');
   assert.equal(calls.notify.length + calls.waBatch.length, 0, 'and nobody was told');
@@ -89,14 +89,14 @@ test('one line that does not fit saves NONE of the others', async () => {
 test('boxes already waiting for approval cannot be submitted again in a batch', async () => {
   reset();
   db.pendingByProduct = { p1: 4 }; // 5 outstanding, 4 already pending -> 1 available
-  await assert.rejects(svc.submitMany('ord1', { items: [{ productId: 'p1', boxes: 2, accountId: 'mpesa' }] }, rep), /Only 1 box\(es\)/);
+  await assert.rejects(svc.submitMany('ord1', { items: [{ productId: 'p1', boxes: 2, accountId: 'mpesa' }] }, rep), /Only 1 box of /);
   assert.equal(db.committed.length, 0);
 });
 
 test('boxes locked in a pending return cannot also be submitted for settlement (audit, 11 Nov 2026)', async () => {
   reset();
   db.pendingReturnByProduct = { p1: 3 }; // 5 outstanding, 3 in a return waiting for ZELab -> 2 available
-  await assert.rejects(svc.submitMany('ord1', { items: [{ productId: 'p1', boxes: 3, accountId: 'mpesa' }] }, rep), /Only 2 box\(es\).*return waiting/);
+  await assert.rejects(svc.submitMany('ord1', { items: [{ productId: 'p1', boxes: 3, accountId: 'mpesa' }] }, rep), /Only 2 boxes.*3 boxes are in a return waiting/);
   assert.equal(db.committed.length, 0);
   db.pendingReturnByProduct = {};
 });
