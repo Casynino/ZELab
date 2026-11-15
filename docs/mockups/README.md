@@ -61,6 +61,11 @@ position taken. Do not type a size into it that the die does not show.
 keeps the previous release's pictures one more deploy, so a page still cached
 at the edge never points at a deleted file.
 
+**Print files (15 Nov 2026):** `dieline_qr.py <factory die-line.pdf> <out.pdf> 70x36|77x44` puts the
+new code into the factory's own die-line and strips Illustrator's hidden copy of the artwork
+(`/PieceInfo`), which still held the old codes and is what Illustrator opens. Render the mockups and
+factory packs from its output, never from the factory file. The docstring lists the checks to run.
+
 Each box's QR page describes that box only: `/p` is the 70 × 36, `/p2` the
 77 × 44. The codes are written by `qr.js` and print in CAPITALS — a QR has a
 cheaper mode for capitals and digits, and the page lower-cases the path it
