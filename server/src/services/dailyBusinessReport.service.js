@@ -92,6 +92,9 @@ async function buildDailyData(dateKey) {
       grossProfit: rep.grossProfit,
       expenses: rep.expenses,
       netProfit: rep.netProfit,
+      // The one net profit's parts the PDF names: stock lost, and boxes sold before a buying price was set.
+      stockLoss: rep.stockLoss || 0,
+      noCost: rep.noCost || { boxes: 0, revenue: 0 },
       moneyIn: rep.cashFlow.moneyIn,
       moneyOut: rep.cashFlow.moneyOut,
       netCash: rep.cashFlow.net,

@@ -561,10 +561,12 @@ async function analysis() {
   // back null so the screen can say so instead of printing a confident 0%.
   const growth = (now, before) => (before > 0 ? round2(((now - before) / before) * 100) : null);
   const share = (part, whole) => (whole > 0 ? round2((part / whole) * 100) : null);
+  // Margins are over the revenue whose cost is known: a box sold before a buying price was set is never "100% kept".
+  const costedRevenue = round2(month.revenue - (month.noCost?.revenue || 0));
   const health = {
-    grossMargin: share(month.grossProfit, month.revenue),
+    grossMargin: share(month.grossProfit, costedRevenue),
     expenseRatio: share(month.expenses, month.revenue),
-    netMargin: share(month.netProfit, month.revenue),
+    netMargin: share(month.netProfit, costedRevenue),
     revenueGrowth: growth(month.revenue, lastMonth.revenue),
     profitGrowth: growth(month.grossProfit, lastMonth.grossProfit),
     overdueShare: share(ageing.overdueValue, ageing.total),
@@ -698,6 +700,10 @@ async function command() {
       grossProfitToday: today.profit,
       marginToday: today.margin,
       boxesSoldToday: today.boxes,
+      // Boxes sold before a buying price was set, per window: in revenue, not in profit or margin.
+      noCostToday: today.noCost || { boxes: 0, revenue: 0 },
+      noCostWeek: week.noCost || { boxes: 0, revenue: 0 },
+      noCostMonth: pm.noCost || { boxes: 0, revenue: 0 },
       revenueWeek: week.revenue,
       grossProfitWeek: week.profit,
       marginWeek: week.margin,
@@ -768,6 +774,8 @@ async function command() {
       grossProfit: fin.grossProfit,
       expenses: fin.expenses,
       netProfit: fin.netProfit,
+      // Boxes sold before a buying price was set: in revenue, not in profit (said on the page).
+      noCost: fin.noCost || { boxes: 0, revenue: 0 },
       moneyIn: fin.flow.today.moneyIn,
       moneyOut: fin.flow.today.moneyOut,
       netCash: fin.flow.today.net,
@@ -780,11 +788,12 @@ async function command() {
         revenue: periods.week.revenue,
         grossProfit: periods.week.profit,
         boxes: periods.week.boxes,
+        noCost: periods.week.noCost || { boxes: 0, revenue: 0 },
         start: periods.week.range.start,
         end: periods.week.range.end,
       }
       : null,
-    month: { revenue: profMonth.totals.revenue, grossProfit: profMonth.totals.profit, boxes: profMonth.totals.boxes },
+    month: { revenue: profMonth.totals.revenue, grossProfit: profMonth.totals.profit, boxes: profMonth.totals.boxes, noCost: profMonth.totals.noCost || { boxes: 0, revenue: 0 } },
     brands,
     reps,
     attention: {

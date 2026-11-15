@@ -117,14 +117,20 @@ const profit = asyncHandler(async (req, res) => {
       { header: 'Metric', key: 'metric', width: 28 },
       { header: 'Amount', key: 'amount', width: 20, align: 'right' },
     ],
+    // The lines add up as read (sale00): net = gross − expenses − stock lost. Discounts are already inside revenue,
+    // so they are a note, never a line between gross and net.
     rows: [
-      { metric: 'Revenue', amount: data.revenue },
+      { metric: 'Revenue (after discounts)', amount: data.revenue },
+      ...(data.noCost?.boxes > 0
+        ? [{ metric: `  of which ${data.noCost.boxes} boxes sold before a buying price was set (not in profit)`, amount: data.noCost.revenue }]
+        : []),
       { metric: 'Cost of Goods Sold', amount: data.cogs },
       { metric: 'Gross Profit', amount: data.grossProfit },
       { metric: 'Gross Margin %', amount: data.grossMargin },
-      { metric: 'Discounts Given', amount: data.discounts },
-      { metric: 'Shrinkage & Damage', amount: data.shrinkageAndDamageValue },
+      { metric: 'Expenses', amount: data.expenses },
+      { metric: 'Stock lost (written off, damaged or missing on orders)', amount: data.stockLoss },
       { metric: 'Net Profit', amount: data.netProfit },
+      { metric: 'Note: discounts given (already inside revenue)', amount: data.discounts },
     ],
   });
 });

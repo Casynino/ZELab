@@ -58,7 +58,8 @@ function headlineFigures(d) {
   const ex = d.extras;
   const p = ex.prev;
   const dl = (cur, prev) => (p ? pct(cur, prev) : null);
-  const gm = share(f.grossProfit, f.revenue);
+  // Margin over the sales whose cost is known: boxes sold before a buying price was set are not in profit.
+  const gm = share(f.grossProfit, f.revenue - (f.noCost?.revenue || 0));
   return [
     { label: 'Revenue', value: tsh(f.revenue), delta: dl(f.revenue, p?.revenue), sub: plural(ex.orders, 'sale', 'sales') },
     { label: 'Gross profit', value: tsh(f.grossProfit), delta: dl(f.grossProfit, p?.grossProfit), sub: `${oneDp(gm)} margin` },
@@ -173,7 +174,8 @@ function inShort(d, cfg) {
     if (ch != null) s += `, ${ch >= 0 ? 'up' : 'down'} ${Math.abs(Math.round(ch))}% on ${cfg.compare || d.prevLabel}`;
     lines.push(`${s}.`);
   }
-  lines.push(`Net profit was ${tsh(f.netProfit)}${f.netProfit < 0 ? ' (a loss)' : ''} after ${tsh(f.expenses)} of expenses; ${tsh(f.moneyIn)} came in and ${tsh(f.moneyOut)} went out.`);
+  lines.push(`Net profit was ${tsh(f.netProfit)}${f.netProfit < 0 ? ' (a loss)' : ''} after ${tsh(f.expenses)} of expenses${f.stockLoss > 0 ? ` and ${tsh(f.stockLoss)} of stock lost` : ''}; ${tsh(f.moneyIn)} came in and ${tsh(f.moneyOut)} went out.`);
+  if (f.noCost?.boxes > 0) lines.push(`${plural(f.noCost.boxes, 'box was', 'boxes were')} sold before a buying price was set (${tsh(f.noCost.revenue)}): in sales, not in profit.`);
   const best = [...ex.byDay].sort((a, b) => b.revenue - a.revenue)[0];
   if (cfg !== KINDS.daily && best && best.revenue > 0 && ex.byDay.length > 1) lines.push(`Best day: ${best.long}, with ${tsh(best.revenue)} in sales.`);
   const brand = [...d.brands].sort((a, b) => b.revenue - a.revenue)[0];

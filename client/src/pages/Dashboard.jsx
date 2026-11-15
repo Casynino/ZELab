@@ -369,6 +369,13 @@ function Analysis({ a, navigate }) {
           value={formatCurrency(ageing.total)}
           note={ageing.overdueValue > 0 ? `${formatCurrency(ageing.overdueValue)} of it past the deadline` : 'all of it still inside its deadline'} />
       </div>
+      {/* Boxes sold before a buying price was set: counted in revenue, left out of profit and margin (15 Nov 2026). */}
+      {(month.noCost?.boxes ?? 0) > 0 && (
+        <p className="-mt-2 mb-4 text-xs text-amber-300 sm:-mt-3 sm:mb-5">
+          {formatNumber(month.noCost.boxes)} {month.noCost.boxes === 1 ? 'box' : 'boxes'} sold before a buying price was set
+          ({formatCurrency(month.noCost.revenue)}) — in revenue, not in profit.
+        </p>
+      )}
 
       <div className="mb-4 grid gap-3 sm:mb-5 lg:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
         <div className="card overflow-hidden">
@@ -592,19 +599,19 @@ export default function Dashboard() {
     today: {
       key: 'today', label: 'Today', heading: 'Today',
       when: tzDateLabel({ weekday: 'long', day: 'numeric', month: 'long' }),
-      revenue: today.revenue, grossProfit: today.grossProfit, boxes: today.boxesSold ?? 0,
+      revenue: today.revenue, grossProfit: today.grossProfit, boxes: today.boxesSold ?? 0, noCost: today.noCost,
       suffix: 'Today', available: true,
     },
     week: {
       key: 'week', label: 'This week', heading: 'This week',
       when: week ? `${eatDay(week.start)} – ${eatDay(week.end)}` : 'Monday to Sunday',
-      revenue: week?.revenue ?? 0, grossProfit: week?.grossProfit ?? 0, boxes: week?.boxes ?? 0,
+      revenue: week?.revenue ?? 0, grossProfit: week?.grossProfit ?? 0, boxes: week?.boxes ?? 0, noCost: week?.noCost,
       suffix: 'Week', available: Boolean(week),
     },
     month: {
       key: 'month', label: 'This month', heading: `This month · ${tzDateLabel({ month: 'long' })}`,
       when: tzDateLabel({ month: 'long', year: 'numeric' }),
-      revenue: month.revenue, grossProfit: month.grossProfit, boxes: month.boxes,
+      revenue: month.revenue, grossProfit: month.grossProfit, boxes: month.boxes, noCost: month.noCost,
       suffix: 'Month', available: true,
     },
   };
@@ -893,7 +900,9 @@ export default function Dashboard() {
 
         <div className="glass-list grid grid-cols-1 divide-y divide-white/[0.06] sm:grid-cols-3 sm:divide-x sm:divide-y-0">
           {(() => {
-            const margin = shown.revenue > 0 ? (shown.grossProfit / shown.revenue) * 100 : null;
+            // Margin over the revenue whose cost is known (boxes sold before a buying price was set are left out).
+            const costed = shown.revenue - (shown.noCost?.revenue || 0);
+            const margin = costed > 0 ? (shown.grossProfit / costed) * 100 : null;
             const cells = [
               {
                 label: 'Revenue', value: formatCurrency(shown.revenue),
@@ -910,6 +919,7 @@ export default function Dashboard() {
                 tone: 'text-foreground',
               },
             ];
+            if ((shown.noCost?.boxes ?? 0) > 0) cells[1].sub = `${formatNumber(shown.noCost.boxes)} boxes with no buying price — not in profit`;
             return cells.map((c) => (
               <div key={c.label} className="flex items-baseline justify-between gap-3 px-4 py-2.5">
                 <div className="min-w-0">
@@ -1124,7 +1134,11 @@ export default function Dashboard() {
                   </div>
                   <div className="grid grid-cols-2 gap-2.5 xl:grid-cols-3">
                     <Mini label="Revenue" value={formatCurrency(b[`revenue${shown.suffix}`])} sub={`${formatNumber(b[`boxesSold${shown.suffix}`])} boxes sold`} />
-                    <Mini label="Gross profit" value={formatCurrency(b[`grossProfit${shown.suffix}`])} sub={`${b[`margin${shown.suffix}`]}% margin`} />
+                    {/* A box sold before a buying price was set is in revenue, never in profit or margin. */}
+                    <Mini label="Gross profit" value={formatCurrency(b[`grossProfit${shown.suffix}`])}
+                      sub={(b[`noCost${shown.suffix}`]?.boxes ?? 0) > 0
+                        ? `${formatNumber(b[`noCost${shown.suffix}`].boxes)} boxes with no buying price — not in profit`
+                        : `${b[`margin${shown.suffix}`]}% margin`} />
                     <Mini label="Inventory value" value={formatCurrency(b.inventoryValue)} />
                     <Mini label="In warehouse" value={`${formatNumber(b.warehouseBoxes)} boxes`} />
                     <Mini label="With reps" value={`${formatNumber(b.repBoxes)} boxes`} />
