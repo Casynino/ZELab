@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useReducedMotion } from 'motion/react';
+import { useReducedMotion } from '@/lib/reducedMotion';
 import { flushSync } from 'react-dom';
 import { useNavigate, useLocation, Navigate, Link } from 'react-router-dom';
 import { useForm } from 'react-hook-form';

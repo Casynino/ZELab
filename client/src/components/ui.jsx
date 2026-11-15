@@ -4,7 +4,7 @@ import {
   withCommas, meaning, sameNumber, toPlain, readTyped, readPaste, stepPlain, rangeMessage, countsForCaret, caretAfter,
 } from '@/lib/typedNumber';
 import { timeLeftLabel } from '@/lib/labels';
-import { motion, useReducedMotion } from 'motion/react';
+import { useReducedMotion } from '@/lib/reducedMotion';
 import { Loader2, X, ChevronLeft, ChevronRight, Search, Inbox, AlertTriangle } from 'lucide-react';
 import { useBackToClose } from '@/lib/useBackToClose';
 
@@ -623,13 +623,18 @@ export function StatCard({ label, value, icon: Icon, hint, tone = 'brand', onCli
   // An unknown tone is neutral, never a silent red (a 'sky' or 'default' used to turn into brand red).
   const t = STAT_TONES[tone] || STAT_TONES.slate;
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.4, ease: [0.2, 0.7, 0.3, 1] }}
-      whileHover={onClick ? { y: -4 } : { y: -2 }}
+    // The figure is there at once (15 Nov 2026): the card used to rise in over 0.4 s every time a page
+    // opened, figures already in memory included. The small lift under a mouse pointer stays, in CSS; as
+    // before, a tap on a phone does not leave the card lifted, and less motion means no lift.
+    <div
       onClick={onClick}
-      className={clsx('stat-glass', compact ? 'p-3' : 'p-3.5 sm:p-5', onClick && 'cursor-pointer')}
+      className={clsx(
+        'stat-glass transition-transform duration-200 ease-out',
+        onClick
+          ? '[@media(hover:hover)_and_(prefers-reduced-motion:no-preference)]:hover:-translate-y-1'
+          : '[@media(hover:hover)_and_(prefers-reduced-motion:no-preference)]:hover:-translate-y-0.5',
+        compact ? 'p-3' : 'p-3.5 sm:p-5', onClick && 'cursor-pointer',
+      )}
     >
       <div className="relative flex items-start justify-between gap-3">
         <span className={clsx('font-medium text-white/60', compact ? 'text-xs' : 'text-sm')}>{label}</span>
@@ -647,6 +652,6 @@ export function StatCard({ label, value, icon: Icon, hint, tone = 'brand', onCli
         compact ? 'mt-1.5 text-base xl:text-lg' : 'mt-2 text-base sm:mt-3 sm:text-xl xl:text-2xl',
       )}>{value}</div>
       {hint && <div className={clsx('relative text-faint', compact ? 'mt-0.5 text-[11px]' : 'mt-1 text-xs')}>{hint}</div>}
-    </motion.div>
+    </div>
   );
 }

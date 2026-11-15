@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useReducedMotion } from 'motion/react';
+import { useReducedMotion } from '@/lib/reducedMotion';
 
 // Its own file because it is plain SVG: the profile page draws rings and no
 // other chart, so it should not have to download the chart library (recharts,

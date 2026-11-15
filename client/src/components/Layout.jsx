@@ -3,7 +3,6 @@ import { InstallPrompt, InstallButton } from '@/components/InstallApp';
 import ConnectionNotice from '@/components/ConnectionNotice';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { NavLink, Outlet, useNavigate, useLocation, useNavigationType } from 'react-router-dom';
-import { motion } from 'motion/react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import clsx from 'clsx';
@@ -914,17 +913,16 @@ export default function Layout() {
               sliding panel is two re-samples of the whole page per frame, and
               a phone shows that as a shudder. */}
           <div className="absolute inset-0 bg-[#050605]/80" onClick={() => setDrawer(null)} />
-          <motion.div
-            initial={{ x: -24, opacity: 0.6 }}
-            animate={{ x: 0, opacity: 1 }}
-            transition={{ duration: 0.2, ease: 'easeOut' }}
+          {/* The same short slide as before (0.2 s from 24px left), as a CSS animation: drawer-in in
+              index.css. The shell no longer loads the animation library for it (15 Nov 2026). */}
+          <div
             /* Narrower than it was, and the menu words are one simple word each
                now (owner, 9 and 10 Nov 2026) — nothing wraps at this width, and
                a wider panel would just be taking a phone for no reason. */
-            className="absolute bottom-[calc(0.75rem+env(safe-area-inset-bottom))] left-3 top-[calc(0.75rem+env(safe-area-inset-top))] w-[12.75rem] max-w-[62vw]"
+            className="drawer-in absolute bottom-[calc(0.75rem+env(safe-area-inset-bottom))] left-3 top-[calc(0.75rem+env(safe-area-inset-top))] w-[12.75rem] max-w-[62vw]"
           >
             <GlassSidebar mode="sheet" {...shared} onNavigate={() => setDrawer(null)} />
-          </motion.div>
+          </div>
         </div>
       )}
 
@@ -988,14 +986,12 @@ export default function Layout() {
               </div>
               {/* No signal, or figures kept from before a refresh failed: said once, above the page. */}
               <ConnectionNotice />
-              <motion.div
-                key={location.pathname}
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.3, ease: 'easeOut' }}
-              >
+              {/* The page shows at once (15 Nov 2026). It used to fade and rise in over 0.3 s on every
+                  open, so figures already in memory stayed half-visible for a third of a second. The key
+                  stays: a new address still starts its page fresh, as before. */}
+              <div key={location.pathname}>
                 <Outlet />
-              </motion.div>
+              </div>
             </div>
           </main>
           {/* The room the tab bar stands in. Without it the bar is a lid: the

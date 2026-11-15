@@ -638,6 +638,15 @@ body {
   .hello-in { animation: none; }
 }
 
+/* The phone's menu drawer slides in from the left (Layout.jsx): 24px and 0.2 s, as it did when the
+   animation library drew it. Plain CSS since 15 Nov 2026, so the page shell does not load that library.
+   Simply there for anybody who has asked for less motion. */
+.drawer-in { animation: drawer-in 0.2s ease-out backwards; }
+@keyframes drawer-in { from { opacity: 0.6; transform: translateX(-24px); } }
+@media (prefers-reduced-motion: reduce) {
+  .drawer-in { animation: none; }
+}
+
 /* ───────── A table that turns into cards (ui.jsx <Table stack>) ─────────
    When the table's own box is narrower than 40rem — a phone, a window on a phone, a narrow column —
    (48rem for a wide list, <Table stack="wide">, so a tablet gets the cards too) —
