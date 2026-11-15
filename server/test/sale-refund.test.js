@@ -237,7 +237,7 @@ test('part refund: the line, the sale, the stock and the money all come down tog
   const back = db.money[1];
   assert.deepEqual(
     { accountId: back.accountId, direction: back.direction, type: back.type, amount: back.amount, refType: back.refType, refId: back.refId, brandId: back.brandId, category: back.category },
-    { accountId: 'mpesa', direction: 'IN', type: 'WAREHOUSE_SALE', amount: -20000, refType: 'Sale', refId: 's1', brandId: 'ohis', category: 'Customer refund' },
+    { accountId: 'mpesa', direction: 'IN', type: 'WAREHOUSE_SALE', amount: -20000, refType: 'SaleRefund', refId: 's1', brandId: 'ohis', category: 'Customer refund' },
   );
   assert.ok(Date.now() - new Date(back.occurredAt).getTime() < 60e3, 'dated when the money went back');
   assert.match(back.description, /Refund to customer \(2 boxes back\) — SALE-9/);

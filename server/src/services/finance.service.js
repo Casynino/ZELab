@@ -368,7 +368,9 @@ async function backfillFromHistory() {
       },
       orderBy: { soldAt: 'asc' },
     }),
-    prisma.financeTransaction.findMany({ where: { refType: 'Sale' }, select: { refId: true } }),
+    // A sale with any money row — its takings, a payment collected later, money handed back — is covered: its
+    // money is already in the ledger and is never booked again from the sale (15 Nov 2026).
+    prisma.financeTransaction.findMany({ where: { refType: { in: ['Sale', 'SalePayment', 'SaleRefund'] } }, select: { refId: true } }),
   ]);
   const have = new Set(existingSaleTxns.map((t) => t.refId));
 
@@ -1192,7 +1194,7 @@ async function reverseTransaction(id, { reason } = {}, actor) {
     }
     const linked = ['Supplier', 'PurchaseOrder'].includes(original.refType) && original.type === 'STOCK_PURCHASE';
     if (!REVERSIBLE_TYPES.includes(original.type) || (original.refType && !linked && original.type !== 'TRANSFER')) {
-      const where = original.refType === 'Sale' ? 'Cancel the sale it came from.'
+      const where = ['Sale', 'SalePayment', 'SaleRefund'].includes(original.refType) ? 'Cancel or refund the sale it came from.'
         : original.refType === 'CommissionWithdrawal' ? 'It is a rep payout, recorded with the withdrawal.'
           : original.refType === 'PurchaseOrder' || original.refType === 'Supplier' ? 'It is a supplier or purchase order payment.'
             : 'It was recorded by the app, not typed in.';

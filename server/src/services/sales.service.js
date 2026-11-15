@@ -48,8 +48,10 @@ async function assertCashBack(tx, takes, what) {
 // sale's money rows. It writes a dated contra row — same account, same kind, minus the amount handed back,
 // occurredAt = the moment it was handed back — exactly like Reverse does for typed-in entries. So the sale's
 // day keeps the money that came in, the refund day shows the money that went back, and both carry who did it.
-// Every row of a sale's money is filed under refType 'Sale' / refId = the sale: the takings at the till, a
-// payment collected later (recordSalePayment), and these contra rows.
+// Every row of a sale's money carries refId = the sale: its takings at the till are refType 'Sale' (ONE per sale —
+// a unique index keeps the till's income from ever being booked twice), a payment collected later is
+// 'SalePayment' (recordSalePayment) and money handed back is 'SaleRefund' (these contra rows).
+const SALE_MONEY_REFS = ['Sale', 'SalePayment', 'SaleRefund'];
 
 // What each account still holds of this sale's money: its rows netted per account (contra rows included),
 // newest takings first. Rows dated before the books began (the finance epoch) are history in no balance, so
@@ -58,7 +60,7 @@ async function saleMoneyHeld(tx, saleId) {
   const reports = require('./reports.service'); // eslint-disable-line global-require
   const epoch = await reports.financeEpoch();
   const rows = await tx.financeTransaction.findMany({
-    where: { refType: 'Sale', refId: saleId, direction: 'IN' },
+    where: { refType: { in: SALE_MONEY_REFS }, refId: saleId, direction: 'IN' },
     orderBy: [{ occurredAt: 'asc' }, { createdAt: 'asc' }],
     include: { account: { select: { id: true, name: true } } },
   });
@@ -96,7 +98,7 @@ async function writeMoneyBack(tx, sale, takes, { category, words, actor, notes }
         category,
         description: `${words} — ${sale.saleNumber}`.slice(0, 500),
         reference: sale.saleNumber,
-        refType: 'Sale',
+        refType: 'SaleRefund',
         refId: sale.id,
         notes: notes ? String(notes).slice(0, 2000) : null,
         occurredAt: new Date(),
@@ -714,8 +716,8 @@ async function refundSale(id, { items, reason, version } = {}, actor) {
 // ── Money a customer pays later (15 Nov 2026) ─────────────────────────────────────────────────────────
 // The rest of a part-paid counter sale, or a payment on a credit sale, is received INTO the account the customer
 // paid into, in the same transaction that lowers what is owed — so the account holds exactly the money the sale
-// says was paid, and the zero rule judges real balances. The row is filed under the sale like its takings
-// (refType 'Sale'), so a later Cancel or refund gives this money back too. One payment at a time per sale (row
+// says was paid, and the zero rule judges real balances. The row is filed under the sale (refType 'SalePayment',
+// refId = the sale), so a later Cancel or refund gives this money back too. One payment at a time per sale (row
 // lock); `clientKey` makes a double tap record nothing the second time.
 async function recordSalePayment(id, { amount, accountId, clientKey, paidAt, method, reference, notes } = {}, actor) {
   const finance = require('./finance.service'); // eslint-disable-line global-require
@@ -757,7 +759,7 @@ async function recordSalePayment(id, { amount, accountId, clientKey, paidAt, met
       category: 'Sale payment',
       description: `Payment on ${sale.saleNumber}${sale.customer?.name ? ` — ${sale.customer.name}` : ''}`,
       reference: sale.saleNumber,
-      refType: 'Sale',
+      refType: 'SalePayment',
       refId: sale.id,
       clientKey: clientKey || null,
       notes: notes || null,
@@ -801,7 +803,7 @@ async function recordSalePayment(id, { amount, accountId, clientKey, paidAt, met
 async function saleMoneyAndRefunds(id) {
   const [rows, logs] = await Promise.all([
     prisma.financeTransaction.findMany({
-      where: { refType: 'Sale', refId: id, direction: 'IN' },
+      where: { refType: { in: SALE_MONEY_REFS }, refId: id, direction: 'IN' },
       orderBy: { occurredAt: 'asc' },
       select: { amount: true, account: { select: { id: true, name: true } } },
     }),
@@ -826,4 +828,4 @@ async function saleMoneyAndRefunds(id) {
   };
 }
 
-module.exports = { createSale, createSaleTx, listSales, getSale, cancelSale, cancelSaleTx, refundSale, recordSalePayment, saleMoneyAndRefunds, resolveSaleRegion, SALE_INCLUDE, REP_SALE_REFUSED };
+module.exports = { createSale, createSaleTx, listSales, getSale, cancelSale, cancelSaleTx, refundSale, recordSalePayment, saleMoneyAndRefunds, resolveSaleRegion, SALE_INCLUDE, REP_SALE_REFUSED, SALE_MONEY_REFS };
