@@ -22,6 +22,16 @@ export default {
            same number in red is 45% and fails it. So a fill is brand-500 with
            white on it, and a word is brand-600. The one hex that must be
            exactly right is 500 — change it here and nowhere else. */
+        /* Commission and earnings: a soft champagne gold (Nino, 15 Nov 2026 — the violet did not suit the house
+           colours). Gold sits with the red and the near-black; it is never the red (money owed), the green
+           (money settled) or the amber of a near deadline. Words are earn-300, fills earn-500. */
+        earn: {
+          200: '#f3dda8',
+          300: '#e9c77b',
+          400: '#ddb25c',
+          500: '#c9973a',
+          600: '#a87a26',
+        },
         brand: {
           50: '#2a0a06',
           100: '#431009',

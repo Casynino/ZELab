@@ -4,7 +4,7 @@ import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Cell, PieChart, Pie,
 } from 'recharts';
 import { formatCurrency, formatNumber } from '@/lib/format';
-import { VIOLET, VIOLET_LIGHT, violetA } from '@/lib/brand';
+import { EARN, EARN_LIGHT, earnA } from '@/lib/brand';
 
 // ===========================================================================
 // The rep's commission page as pictures (Nino, 10 Nov 2026: "don't just show
@@ -103,8 +103,8 @@ export function EarningsCard({ insights }) {
           <YAxis tick={AXIS} tickLine={false} axisLine={false} tickFormatter={compact} width={46} />
           <Tooltip content={<MoneyTip />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
           <Bar dataKey="earned" radius={[6, 6, 0, 0]} maxBarSize={34}>
-            {/* Earnings in violet, not the house red that reads as money owed (Nino, 15 Nov 2026; ui-re04). */}
-            {months.map((m, i) => <Cell key={m.key} fill={i === bestIdx ? VIOLET : violetA(0.42)} />)}
+            {/* Earnings in gold, not the house red that reads as money owed (Nino, 15 Nov 2026). */}
+            {months.map((m, i) => <Cell key={m.key} fill={i === bestIdx ? EARN_LIGHT : earnA(0.45)} />)}
           </Bar>
         </BarChart>
       </ResponsiveContainer>
@@ -112,9 +112,9 @@ export function EarningsCard({ insights }) {
   );
 }
 
-// What he earned, by brand: led by violet, with no red or coral in it — red reads as money owed, and commission
-// and earnings are violet (Nino, 15 Nov 2026; audit ui-re04).
-const EARN_SERIES = [VIOLET, '#38bdf8', '#f59e0b', '#10b981', '#c4b5fd', '#facc15', '#94a3b8'];
+// What he earned, by brand: led by gold, with no red or coral in it — red reads as money owed, and commission
+// and earnings are gold (Nino, 15 Nov 2026). No amber or yellow beside it, so the lead colour stays its own.
+const EARN_SERIES = [EARN_LIGHT, '#38bdf8', '#10b981', '#a78bfa', '#94a3b8', '#e2e8f0', '#f9a8d4'];
 
 /** Where the commission comes from, by brand — a donut with the share of each. */
 export function BrandCard({ insights }) {
@@ -206,9 +206,9 @@ export function TopProductsCard({ insights }) {
             <p className="mt-3 text-[24px] font-bold leading-none tabular-nums text-white">{formatCurrency(first.earned)}</p>
             <p className="mt-1 text-[11px] text-white/45">{formatNumber(first.boxes)} boxes</p>
           </div>
-          {/* Its share of what he earned: violet, as all earnings are (ui-re04). */}
-          <div style={{ filter: `drop-shadow(0 0 8px ${violetA(0.45)})` }}>
-            <Ring size={76} stroke={7} total={100} segments={[{ value: share, color: VIOLET_LIGHT }]}>
+          {/* Its share of what he earned: gold, as all earnings are. */}
+          <div style={{ filter: `drop-shadow(0 0 8px ${earnA(0.4)})` }}>
+            <Ring size={76} stroke={7} total={100} segments={[{ value: share, color: EARN_LIGHT }]}>
               <span className="text-base font-bold leading-none tabular-nums text-white">{Math.round(share)}%</span>
               <span className="mt-1 text-[9px] text-white/45">of earned</span>
             </Ring>

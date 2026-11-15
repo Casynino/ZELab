@@ -226,7 +226,7 @@ const ACTIVITY_META = {
   ISSUE: { icon: Package, cls: 'text-amber-300 bg-amber-500/10' },
   SETTLEMENT: { icon: CheckCircle2, cls: 'text-emerald-400 bg-emerald-500/10' },
   RETURN: { icon: Undo2, cls: 'text-sky-400 bg-sky-500/10' },
-  COMMISSION: { icon: Coins, cls: 'text-violet-400 bg-violet-500/10' },
+  COMMISSION: { icon: Coins, cls: 'text-earn-300 bg-earn-500/10' },
 };
 
 

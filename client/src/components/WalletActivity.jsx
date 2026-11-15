@@ -3,11 +3,12 @@ import { useQuery } from '@tanstack/react-query';
 import clsx from 'clsx';
 import { Modal, PageSpinner, LoadError } from '@/components/ui';
 import { pageQueries } from '@/lib/pageQueries';
-import { formatCurrency, formatDate } from '@/lib/format';
+import { formatCurrency } from '@/lib/format';
 
 // Everything behind the rep's wallet card (Nino, 15 Nov 2026: the card shows only the balance; tapping it
 // opens every transaction, and here he sees what he has earned and been paid in total). The totals come
-// from the same answer as the list, so the two always agree.
+// from the same answer as the list, so the two always agree. Kept small and plain ("nice and well arranged,
+// no need to be big"): one slim summary, then the statement.
 
 const FILTERS = [
   { key: 'all', label: 'All' },
@@ -17,13 +18,15 @@ const FILTERS = [
 ];
 const PAGE = 60;
 const boxes = (n) => `${n} ${n === 1 ? 'box' : 'boxes'}`;
+// The month is the heading, so a row only needs the day.
+const day = (at) => new Date(at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
 
 function describe(it) {
   switch (it.kind) {
-    case 'EARNED': return { title: 'Commission', sub: [boxes(it.boxes), it.ref], tone: 'text-violet-300', sign: '+' };
-    case 'BONUS': return { title: 'Bonus', sub: ['Sales target reached'], tone: 'text-violet-300', sign: '+' };
+    case 'EARNED': return { title: 'Commission', sub: [boxes(it.boxes), it.ref], tone: 'text-earn-300', sign: '+' };
+    case 'BONUS': return { title: 'Bonus', sub: ['Sales target reached'], tone: 'text-earn-300', sign: '+' };
     case 'ADJUSTMENT': return {
-      title: 'Adjustment', sub: [it.ref || 'Set by ZELab'], tone: it.amount >= 0 ? 'text-violet-300' : 'text-rose-300', sign: it.amount >= 0 ? '+' : '−',
+      title: 'Adjustment', sub: [it.ref || 'Set by ZELab'], tone: it.amount >= 0 ? 'text-earn-300' : 'text-rose-300', sign: it.amount >= 0 ? '+' : '−',
     };
     case 'PAID_OUT': return { title: 'Paid to you', sub: [it.ref], tone: 'text-foreground', sign: '−' };
     case 'WAITING': return {
@@ -34,15 +37,6 @@ function describe(it) {
       : { title: it.late ? 'Late fine' : 'Fine', sub: [it.ref, it.day ? `day ${it.day}` : null], tone: 'text-rose-300', sign: '−' };
     default: return { title: it.kind, sub: [], tone: 'text-foreground', sign: '' };
   }
-}
-
-function Total({ label, value, tone }) {
-  return (
-    <div className="min-w-0 rounded-xl bg-white/[0.04] px-3 py-2.5 ring-1 ring-inset ring-white/[0.06]">
-      <p className="text-[11px] text-muted">{label}</p>
-      <p className={clsx('mt-0.5 truncate text-[15px] font-bold tabular-nums', tone)}>{formatCurrency(value)}</p>
-    </div>
-  );
 }
 
 export default function WalletActivity({ open, onClose }) {
@@ -74,24 +68,36 @@ export default function WalletActivity({ open, onClose }) {
   return (
     <Modal open={open} onClose={onClose} title="My wallet">
       {q.isError && !data ? <LoadError what="your wallet" onRetry={q.refetch} /> : !data ? <PageSpinner /> : (
-        <div className="space-y-5">
-          <div>
-            <p className="text-[12px] text-muted">Available balance</p>
-            <p className={clsx('mt-0.5 text-[28px] font-bold leading-tight tabular-nums', t.balance < 0 ? 'text-rose-300' : 'text-foreground')}>
+        <div className="space-y-4">
+          {/* One slim summary: the balance, then earned and paid out side by side. Fines and a request still
+              waiting are said only when there are any. */}
+          <div className="rounded-2xl bg-white/[0.03] px-4 py-3.5 ring-1 ring-inset ring-white/[0.06]">
+            <p className="text-[11px] text-muted">Available balance</p>
+            <p className={clsx('mt-0.5 text-[22px] font-bold leading-tight tabular-nums', t.balance < 0 ? 'text-rose-300' : 'text-foreground')}>
               {formatCurrency(t.balance)}
             </p>
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <Total label="Total earned" value={t.earned} tone="text-violet-300" />
-            <Total label="Total paid out" value={t.paid} tone="text-foreground" />
-            <Total label="Fines" value={t.fines} tone={t.fines > 0 ? 'text-rose-300' : 'text-faint'} />
-            <Total label="Waiting to be paid" value={t.waiting} tone={t.waiting > 0 ? 'text-amber-300' : 'text-faint'} />
+            <div className="mt-3 grid grid-cols-2 border-t border-white/[0.06] pt-3">
+              <div className="min-w-0 pr-3">
+                <p className="text-[11px] text-muted">Total earned</p>
+                <p className="mt-0.5 truncate text-[14px] font-semibold tabular-nums text-earn-300">{formatCurrency(t.earned)}</p>
+              </div>
+              <div className="min-w-0 border-l border-white/[0.06] pl-3">
+                <p className="text-[11px] text-muted">Total paid out</p>
+                <p className="mt-0.5 truncate text-[14px] font-semibold tabular-nums text-foreground">{formatCurrency(t.paid)}</p>
+              </div>
+            </div>
+            {(t.fines > 0 || t.waiting > 0) && (
+              <p className="mt-2.5 flex flex-wrap gap-x-3 text-[11.5px] tabular-nums">
+                {t.fines > 0 && <span className="text-rose-300">Fines {formatCurrency(t.fines)}</span>}
+                {t.waiting > 0 && <span className="text-amber-300">Waiting to be paid {formatCurrency(t.waiting)}</span>}
+              </p>
+            )}
           </div>
 
-          <div className="flex gap-2 overflow-x-auto [scrollbar-width:none] [&>*]:shrink-0">
+          <div className="flex gap-1.5 overflow-x-auto [scrollbar-width:none] [&>*]:shrink-0">
             {FILTERS.map((f) => (
               <button key={f.key} type="button" onClick={() => { setFilter(f.key); setShown(PAGE); }}
-                className={clsx('rounded-full px-3.5 py-1.5 text-[13px] font-medium ring-1 ring-inset transition',
+                className={clsx('rounded-full px-3 py-1 text-[12px] font-medium ring-1 ring-inset transition',
                   filter === f.key ? 'bg-white/[0.1] text-foreground ring-white/[0.14]' : 'text-muted ring-white/[0.08] hover:text-foreground')}>
                 {f.label}
               </button>
@@ -101,23 +107,23 @@ export default function WalletActivity({ open, onClose }) {
           {!rows.length ? (
             <p className="py-6 text-center text-sm text-muted">Nothing here yet.</p>
           ) : (
-            <div className="space-y-4">
+            <div className="space-y-3">
               {groups.map((g) => (
                 <section key={g.key}>
-                  <h4 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-faint">{g.label}</h4>
-                  <ul className="divide-y divide-white/[0.06]">
+                  <h4 className="mb-0.5 text-[10.5px] font-semibold uppercase tracking-wide text-faint">{g.label}</h4>
+                  <ul className="divide-y divide-white/[0.05]">
                     {g.items.map((it) => {
                       const d = describe(it);
                       const amount = it.kind === 'FINE' && it.forgiven ? it.fine : Math.abs(it.amount);
                       return (
-                        <li key={it.id} className="flex items-baseline justify-between gap-3 py-2.5">
+                        <li key={it.id} className="flex items-center justify-between gap-3 py-2">
                           <span className="min-w-0">
-                            <span className="block text-[14px] font-medium text-foreground">{d.title}</span>
-                            <span className="block truncate text-[12px] tabular-nums text-muted">
-                              {[formatDate(it.at), ...d.sub].filter(Boolean).join(' · ')}
+                            <span className="block text-[13.5px] font-medium leading-snug text-foreground">{d.title}</span>
+                            <span className="block truncate text-[11.5px] tabular-nums text-muted">
+                              {[day(it.at), ...d.sub].filter(Boolean).join(' · ')}
                             </span>
                           </span>
-                          <span className={clsx('shrink-0 text-[14px] font-semibold tabular-nums', d.tone)}>
+                          <span className={clsx('shrink-0 text-[13.5px] font-semibold tabular-nums', d.tone)}>
                             {d.sign}{formatCurrency(amount)}
                           </span>
                         </li>
@@ -128,7 +134,7 @@ export default function WalletActivity({ open, onClose }) {
               ))}
               {rows.length > shown && (
                 <button type="button" onClick={() => setShown((n) => n + PAGE)}
-                  className="w-full rounded-xl py-2.5 text-[13px] font-medium text-muted ring-1 ring-inset ring-white/[0.08] transition hover:text-foreground">
+                  className="w-full rounded-xl py-2 text-[12px] font-medium text-muted ring-1 ring-inset ring-white/[0.08] transition hover:text-foreground">
                   Show older ({rows.length - shown} more)
                 </button>
               )}

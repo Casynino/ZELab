@@ -138,7 +138,7 @@ const round2ui = (n) => Math.round((Number(n) || 0) * 100) / 100;
 // that says whose money it was — the same violet the Commission card uses, so
 // the row and the account it sits on are visibly the same story.
 const isPayoutRow = (t) => t?.type === 'COMMISSION_PAYMENT';
-const PAYOUT_BADGE = 'bg-violet-500/15 text-violet-300';
+const PAYOUT_BADGE = 'bg-earn-500/15 text-earn-300';
 // What a row says it was. A payout names the rep, because "Commission Payments"
 // is a category, not an answer to "who did I pay?".
 // A bonus payout (14 Nov 2026) is the same kind of row, under 'Bonus Payments', and says so.
@@ -1290,7 +1290,7 @@ function AccountStatementModal({ account, onClose }) {
             <>
               <div>
                 <p className="text-xs text-muted">Commission recorded</p>
-                <p className="text-2xl font-bold tabular-nums text-violet-300">{formatCurrency(account.recorded)}</p>
+                <p className="text-2xl font-bold tabular-nums text-earn-300">{formatCurrency(account.recorded)}</p>
               </div>
               <p className="ml-auto max-w-xs text-right text-[11px] text-faint">
                 Every payout you have made from your own pocket. No money is held here, so there is no balance to show.
@@ -1360,7 +1360,7 @@ function AccountStatementModal({ account, onClose }) {
                       </div>
                     </TD>
                     {isRecord ? (
-                      <TD className="text-right font-semibold tabular-nums text-violet-300">{formatCurrency(t.amount)}</TD>
+                      <TD className="text-right font-semibold tabular-nums text-earn-300">{formatCurrency(t.amount)}</TD>
                     ) : (
                       <>
                         <TD className="text-right font-semibold tabular-nums text-emerald-400">
@@ -1638,7 +1638,7 @@ function Accounts({ onQuick, onNavigate }) {
               const idx = acc && !acc.isCommissionRecord ? colourIdx(acc) : null;
               const payout = isPayoutRow(t);
               // A reversal carries minus the amount: the sign follows the money (signedOf), not just the direction.
-              const tone = payout ? 'text-violet-300' : signedOf(t) >= 0 ? 'text-emerald-300' : 'text-rose-300';
+              const tone = payout ? 'text-earn-300' : signedOf(t) >= 0 ? 'text-emerald-300' : 'text-rose-300';
               const sign = payout ? '' : signedOf(t) >= 0 ? '+' : '−';
               const what = (payout && t.payee ? `Commission to ${t.payee}` : t.description) || t.category || TXN_TYPE_LABEL[t.type] || t.type;
               return (
@@ -1803,7 +1803,7 @@ function Ledger({ expensesOnly }) {
                     onClick={() => setEditing(t)}
                     title={ledgerLabel(t)}
                     figure={payout ? formatCurrency(t.amount) : `${signedOf(t) >= 0 ? '+' : '−'}${formatCurrency(Math.abs(Number(t.amount)))}`}
-                    figureClass={payout ? 'text-violet-300' : signedOf(t) >= 0 ? 'text-emerald-500' : 'text-rose-500'}
+                    figureClass={payout ? 'text-earn-300' : signedOf(t) >= 0 ? 'text-emerald-500' : 'text-rose-500'}
                     sub={[formatDate(t.occurredAt), t.account?.name, t.brandName].filter(Boolean).join(' · ')}
                     badge={<Badge className={payout ? PAYOUT_BADGE : DIR_BADGE[t.direction]}>{TXN_TYPE_LABEL[t.type] || t.type}</Badge>}
                     extra={(payout || t.reversedBy || t.reversalOfId) && (
@@ -1839,7 +1839,7 @@ function Ledger({ expensesOnly }) {
                     <TD><Badge className={isPayoutRow(t) ? PAYOUT_BADGE : DIR_BADGE[t.direction]}>{TXN_TYPE_LABEL[t.type] || t.type}</Badge></TD>
                     {isPayoutRow(t) ? (
                       <TD className="text-right tabular-nums">
-                        <div className="font-semibold text-violet-300">{formatCurrency(t.amount)}</div>
+                        <div className="font-semibold text-earn-300">{formatCurrency(t.amount)}</div>
                         <div className="text-[10px] font-normal text-faint">from your pocket</div>
                       </TD>
                     ) : (

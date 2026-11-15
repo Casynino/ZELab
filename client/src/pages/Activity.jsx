@@ -16,7 +16,7 @@ const KIND = {
   SALE: { icon: ShoppingCart, cls: 'bg-blue-500/15 text-blue-300' },
   PAYMENT: { icon: HandCoins, cls: 'bg-emerald-500/15 text-emerald-300' },
   STOCK_REQUEST: { icon: ClipboardList, cls: 'bg-amber-500/15 text-amber-300' },
-  WITHDRAWAL: { icon: Coins, cls: 'bg-violet-500/15 text-violet-300' },
+  WITHDRAWAL: { icon: Coins, cls: 'bg-earn-500/15 text-earn-300' },
   SETTLEMENT: { icon: Timer, cls: 'bg-sky-500/15 text-sky-300' },
   MOVEMENT: { icon: Boxes, cls: 'bg-white/[0.06] text-white/60' },
 };

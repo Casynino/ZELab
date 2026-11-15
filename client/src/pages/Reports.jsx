@@ -231,7 +231,7 @@ export default function Reports({ embedded = false }) {
                       badge={r.attainment != null ? <span className="text-[12px] tabular-nums text-muted">target {formatPercent(r.attainment)}</span> : null}
                       extra={(
                         <span className="mt-1 block text-[11px] tabular-nums">
-                          <span className="text-violet-300">commission owed {formatCurrency(Math.max(0, Number(r.commissionOwed) || 0))}</span>
+                          <span className="text-earn-300">commission owed {formatCurrency(Math.max(0, Number(r.commissionOwed) || 0))}</span>
                           {r.repOwes > 0 && <span className="text-rose-300"> · owes {formatCurrency(r.repOwes)} in fines</span>}
                         </span>
                       )} />
@@ -244,7 +244,7 @@ export default function Reports({ embedded = false }) {
                     <TR key={r.salesRepId}>
                       <TD><div className="font-medium">{r.name}</div><div className="mt-0.5 text-[11px] text-faint">{r.region || '—'}</div></TD>
                       <TD>{r.orders}</TD><TD>{formatCurrency(r.revenue)}</TD><TD>{formatCurrency(r.profit)}</TD>
-                      <TD className="text-violet-300">{formatCurrency(Math.max(0, Number(r.commissionOwed) || 0))}</TD>
+                      <TD className="text-earn-300">{formatCurrency(Math.max(0, Number(r.commissionOwed) || 0))}</TD>
                       <TD className={r.repOwes > 0 ? 'text-rose-300' : 'text-faint'}>{r.repOwes > 0 ? formatCurrency(r.repOwes) : '—'}</TD>
                       <TD>{r.attainment != null ? formatPercent(r.attainment) : '—'}</TD>
                     </TR>
