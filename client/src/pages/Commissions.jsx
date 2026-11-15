@@ -279,10 +279,11 @@ const rejectQuestion = (w) => (w.source === 'BONUS'
   ? `Reject ${w.salesRep?.user?.name || 'this rep'}'s bonus withdrawal of ${formatCurrency(w.amount)}? They will be told it was not approved; the bonus goes back into their wallet and their bonus count carries on.`
   : `Reject ${w.salesRep?.user?.name || 'this rep'}'s request for ${formatCurrency(w.amount)}? They will be told it was not approved, and the amount goes back into their balance.`);
 
-// A bonus withdrawal (14 Nov 2026) comes out of the bonus pot, not commission. Only the owner pays one (the
-// server refuses anyone else, as bonus payments always were the owner's); staff may still reject it.
+// A bonus withdrawal (14 Nov 2026) comes out of the bonus pot, not commission. Paying any withdrawal takes the
+// money out of a business account, and only the owner moves business money (15 Nov 2026 — the server refuses
+// anyone else); staff may still reject one.
 const isBonusWd = (w) => w?.source === 'BONUS';
-const canPay = (w, isAdmin) => !isBonusWd(w) || isAdmin;
+const canPay = (_w, isAdmin) => !!isAdmin;
 // The small word on a bonus row; a commission row, the usual one, carries none.
 const BonusWord = ({ w, className }) => (isBonusWd(w)
   ? <span className={clsx('shrink-0 text-[10.5px] font-medium text-white/60', className)}>Bonus</span>
@@ -412,8 +413,8 @@ function WithdrawalDetail({ w, balance, isAdmin, onClose, refresh }) {
         {((pending && !confirmReject) || (approved && !payable)) && (
           <p className="text-[11px] leading-snug text-faint">
             {payable
-              ? `Pay asks which account the money leaves (Cash, Airtel Money or M-Pesa), takes it from there${bonus ? ' as a bonus payment' : ''} and tells the rep it has been paid.`
-              : 'Only the owner pays a bonus withdrawal.'}
+              ? `Pay asks which business account the money leaves, takes it from there${bonus ? ' as a bonus payment' : ''} and tells the rep it has been paid.`
+              : 'Only the owner pays a withdrawal — the money leaves a business account.'}
           </p>
         )}
       </div>
@@ -442,7 +443,7 @@ function PendingWithdrawalsStrip({ items, isAdmin, refresh, onOpen }) {
         <Coins className="h-4 w-4 text-amber-400" />
         <h2 className="text-sm font-bold text-foreground">Withdrawal requests</h2>
         <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] font-bold text-amber-400">{items.length}</span>
-        <span className="ml-auto hidden text-xs text-faint sm:block">Pay takes it from Cash, Airtel Money or M-Pesa</span>
+        <span className="ml-auto hidden text-xs text-faint sm:block">Pay takes it from one of the business accounts</span>
       </div>
       <div className="divide-y divide-border">
         {items.map((w) => {

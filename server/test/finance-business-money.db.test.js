@@ -33,7 +33,9 @@ const newAccount = (name, openingBalance, extra = {}) => prisma.businessAccount.
 });
 
 test.before(async () => {
-  ctx.admin = await prisma.user.findFirst({ where: { role: { name: 'ADMIN' } } });
+  // As the sign-in middleware hands it on (req.user.role): only the owner pays a withdrawal (15 Nov 2026).
+  const admin = await prisma.user.findFirst({ where: { role: { name: 'ADMIN' } } });
+  ctx.admin = admin && { ...admin, role: 'ADMIN' };
   ctx.rep = await prisma.salesRepresentative.findFirst({ include: { user: { select: { name: true } } } });
   assert.ok(ctx.admin && ctx.rep, 'needs an admin and a rep');
 });

@@ -141,7 +141,7 @@ function loadPurchase({ orders = [], poPayments = {}, balancePaid = 0, credits =
 
 // ── money-flows-8 ────────────────────────────────────────────────────────────────────────────────────
 test('removing a supplier with history switches it off and says so; one with returns only is not deleted', async () => {
-  const withPo = loadPurchase({ orders: [{ id: 'po1', totalCost: 1000 }] });
+  const withPo = loadPurchase({ orders: [{ id: 'po1', totalCost: 1000 }], poPayments: { po1: 1000 } });
   const r1 = await withPo.purchase.removeSupplier('sup1');
   assert.equal(r1.deactivated, true);
   assert.equal(r1.deleted, false);
@@ -158,6 +158,21 @@ test('removing a supplier with history switches it off and says so; one with ret
   const r3 = await clean.purchase.removeSupplier('sup1');
   assert.equal(r3.deleted, true);
   assert.deepEqual(clean.writes, [{ supplier: 'deleted' }]);
+});
+
+// ── perm03: a supplier with money still open is neither switched off nor deleted ──────────────────────
+test('a supplier still owed money, or paid beyond the bills, is not switched off or deleted', async () => {
+  const owed = loadPurchase({ orders: [{ id: 'po1', totalCost: 1000 }] });
+  await assert.rejects(owed.purchase.removeSupplier('sup1'), (e) => e.statusCode === 400 && /still owed TZS 1,000/.test(e.message));
+  await assert.rejects(owed.purchase.updateSupplier('sup1', { isActive: false }), (e) => e.statusCode === 400 && /still owed/.test(e.message));
+  assert.deepEqual(owed.writes, [], 'nothing written');
+  // Editing the name of a supplier who is owed money is still fine.
+  await owed.purchase.updateSupplier('sup1', { name: 'New name' });
+  assert.deepEqual(owed.writes, [{ supplier: { name: 'New name' } }]);
+
+  const overpaid = loadPurchase({ orders: [{ id: 'po1', totalCost: 1000 }], poPayments: { po1: 1500 } });
+  await assert.rejects(overpaid.purchase.removeSupplier('sup1'), (e) => e.statusCode === 400 && /paid TZS 500 more than the bills/.test(e.message));
+  assert.deepEqual(overpaid.writes, []);
 });
 
 // ── reversals-stock-2 ────────────────────────────────────────────────────────────────────────────────

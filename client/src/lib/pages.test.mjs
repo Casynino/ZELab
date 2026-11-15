@@ -64,6 +64,9 @@ test('fetch-ahead lists: a rep gets only rep pages; nobody gets the PDF or label
   }
   assert.equal(warmList(ADMIN)[0], 'Dashboard');
   assert.ok(warmList(STAFF).includes('Activity'));
+  // Finance is the owner's only (15 Nov 2026): its code is not fetched for staff.
+  assert.ok(warmList(ADMIN).includes('Finance'));
+  assert.ok(!warmList(STAFF).includes('Finance'));
   assert.ok(!warmList(ADMIN).includes('Activity'), 'the owner opens Activity inside his profile');
   assert.deepEqual(warmList(null), ['RepDashboard', 'Dashboard']);
 });

@@ -762,11 +762,11 @@ async function decideWithdrawal(id, action, actor, { accountId, occurredAt } = {
   };
   const t = transitions[action];
   if (!t) throw ApiError.badRequest('Unknown action');
-  // Paying a bonus is the owner's (it was admin-only before bonuses lived in the wallet); staff may still
-  // approve or reject one, and pay commission as before.
+  // Paying takes the money out of a business account (15 Nov 2026), and only the owner moves business money
+  // (audit fina03): staff may still approve or reject a withdrawal, but not pay one, commission or bonus.
   const isBonus = w.source === 'BONUS';
-  if (isBonus && t.to === 'PAID' && actor?.role !== 'ADMIN') {
-    throw ApiError.forbidden('Only the owner can pay a bonus withdrawal.');
+  if (t.to === 'PAID' && actor?.role !== 'ADMIN') {
+    throw ApiError.forbidden('Only the owner pays a withdrawal — the money leaves a business account.');
   }
   if (!t.from.includes(w.status)) {
     // Already where this press wanted it (a retry after a lost answer): say the first one went through,

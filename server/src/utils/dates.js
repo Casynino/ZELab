@@ -79,6 +79,8 @@ function eatDayBounds({ from, to } = {}) {
   const out = {};
   const read = (v, edge) => {
     const raw = String(v).trim();
+    // A day that does not exist ("2026-13-45") rolled over into another one and quietly listed nothing (audit fina13).
+    if (DAY_ONLY.test(raw) && dayjs.utc(raw).format('YYYY-MM-DD') !== raw) return null;
     const d = DAY_ONLY.test(raw)
       ? eatToUtc(edge === 'start' ? dayjs.utc(raw).startOf('day') : dayjs.utc(raw).endOf('day')).toDate()
       : new Date(raw);

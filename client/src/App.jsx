@@ -110,7 +110,8 @@ export default function App() {
         <Route path="/reports" element={<Navigate to="/finance?tab=reports" replace />} />
         {/* Profit & Margins now lives inside Finance */}
         <Route path="/profit" element={<Navigate to="/finance?tab=profit" replace />} />
-        <Route path="/finance" element={<ProtectedRoute roles={W}><Finance /></ProtectedRoute>} />
+        {/* The owner's only: the Finance API refuses staff (15 Nov 2026). */}
+        <Route path="/finance" element={<ProtectedRoute roles={[ROLES.ADMIN]}><Finance /></ProtectedRoute>} />
         <Route path="/notifications" element={<Notifications />} />
         <Route path="/profile" element={<Profile />} />
         <Route path="/audit" element={<ProtectedRoute roles={[ROLES.ADMIN]}><OwnerAt to="/profile?tab=audit"><AuditLogs /></OwnerAt></ProtectedRoute>} />
