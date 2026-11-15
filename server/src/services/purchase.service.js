@@ -919,8 +919,39 @@ async function listPurchaseLines({ productId, from, to } = {}) {
 }
 
 // Shipping, clearing or other cost on a bought order, paid in cash as it is recorded — so the order stays fully
-// paid and nobody is left "owed". It enters the landed cost of the boxes confirmed after it; boxes already in
-// stock keep the cost they came in at.
+// paid and nobody is left "owed". It enters the landed cost of the boxes confirmed after it (landedOf at the next
+// receiving), and — since 15 Nov 2026 (purc01) — the share that belongs to boxes ALREADY accepted into stock from
+// an earlier delivery goes into the product's average cost now: it used to reach no stock value and no profit
+// figure at all (about half of a late 53,000 on PO-20261115-0002). The share is spread like every landed cost
+// (by goods value, by quantity when there is none), per box bought; damaged / missing boxes are left to the line's
+// landed cost, as before. Average cost rule as averageCostAfter: over every box of the product held.
+function lateCostOnAccepted(po, amt) {
+  const goodsTotal = po.items.reduce((n, it) => n + toNumber(it.unitCost) * it.baseQuantity, 0);
+  const baseTotal = po.items.reduce((n, it) => n + it.baseQuantity, 0);
+  const byProduct = new Map();
+  for (const it of po.items) {
+    const accepted = Math.max(0, (it.receivedBase || 0) - (it.damagedBase || 0));
+    if (!(accepted > 0) || !(it.baseQuantity > 0)) continue;
+    const share = goodsTotal > 0 ? (toNumber(it.unitCost) * it.baseQuantity) / goodsTotal : baseTotal > 0 ? it.baseQuantity / baseTotal : 0;
+    const perBox = (amt * share) / it.baseQuantity;
+    byProduct.set(it.productId, (byProduct.get(it.productId) || 0) + perBox * accepted);
+  }
+  return byProduct;
+}
+async function addLateCostToStock(tx, byProduct) {
+  for (const [productId, extra] of byProduct) {
+    if (!(extra > 0)) continue;
+    const [held, product] = await Promise.all([
+      tx.inventoryTransaction.aggregate({ where: { productId }, _sum: { baseQuantity: true } }),
+      tx.product.findUnique({ where: { id: productId }, select: { purchasePrice: true } }),
+    ]);
+    const onHand = Math.max(0, held._sum.baseQuantity || 0);
+    // Nothing of it left on hand: no box to carry the cost (it stays in the order's total and the ledger).
+    if (!(onHand > 0)) continue;
+    const current = toNumber(product?.purchasePrice);
+    await tx.product.update({ where: { id: productId }, data: { purchasePrice: round2(current + extra / onHand) } });
+  }
+}
 const COST_FIELD = { shipping: 'shippingCost', clearing: 'clearingCost', other: 'otherCost' };
 const COST_WORD = { shipping: 'Shipping', clearing: 'Clearing', other: 'Other cost' };
 async function addOrderCost(id, { kind, amount, accountId, occurredAt, notes } = {}, actor) {
@@ -939,6 +970,8 @@ async function addOrderCost(id, { kind, amount, accountId, occurredAt, notes } =
       );
     }
     await payForOrder(tx, po, { accountId, amount: amt, occurredAt, notes, category: `${COST_WORD[kind]} (${po.poNumber})`, what: `${COST_WORD[kind]} for ${po.poNumber}` }, actor);
+    // The part of this cost that belongs to boxes already in stock: into their average cost now (purc01).
+    await addLateCostToStock(tx, lateCostOnAccepted(po, amt));
     return tx.purchaseOrder.update({
       where: { id },
       data: { [field]: round2(toNumber(po[field]) + amt), totalCost: round2(toNumber(po.totalCost) + amt) },
@@ -963,5 +996,6 @@ module.exports = {
   receiveCargo,
   listPurchaseLines,
   addOrderCost,
+  lateCostOnAccepted,
   PO_INCLUDE,
 };
