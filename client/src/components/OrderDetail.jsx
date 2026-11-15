@@ -1536,7 +1536,7 @@ export default function OrderDetailModal({ settlementId, onClose }) {
                 <span className="text-sm font-semibold text-foreground">{order.order.lines.length === 1 ? 'Product' : 'Products'}</span>
                 {order.order.totals.settledBoxes > 0 && (
                   <span className="text-xs text-muted">
-                    {user?.role === ROLES.SALES_REP ? 'Earned' : 'Commission'} <span className="font-semibold text-brand-600">{formatCurrency(order.order.totals.commission)}</span>
+                    {user?.role === ROLES.SALES_REP ? 'Earned' : 'Commission'} <span className="font-semibold text-violet-300">{formatCurrency(order.order.totals.commission)}</span>
                   </span>
                 )}
               </div>

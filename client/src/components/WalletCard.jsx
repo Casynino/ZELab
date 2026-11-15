@@ -108,7 +108,7 @@ export default function WalletCard({
       {!negative && !canWithdraw && (
         <div className="mt-3 h-[3px] w-full overflow-hidden rounded-full bg-white/[0.09]">
           <div
-            className="h-full rounded-full bg-gradient-to-r from-brand-500 to-brand-300 transition-[width] duration-700 ease-out"
+            className="h-full rounded-full bg-gradient-to-r from-violet-500 to-violet-300 transition-[width] duration-700 ease-out"
             style={{ width: `${pct}%` }}
           />
         </div>

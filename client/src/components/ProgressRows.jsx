@@ -24,7 +24,8 @@ function Row({ label, pct, barPct, hint, reward, ready, readyLabel, markers = []
         <p className="text-xs font-medium text-muted">{label}</p>
         <span className={clsx(
           'text-xl font-bold leading-none tabular-nums',
-          ready ? 'text-emerald-400' : 'text-brand-600',
+          // Violet, not the brand red: red reads as money owed (Nino, 15 Nov 2026).
+          ready ? 'text-emerald-400' : 'text-violet-300',
         )}>
           {Math.round(width)}<span className="text-xs font-semibold text-faint">%</span>
         </span>
@@ -37,7 +38,7 @@ function Row({ label, pct, barPct, hint, reward, ready, readyLabel, markers = []
               'h-full rounded-full transition-[width] duration-700 ease-out',
               ready
                 ? 'bg-gradient-to-r from-emerald-500 to-emerald-300'
-                : 'bg-gradient-to-r from-brand-600 to-brand-400',
+                : 'bg-gradient-to-r from-violet-500 to-violet-300',
             )}
             style={{ width: `${fill}%` }}
           />

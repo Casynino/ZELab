@@ -208,7 +208,7 @@ KSS_SIZE_TEXT = "112 × 126 × 55 mm (width × depth × height)"
 SMALL = dict(
     key="small", folder="n70", sheet_page=1,
     name="Pepa Ndogo (Brown) Bila Filter — 70 × 36 box", short="70 × 36 box", zh="小盒 70 × 36 mm",
-    box=(74, 155, 48), size_text=SMALL_SIZE_TEXT,
+    box=(74, 155, 48), size_text=SMALL_SIZE_TEXT, size_zh="74 × 155 × 48 mm（宽 × 高 × 深）",
     sheet=(264, 464), scale=0.80,
     panels=[
         ("Front", "50 LEAVES, Pepa, scene, tear line", "正面", 118.2, 269.57, 192.2, 424.57, "74 × 155 mm"),
@@ -217,27 +217,27 @@ SMALL = dict(
         ("Bottom", "the same QR again, and Pepa", "底面", 118.2, 18.57, 192.2, 66.57, "74 × 48 mm"),
         ("Side", "scene, 50 LEAVES, Pepa", "侧面", 70.3, 66.57, 118.2, 221.57, "48 × 155 mm"),
         ("Side", "scene, 50 LEAVES, Pepa", "侧面", 192.2, 66.57, 240.2, 221.57, "48 × 155 mm"),
-        ("Tuck flap", "rounded tongue; its middle folds 2 mm higher", "插舌", 118.2, 424.57, 192.2, 445.6, "73 × 21 mm"),
+        ("Tuck flap", "rounded tongue; its middle folds 2 mm higher", "插舌", 118.2, 424.57, 192.2, 445.6, "72.7 × 21 mm"),
         ("Glue flap", "closes the tube, one at each outer edge", "粘口", 57.23, 66.57, 70.3, 221.57, "13 × 155 mm"),
         ("Glue flap", "closes the tube, one at each outer edge", "粘口", 240.21, 66.57, 253.24, 221.57, "13 × 155 mm"),
         ("Booklet", "on the same sheet; end flaps reach 103 mm across", "内册", 25.6, 290.5, 98.6, 383.6, "73 × 93 mm flat"),
     ],
-    tear=(118.2, 346.54, 192.2),
+    tear=(118.2, 346.60, 192.2),
     facts=[
         ("Assembled box", "成盒尺寸", SMALL_SIZE_TEXT),
         ("Paper size", "纸张尺寸", "70 × 36 mm, brown, unfiltered, slow burn"),
         ("Leaves per booklet", "每本张数", "50"),
         ("Booklets per box", "每盒本数", "50"),
         ("Papers per box", "每盒张数", "2,500"),
-        ("Booklet", "内册尺寸", "73 × 22.5 × 5 mm assembled, from a 73 × 93 mm blank"),
+        ("Booklet", "内册尺寸", "about 73 × 22.7 × 5 mm assembled (panels drawn 22.0 / 5.0 / 22.7 mm), from a 73 × 93 mm blank"),
         ("Flat sheet", "展开尺寸", "the die measures 242.7 × 427 mm, box and booklet together, on a 264 × 464 mm file"),
         ("QR codes", "二维码", "Top panel, bottom panel and booklet — three codes, all read "
                                 "HTTPS://WWW.ZELAB.SITE/P"),
     ],
     opening=[
-        ("Tear along the perforation across the front: 77 mm below the top fold, 78 mm above the "
-         "tuck crease at the bottom of the front panel.",
-         "沿正面齿线撕开：该线位于顶部折线下方 77 mm、正面底部插舌压痕上方 78 mm 处。"),
+        ("Tear along the perforation across the front: 77 mm below the top fold and 76 mm above the "
+         "tuck crease at the bottom of the front panel (78 mm to the corner edges).",
+         "沿正面齿线撕开：该线位于顶部折线下方 77 mm、正面底部插舌压痕上方 76 mm 处（距四角切边 78 mm）。"),
         ("The box lies down as a tray; the torn top half stands up behind it as the header.",
          "盒子平放成托盘，撕下的上半部分立在后方作为展示头卡。"),
         ("50 booklets stand spine up in two layers of 25, along the 155 mm length.",
@@ -248,7 +248,7 @@ SMALL = dict(
 KSS = dict(
     key="big", folder="kss2", sheet_page=1,
     name="Pepa King Size Slim — display box", short="King Size Slim", zh="大盒 King Size Slim",
-    box=(112, 55, 126), size_text=KSS_SIZE_TEXT,
+    box=(112, 55, 126), size_text=KSS_SIZE_TEXT, size_zh="112 × 126 × 55 mm",
     sheet=(549, 431), scale=0.62,
     panels=[
         ("Front panel", "scene, Pepa, QR, thumb notch", "正面板", 162.73, 220.26, 274.7, 275.29, "112 × 55 mm"),
@@ -292,7 +292,7 @@ KUBWA_SIZE_TEXT = "81 × 126 × 55 mm (width × depth × height, as the die bloc
 KUBWA = dict(
     key="kubwa", folder="n77", sheet_page=1,
     name="Pepa Ndogo Kubwa (Brown) Bila Filter — 77 × 44 box", short="77 × 44 box", zh="大盒 77 × 44 mm",
-    box=(81, 55, 126), size_text=KUBWA_SIZE_TEXT,
+    box=(81, 55, 126), size_text=KUBWA_SIZE_TEXT, size_zh="81 × 126 × 55 mm（宽 × 深 × 高，按刀版规格框；刀版上围板实测 54.4 mm）",
     sheet=(446, 289), scale=0.62,
     # No display render: how this carton stands open is the one thing its die
     # does not settle (see the notes), so the cover shows it with its booklets
@@ -308,7 +308,7 @@ KUBWA = dict(
         ("Glue flap", "folds off a side panel; glued inside the back panel's free edge", "粘口", 64.18, 233.30, 79.08, 287.74, "15 × 54.4 mm"),
         ("Hook bottom", "four flaps, paste areas marked on the die", "勾底", 79.21, 287.74, 493.23, 339.51, "414 × 51.7 mm"),
     ],
-    tear=(79.21, 233.30, 412.20), tear_label_left=True,
+    tear=(79.21, 233.35, 412.20), tear_label_left=64.18,   # left of the glue flap, clear of its outline
     facts=[
         ("Assembled box", "成盒尺寸", KUBWA_SIZE_TEXT),
         ("Paper size", "纸张尺寸", "77 × 44 mm, brown, unfiltered, slow burn"),
@@ -396,7 +396,8 @@ def dieline_page(deck, design, box):
         x0, ty, x1 = box["tear"]
         d.line([(ox + x0 * sx, oy + ty * sx), (ox + x1 * sx, oy + ty * sx)], fill=WARN, width=4)
         if box.get("tear_label_left"):
-            d.text((ox + x0 * sx - round(2 * MM), oy + ty * sx), "tear line 齿线", font=Z(8), fill=WARN, anchor="rm")
+            lx = box["tear_label_left"] if not isinstance(box["tear_label_left"], bool) else x0
+            d.text((ox + lx * sx - round(2 * MM), oy + ty * sx), "tear line 齿线", font=Z(8), fill=WARN, anchor="rm")
         else:
             d.text((ox + x1 * sx + round(2 * MM), oy + ty * sx), "tear line 齿线", font=Z(8), fill=WARN, anchor="lm")
     y = oy + view.height + round(6 * MM)
@@ -503,7 +504,7 @@ def sizes_page(deck, design, box):
     y = para(d, (M, y), f"Drawn to scale 1 : {1/s:.2f} off the die-line. The box assembles to "
                         f"{box['size_text']}; board thickness is not in these figures.",
              F(9), SOFT, PW - 2 * M)
-    y = para(d, (M, y), f"按刀版 1 : {1/s:.2f} 比例绘制，图中尺寸未计纸板厚度。", Z(8.5), SOFT, PW - 2 * M)
+    y = para(d, (M, y), f"按刀版 1 : {1/s:.2f} 比例绘制。成盒尺寸 {box['size_zh']}；图中尺寸未计纸板厚度。", Z(8.5), SOFT, PW - 2 * M)
     y += round(3 * MM)
     y = table(d, M, y, box["facts"][:3], PW - 2 * M)
 
@@ -511,7 +512,7 @@ def booklet_page(deck, design, box):
     img, d, y = deck.page("The booklet inside", "内册")
     if box["key"] == "small":
         src, crop = sheet_image(design, box), (8.0, 288.5, 116.0, 385.5)
-        rows = [("Assembled", "成品", "73 × 22.5 × 5 mm"),
+        rows = [("Assembled", "成品", "about 73 × 22.7 × 5 mm (panels drawn 22.0 / 5.0 / 22.7 mm)"),
                 ("Flat", "展开", "73 × 93 mm blank on the box sheet; end flaps reach 103 mm across"),
                 ("Leaves", "张数", "50 leaves of 70 × 36 mm paper"),
                 ("Printed", "印刷内容", "Scene, 50 LEAVES, NATURAL UNREFINED ROLLING PAPERS, Pepa, QR")]
@@ -576,26 +577,26 @@ SHARED_NOTES = [
 BOX_NOTES = {
     "small": [
         ("The fold between the top and the front is covered by the artwork on the die-line, so it "
-         "does not show: it lies 269.57 mm down the sheet — 48 mm from the back fold, which is the "
-         "box's own depth, and 1.85 mm past where the dust flaps are cut short. Please confirm the "
-         "scoring position before the run.",
-         "顶面与正面之间的压痕线在刀版中被图案覆盖，因此看不到：它位于自刀版顶边向下 269.57 mm 处 —— 距背面压痕 48 mm，"
-         "即该盒的盒深，且比防尘舌片的切口多出 1.85 mm。开机前请确认压痕位置。"),
-        ("The line across the front at 346.54 mm is drawn exactly like every crease and cut on the "
+         "does not show: it lies 269.57 mm below the top edge of the PDF page (251.0 mm below the "
+         "die's top cut) — 48 mm from the back fold, which is the box's own depth, and 1.8 mm past "
+         "where the dust flaps are cut short. Please confirm the scoring position before the run.",
+         "顶面与正面之间的压痕线在刀版中被图案覆盖，因此看不到：它位于自PDF页面顶边向下 269.57 mm 处（距刀版顶部裁切线 251.0 mm）"
+         "—— 距背面压痕 48 mm，即该盒的盒深，且比防尘舌片的切口多出 1.8 mm。开机前请确认压痕位置。"),
+        ("The line across the front, 346.6 mm below the top edge of the PDF page, is drawn exactly like every crease and cut on the "
          "die-line, and the die-line has no line legend. Confirm it is perforated, not scored — the box "
          "opens as a display along it.",
-         "正面 346.54 mm 处的线条与刀版中其他压痕、裁切线画法完全相同，且文件无线型图例。请确认该线为齿线（打孔）而非压痕 —— 展示开盒即沿此线撕开。"),
+         "正面距PDF页面顶边 346.6 mm 处的线条与刀版中其他压痕、裁切线画法完全相同，且文件无线型图例。请确认该线为齿线（打孔）而非压痕 —— 展示开盒即沿此线撕开。"),
         ("The die-line carries no specification block — board, colours and finish are not stated on it. "
          "Confirm them in writing before the run.",
          "刀版文件没有工艺说明框：纸板、颜色、表面处理均未注明，开机前请书面确认。"),
     ],
     "kubwa": [
-        ("At 233.30 mm — the top edge of the box — the three line types differ by panel, and "
+        ("At 233.35 mm below the top edge of the PDF page — the top edge of the box — the three line types differ by panel, and "
          "that is how the box is meant to work: the two 126 mm side panels are drawn as a "
          "perforation, the 81 mm front panel as a cut either side of the thumb notch, and the "
          "lid column as a fold, so the lid stays hinged on the back panel. Please confirm the "
          "side panels are perforated and not simply cut.",
-         "233.30 mm 处（盒口位置）三种线型按面区分，这正是该盒的结构：两个 126 mm 侧面板画为齿线，"
+         "距PDF页面顶边 233.35 mm 处（盒口位置）三种线型按面区分，这正是该盒的结构：两个 126 mm 侧面板画为齿线，"
          "81 mm 正面板在半圆缺口两侧画为裁切线，盒盖一列画为压痕折线，使盒盖始终与背面板相连。"
          "请确认侧面板为齿线（打孔）而非普通裁切。"),
         ("The die block reads SPECIFICATIONS 50 BOOKELES; it means 50 BOOKLETS. The block is not "
@@ -604,9 +605,12 @@ BOX_NOTES = {
         ("The booklet die block says 60 leaves max. That is the die's ceiling; we are running 50 "
          "leaves, as the artwork says.",
          "内册刀版工艺框写“60 leaves max”，那是刀版上限；我们按图案所印的 50 LEAVES 生产。"),
-        ("The legend marks the half-round thumb notch “CUT 半圆裁切可替换”. Confirm it is cut on "
-         "this run, and that nothing printed runs into it.",
-         "图例将半圆缺口标注为“CUT 半圆裁切可替换”。请确认本批次按裁切执行，且图文不压到缺口。"),
+        ("Cut the 26 × 12 mm half-round thumb notch exactly as drawn on the front panel. Do not replace "
+         "it with the perforated tab shown in the legend (“CUT 半圆裁切可替换”), and check that nothing "
+         "printed runs into it.",
+         "请按刀版裁切正面板上 26 × 12 mm 的半圆缺口，不要改用图例中“CUT 半圆裁切可替换”所示的齿线样式，并确认印刷图文不压到缺口。"),
+        ("The die block gives no board, colours or finish. Confirm them in writing before the run.",
+         "刀版规格框未注明纸板、颜色和表面处理，开机前请书面确认。"),
     ],
     "big": [
         ("The back panel prints “Size: 70 × 36 mm / Type: Paper Ndogo”. That is the small box's "
