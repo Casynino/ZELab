@@ -127,6 +127,10 @@ export default function Notifications() {
                         style={fresh ? { boxShadow: `0 0 10px ${sev.glow}` } : undefined}
                       />
                       <div className="min-w-0 flex-1">
+                        {/* A notice written to a rep, in the owner's list: whom it went to (audit ui-a07). */}
+                        {n.recipient && (
+                          <span className="mb-1 inline-block rounded-md bg-white/[0.06] px-1.5 py-0.5 text-[11px] font-medium text-muted">To {n.recipient.name}</span>
+                        )}
                         <div className="flex items-baseline justify-between gap-3">
                           <span className={clsx('text-[15px] font-semibold leading-snug', fresh ? 'text-foreground' : 'text-foreground/70')}>{n.title}</span>
                           <span className="shrink-0 text-[11px] text-faint">{fromNow(n.createdAt)}</span>
