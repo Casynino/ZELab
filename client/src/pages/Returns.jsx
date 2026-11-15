@@ -291,12 +291,10 @@ function ReturnModal({ onClose }) {
     queryKey: ['settlements', 'return-availability', isRep ? 'me' : salesRepId],
     enabled: scoped,
     staleTime: 0, // read fresh each time the box opens
-    queryFn: async () => {
-      // The server scopes a rep to his own orders; staff ask for the chosen rep's.
-      const params = isRep ? { open: true, limit: 100 } : { open: true, limit: 100, salesRepId };
-      const rows = unwrap(await api.get('/settlements', { params })).data || [];
-      return Promise.all(rows.map(async (s) => unwrap(await api.get(`/settlements/${s.id}`)).data));
-    },
+    // Every open order in one answer (15 Nov 2026), with the same fields each order's own screen sends: it
+    // used to be the list and then one request per order. The server scopes a rep to his own orders; staff
+    // ask for the chosen rep's.
+    queryFn: async () => unwrap(await api.get('/settlements/return-availability', { params: isRep ? {} : { salesRepId } })).data || [],
   });
   // available: productId -> boxes. fines: the delay fine of each order the boxes could land on (TSh 30,000
   // on an extended order, 15,000 otherwise — the server sends each order's own figure).

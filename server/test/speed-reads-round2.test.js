@@ -310,3 +310,78 @@ test('every rep\'s fines come from one set of reads and each lands on its own re
   assert.deepEqual(out.get('r3'), { total: 0, breakdown: [] }, 'a rep with no fines is answered too');
   assert.deepEqual(await svc.penaltyBreakdownForRep('r2'), out.get('r2'), 'one rep reads the same way');
 });
+
+// ── The return form: every open order in one answer ──────────────────────────────────────────────────
+test('the return form gets every open order of the rep in one answer, with the figures each order\'s screen gives', async () => {
+  const seen = {};
+  stub('../src/config/prisma', db({
+    settlement: {
+      findMany: async (args) => {
+        seen.orders = args;
+        return [
+          { id: 's1', settlementNumber: 'STL-1', transferId: 't1', selfExtendedAt: null },
+          { id: 's2', settlementNumber: 'STL-2', transferId: 't2', selfExtendedAt: new Date() },
+          { id: 's3', settlementNumber: 'STL-3', transferId: null, selfExtendedAt: null },
+        ];
+      },
+    },
+    stockTransferItem: {
+      groupBy: async () => [
+        { transferId: 't1', productId: 'p1', _sum: { baseQuantity: 10 } },
+        { transferId: 't1', productId: 'p2', _sum: { baseQuantity: 5 } },
+        { transferId: 't2', productId: 'p1', _sum: { baseQuantity: 4 } },
+      ],
+    },
+    // Cancelled sales are left out by the read itself (status: { not: 'CANCELLED' }).
+    sale: {
+      findMany: async ({ where }) => {
+        seen.sales = where;
+        return [{ settlementId: 's1', items: [{ productId: 'p1', baseQuantity: 3 }] }, { settlementId: 's2', items: [{ productId: 'p1', baseQuantity: 4 }] }];
+      },
+    },
+    return: {
+      findMany: async () => [
+        { settlementId: 's1', status: 'APPROVED', items: [{ productId: 'p1', baseQuantity: 2 }] },
+        { settlementId: 's1', status: 'PENDING', items: [{ productId: 'p1', baseQuantity: 1 }] },
+      ],
+    },
+    settlementSubmission: { findMany: async () => [{ settlementId: 's1', productId: 'p2', boxes: 2 }] },
+  }));
+  fresh('../src/services/penalty.service'); // the real fine rates
+  const svc = fresh('../src/services/settlement.service');
+  const rows = await svc.returnAvailability('rep-1');
+
+  assert.deepEqual(seen.orders.where, { salesRepId: 'rep-1', status: { in: ['OPEN', 'PARTIAL', 'OVERDUE'] } });
+  assert.equal(seen.orders.take, 100);
+  assert.deepEqual(seen.sales.status, { not: 'CANCELLED' });
+  const s1 = rows.find((r) => r.id === 's1');
+  assert.deepEqual(s1.order.lines, [
+    { productId: 'p1', remaining: 5, pendingReturn: 1 }, // 10 issued - 3 settled - 2 returned; 1 waiting in a return
+    { productId: 'p2', remaining: 5, pendingReturn: 0 },
+  ]);
+  assert.deepEqual(s1.pendingSubmissionsList, [{ productId: 'p2', boxes: 2 }]);
+  assert.equal(s1.returnFailurePenalty, 15000);
+  const s2 = rows.find((r) => r.id === 's2');
+  assert.deepEqual(s2.order.lines, [{ productId: 'p1', remaining: 0, pendingReturn: 0 }]);
+  assert.equal(s2.returnFailurePenalty, 30000, 'an extended order\'s failed-return fine');
+  assert.deepEqual(rows.find((r) => r.id === 's3').order.lines, []);
+  assert.deepEqual(await svc.returnAvailability(null), []);
+});
+
+test('a rep only ever gets his own orders; staff must name the rep', async () => {
+  const asked = [];
+  stub('../src/services/settlement.service', { returnAvailability: async (id) => { asked.push(id); return []; } });
+  stub('../src/services/settlementSubmission.service', {});
+  stub('../src/services/audit.service', { record: async () => {} });
+  const ctrl = fresh('../src/controllers/settlements.controller');
+  const call = (req) => new Promise((resolve) => {
+    const res = { status() { return this; }, json(b) { resolve({ body: b }); return this; } };
+    ctrl.returnAvailability(req, res, (err) => resolve({ err }));
+  });
+  await call({ user: { role: 'SALES_REP', salesRepId: 'mine' }, query: { salesRepId: 'someone-else' } });
+  assert.deepEqual(asked, ['mine']);
+  await call({ user: { role: 'WAREHOUSE_STAFF' }, query: { salesRepId: 'rep-7' } });
+  assert.deepEqual(asked, ['mine', 'rep-7']);
+  const none = await call({ user: { role: 'ADMIN' }, query: {} });
+  assert.equal(none.err.statusCode, 400);
+});

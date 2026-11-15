@@ -33,6 +33,15 @@ const summary = asyncHandler(async (_req, res) => {
 
 const analytics = asyncHandler(async (_req, res) => ok(res, await settlement.analytics()));
 
+// Everything the return form needs about a rep's open orders, in one answer (15 Nov 2026). A rep always gets
+// his own, whatever he asks for; staff name the rep, as they do on the order list.
+const returnAvailability = asyncHandler(async (req, res) => {
+  const q = req.validatedQuery || req.query;
+  const salesRepId = req.user.role === ROLES.SALES_REP ? req.user.salesRepId : q.salesRepId;
+  if (!salesRepId) throw ApiError.badRequest('Choose the rep whose boxes are coming back');
+  return ok(res, await settlement.returnAvailability(salesRepId));
+});
+
 const get = asyncHandler(async (req, res) => {
   const s = await settlement.get(req.params.id);
   if (req.user.role === ROLES.SALES_REP && s.salesRepId !== req.user.salesRepId) {
@@ -170,6 +179,6 @@ const undoDeadlineChange = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
-  list, summary, analytics, get, settle, refreshOverdue, extendDeadline, undoDeadlineChange, selfExtend,
+  list, summary, analytics, returnAvailability, get, settle, refreshOverdue, extendDeadline, undoDeadlineChange, selfExtend,
   submitSettlement, submitSettlements, pendingApprovals, approveSubmission, rejectSubmission, paymentAccounts,
 };

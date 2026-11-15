@@ -441,6 +441,90 @@ const SALES_INCLUDE = {
   include: { items: { include: { product: { select: { name: true } } } }, createdBy: { select: { name: true } } },
 };
 
+// What a rep can still give back, order by order (15 Nov 2026). The return form used to ask for the open
+// orders and then for every order on its own (1 + N requests, in two rounds, each ~0.3 s from Tanzania); this
+// answers for all of them in five reads. Per order and product, the same figures as the order's own screen
+// (get → orderBreakdown): what is left (issued − settled − returned, never below 0) and the boxes locked in a
+// pending return; plus the boxes waiting in a settlement and the order's failed-return fine. The rows carry
+// the field names the form already reads from GET /settlements/:id. The return itself is checked again on the
+// server when it is sent (returns.service), so this only decides what the form offers.
+async function returnAvailability(salesRepId) {
+  if (!salesRepId) return [];
+  // The same orders as GET /settlements?open=true&limit=100 for this rep, in the same order.
+  const orders = await prisma.settlement.findMany({
+    where: { salesRepId, status: { in: ['OPEN', 'PARTIAL', 'OVERDUE'] } },
+    select: { id: true, settlementNumber: true, transferId: true, selfExtendedAt: true },
+    orderBy: [{ settledAt: { sort: 'desc', nulls: 'first' } }, { deadlineAt: 'asc' }],
+    take: 100,
+  });
+  if (!orders.length) return [];
+  const ids = orders.map((o) => o.id);
+  const transferIds = orders.map((o) => o.transferId).filter(Boolean);
+  const [issuedRows, sales, returns, subs] = await Promise.all([
+    transferIds.length
+      ? prisma.stockTransferItem.groupBy({ by: ['transferId', 'productId'], where: { transferId: { in: transferIds } }, _sum: { baseQuantity: true } })
+      : [],
+    prisma.sale.findMany({
+      where: { settlementId: { in: ids }, status: { not: 'CANCELLED' } },
+      select: { settlementId: true, items: { select: { productId: true, baseQuantity: true } } },
+    }),
+    prisma.return.findMany({
+      where: { settlementId: { in: ids }, status: { in: ['APPROVED', 'COMPLETED', 'PENDING'] } },
+      select: { settlementId: true, status: true, items: { select: { productId: true, baseQuantity: true } } },
+    }),
+    prisma.settlementSubmission.findMany({
+      where: { settlementId: { in: ids }, status: 'PENDING' },
+      select: { settlementId: true, productId: true, boxes: true },
+      orderBy: { submittedAt: 'desc' },
+    }),
+  ]);
+
+  // order id -> (product id -> boxes)
+  const tally = () => new Map();
+  const add = (m, orderId, productId, n) => {
+    if (!m.has(orderId)) m.set(orderId, new Map());
+    const p = m.get(orderId);
+    p.set(productId, (p.get(productId) || 0) + (n || 0));
+  };
+  const issuedByTransfer = tally();
+  for (const r of issuedRows) add(issuedByTransfer, r.transferId, r.productId, r._sum.baseQuantity);
+  const settled = tally();
+  for (const s of sales) for (const it of s.items) add(settled, s.settlementId, it.productId, it.baseQuantity);
+  const returned = tally();
+  const pendingReturn = tally();
+  for (const r of returns) {
+    for (const it of r.items) add(r.status === 'PENDING' ? pendingReturn : returned, r.settlementId, it.productId, it.baseQuantity);
+  }
+  const subsOf = new Map();
+  for (const p of subs) {
+    if (!subsOf.has(p.settlementId)) subsOf.set(p.settlementId, []);
+    subsOf.get(p.settlementId).push({ productId: p.productId, boxes: p.boxes });
+  }
+
+  const penalty = require('./penalty.service');
+  return orders.map((o) => {
+    const assigned = (o.transferId && issuedByTransfer.get(o.transferId)) || new Map();
+    const done = settled.get(o.id) || new Map();
+    const back = returned.get(o.id) || new Map();
+    const held = pendingReturn.get(o.id) || new Map();
+    // The order's products, as its breakdown lists them: issued, settled or returned.
+    const productIds = [...new Set([...assigned.keys(), ...done.keys(), ...back.keys()])];
+    return {
+      id: o.id,
+      settlementNumber: o.settlementNumber,
+      returnFailurePenalty: penalty.returnFailureRateFor(o),
+      pendingSubmissionsList: subsOf.get(o.id) || [],
+      order: {
+        lines: productIds.map((productId) => ({
+          productId,
+          remaining: Math.max(0, (assigned.get(productId) || 0) - (done.get(productId) || 0) - (back.get(productId) || 0)),
+          pendingReturn: held.get(productId) || 0,
+        })),
+      },
+    };
+  });
+}
+
 async function get(id) {
   const s = await prisma.settlement.findUnique({
     where: { id },
@@ -1621,6 +1705,7 @@ module.exports = {
   createForIssuance,
   list,
   get,
+  returnAvailability,
   orderBreakdown,
   productOutstanding,
   selfExtend,
