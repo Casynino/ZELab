@@ -6,7 +6,7 @@ import { motion } from 'motion/react';
 import clsx from 'clsx';
 import toast from 'react-hot-toast';
 import {
-  Timer, AlertTriangle, Clock, CheckCircle2, Eye,
+  Timer, AlertTriangle, Clock, CheckCircle2,
   ChevronRight, Wallet, ShieldCheck, PackageOpen,
 } from 'lucide-react';
 import api, { apiError } from '@/lib/api';
@@ -322,7 +322,8 @@ function StaffSettlements({ viewing, setViewing }) {
           <>
             {/* Phones and tablets: one short row per order — who, what is still owed, how far along, how long
                 is left. The full table (below) stacked into tall eight-box cards here, too long for 100+ orders. */}
-            <ul className="divide-y divide-border lg:hidden">
+            {/* iPad: two rows side by side, so the width is used rather than stretched. */}
+            <ul className="divide-y divide-border md:grid md:grid-cols-2 md:divide-y-0 lg:hidden [&>li]:border-border md:[&>li]:border-b md:[&>li:nth-child(odd)]:border-r">
               {data.data.map((s) => {
                 const bx = s.boxes || { issued: 0, settled: 0, returned: 0, remaining: 0 };
                 const done = bx.settled + bx.returned;
@@ -371,9 +372,9 @@ function StaffSettlements({ viewing, setViewing }) {
             <Table stack="wide" className="hidden lg:block">
               <THead>
                 <TR>
-                  <TH>Order</TH><TH>Rep</TH>
+                  <TH>Rep · order</TH>
                   <TH>Boxes</TH>
-                  <TH>Value</TH><TH>Settled</TH><TH>Balance</TH>
+                  <TH>Settled</TH><TH className="text-right">Balance</TH>
                   <TH>Deadline</TH><TH>Status</TH><TH />
                 </TR>
               </THead>
@@ -383,8 +384,11 @@ function StaffSettlements({ viewing, setViewing }) {
                   const done = bx.settled + bx.returned;
                   return (
                     <TR key={s.id} className="group cursor-pointer" onClick={() => setViewing(s.id)}>
-                      <TD className="font-medium">{s.settlementNumber}</TD>
-                      <TD>{s.salesRep?.user?.name}</TD>
+                      {/* Who first — that is who the admin chases — with the order number under it. */}
+                      <TD>
+                        <div className="font-semibold text-foreground">{s.salesRep?.user?.name || '—'}</div>
+                        <div className="mt-0.5 text-[11px] tabular-nums text-faint">{s.settlementNumber}</div>
+                      </TD>
                       {/* What the order is made of, not only what it is worth. */}
                       <TD>
                         <div className="flex items-baseline gap-1 tabular-nums">
@@ -396,14 +400,16 @@ function StaffSettlements({ viewing, setViewing }) {
                           <div className="h-full bg-sky-500" style={{ width: `${pct(bx.returned, bx.issued)}%` }} />
                         </div>
                       </TD>
-                      <TD>{formatCurrency(s.assignedValue)}</TD>
-                      <TD className="text-emerald-500">{formatCurrency(s.paid)}</TD>
+                      <TD>
+                        <div className="tabular-nums text-emerald-400">{formatCurrency(s.paid)}</div>
+                        <div className="mt-0.5 text-[11px] tabular-nums text-faint">of {formatCurrency(s.assignedValue)}</div>
+                      </TD>
                       {/* Every live order has a balance, so a red one on every row made a red column. It is
                           coloured like the rep's own order card: rose when late, amber when the deadline is
                           near, plain otherwise. */}
-                      <TD className={s.balance > 0
-                        ? clsx('font-semibold', s.status === 'OVERDUE' ? 'text-rose-400' : s.approaching ? 'text-amber-300' : 'text-foreground')
-                        : 'text-faint'}>{formatCurrency(s.balance)}</TD>
+                      <TD className={clsx('text-right tabular-nums', s.balance > 0
+                        ? clsx('font-bold', s.status === 'OVERDUE' ? 'text-rose-400' : s.approaching ? 'text-amber-300' : 'text-foreground')
+                        : 'text-faint')}>{formatCurrency(s.balance)}</TD>
                       <TD>
                         {s.status === 'SETTLED' ? (
                           // Finalized order — no countdown, no overdue, just when it closed.
@@ -427,10 +433,8 @@ function StaffSettlements({ viewing, setViewing }) {
                         )}
                       </TD>
                       <TD><Badge className={SETTLEMENT_STATUS_META[s.status]?.cls}>{SETTLEMENT_STATUS_META[s.status]?.label}</Badge></TD>
-                      <TD>
-                        <span className="inline-flex items-center gap-1 text-xs font-medium text-muted transition-colors group-hover:text-foreground">
-                          Open <Eye className="h-3.5 w-3.5" />
-                        </span>
+                      <TD className="w-px">
+                        <ChevronRight className="h-4 w-4 text-faint transition-colors group-hover:text-foreground" aria-label="Open" />
                       </TD>
                     </TR>
                   );
