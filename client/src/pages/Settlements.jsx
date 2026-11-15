@@ -287,12 +287,12 @@ function StaffSettlements({ viewing, setViewing }) {
               tablet or phone never shows a hole beside it (three across left 3 + 2 on a tablet). */}
           <div className="mb-4 grid grid-cols-2 gap-3 xl:grid-cols-5">
             {cards.map((c, i) => (
-              <div key={c.label} className={clsx('stat-glass p-4', i === cards.length - 1 && cards.length % 2 === 1 && 'col-span-2 xl:col-span-1')}>
+              <div key={c.label} className={clsx('stat-glass p-3 sm:p-4', i === cards.length - 1 && cards.length % 2 === 1 && 'col-span-2 xl:col-span-1')}>
                 <div className="relative flex items-start justify-between gap-2">
                   <p className="text-xs font-medium text-muted">{c.label}</p>
-                  <span className={`rounded-full p-1.5 ring-1 ring-inset ring-white/10 ${c.chip}`}><c.icon className="h-3.5 w-3.5" /></span>
+                  <span className={`hidden rounded-full p-1.5 ring-1 ring-inset ring-white/10 sm:inline-flex ${c.chip}`}><c.icon className="h-3.5 w-3.5" /></span>
                 </div>
-                <p className={`relative mt-2 text-2xl font-bold tabular-nums ${c.num}`}>{c.value}</p>
+                <p className={`relative mt-1 text-xl font-bold tabular-nums sm:mt-2 sm:text-2xl ${c.num}`}>{c.value}</p>
                 <p className="relative mt-0.5 text-[11px] text-faint">{c.sub}</p>
               </div>
             ))}
@@ -302,7 +302,8 @@ function StaffSettlements({ viewing, setViewing }) {
       )}
 
       <Card>
-        <div className="flex flex-wrap items-center gap-2 border-b border-border p-4">
+        {/* One swipeable line of filters on a phone (three wrapped rows pushed the orders off the screen). */}
+        <div className="flex items-center gap-2 overflow-x-auto border-b border-border p-3 [scrollbar-width:none] sm:flex-wrap sm:p-4 [&>*]:shrink-0">
           {chips.map((c) => (
             <FilterChip
               key={c.key || 'all'}
@@ -319,7 +320,55 @@ function StaffSettlements({ viewing, setViewing }) {
           <EmptyState title="No orders here" message="Orders open automatically when stock is issued to a rep." icon={Timer} />
         ) : (
           <>
-            <Table stack="wide">
+            {/* Phones and tablets: one short row per order — who, what is still owed, how far along, how long
+                is left. The full table (below) stacked into tall eight-box cards here, too long for 100+ orders. */}
+            <ul className="divide-y divide-border lg:hidden">
+              {data.data.map((s) => {
+                const bx = s.boxes || { issued: 0, settled: 0, returned: 0, remaining: 0 };
+                const done = bx.settled + bx.returned;
+                const meta = SETTLEMENT_STATUS_META[s.status];
+                const owing = s.balance > 0;
+                return (
+                  <li key={s.id}>
+                    <button type="button" onClick={() => setViewing(s.id)}
+                      className="w-full px-4 py-3 text-left transition-colors hover:bg-elevated/60 active:bg-elevated/80">
+                      <span className="flex items-baseline justify-between gap-3">
+                        <span className="min-w-0 truncate text-[15px] font-semibold text-foreground">{s.salesRep?.user?.name || '—'}</span>
+                        <span className={clsx('shrink-0 text-[15px] font-bold tabular-nums',
+                          !owing ? 'text-emerald-400'
+                            : s.status === 'OVERDUE' ? 'text-rose-400' : s.approaching ? 'text-amber-300' : 'text-foreground')}>
+                          {formatCurrency(owing ? s.balance : s.paid)}
+                        </span>
+                      </span>
+                      <span className="mt-1 flex items-center justify-between gap-3">
+                        <span className="min-w-0 truncate text-[12px] tabular-nums text-muted">
+                          {formatNumber(done)}/{formatNumber(bx.issued)} boxes · {s.settlementNumber}
+                        </span>
+                        <Badge className={clsx('shrink-0', meta?.cls)}>{meta?.label}</Badge>
+                      </span>
+                      <span className="mt-1.5 flex items-center gap-3">
+                        <span className="flex h-1 w-16 shrink-0 overflow-hidden rounded-full bg-white/[0.07]">
+                          <span className="h-full bg-emerald-500" style={{ width: `${pct(bx.settled, bx.issued)}%` }} />
+                          <span className="h-full bg-sky-500" style={{ width: `${pct(bx.returned, bx.issued)}%` }} />
+                        </span>
+                        {s.status === 'SETTLED' ? (
+                          <span className="inline-flex items-center gap-1 text-[11px] text-emerald-500">
+                            <CheckCircle2 className="h-3 w-3" /> {s.settledAt ? formatDate(s.settledAt) : 'Settled'}
+                          </span>
+                        ) : (
+                          <span className="flex min-w-0 items-baseline gap-1.5 text-[11px] text-faint">
+                            <Remaining hours={s.hoursRemaining} className="!text-[12px]" />
+                            <span className="truncate">{formatDateTime(s.deadlineAt)}</span>
+                            {s.extensionUsed && <span className="shrink-0 font-semibold text-amber-400">+{s.extensionHours}h</span>}
+                          </span>
+                        )}
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+            <Table stack="wide" className="hidden lg:block">
               <THead>
                 <TR>
                   <TH>Order</TH><TH>Rep</TH>
