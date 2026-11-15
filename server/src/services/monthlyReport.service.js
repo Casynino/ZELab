@@ -47,18 +47,16 @@ async function stockBoxesAt(when) {
 // `prev` before it. Shared by the monthly and the yearly report, so the two always count the same way.
 // The headline figures come from finance.report() — the same call the Finance screen reads.
 async function buildPeriodBody({ start, end, prev, topProducts = 8 }) {
-  const [rep, prof, prevRep, cf, accounts, low, movementRows, pending, stlSummary, suppliers, val] = await Promise.all([
+  const [rep, prof, prevRep, cf, accounts, low, mv, pending, stlSummary, suppliers, val] = await Promise.all([
     finance.report({ start, end }),
     reports.profitOverview({ start, end }),
     finance.report({ start: prev.start, end: prev.end }),
     finance.cashflow({ start, end }),
-    finance.accountBalances(),
+    // what each account held when the period ended, not when the report is built (audit repo07)
+    finance.accountBalances({ asOf: end }),
     reorder.lowStock(),
-    prisma.inventoryTransaction.groupBy({
-      by: ['type'],
-      where: { occurredAt: { gte: start, lte: end } },
-      _sum: { baseQuantity: true },
-    }).catch(() => []),
+    // the window's movement from the ledger, cancelled sales netted out (reportData.stockMovement)
+    reportData.stockMovement(start, end),
     prisma.$transaction([
       prisma.stockRequest.count({ where: { status: 'PENDING' } }),
       prisma.settlementSubmission.count({ where: { status: 'PENDING' } }),
@@ -104,17 +102,12 @@ async function buildPeriodBody({ start, end, prev, topProducts = 8 }) {
   }));
 
   // Inventory summary: opening/closing from the ledger + the window's movement.
-  const mv = new Map(movementRows.map((mrow) => [mrow.type, mrow._sum.baseQuantity || 0]));
   const closingBoxes = await stockBoxesAt(end);
-  const netMove = movementRows.reduce((s, mrow) => s + (mrow._sum.baseQuantity || 0), 0);
+  const { netMove, ...moved } = mv;
   const inventory = {
     openingBoxes: closingBoxes - netMove,
     closingBoxes,
-    stockInBoxes: mv.get('STOCK_IN') || 0,
-    purchasedBoxes: mv.get('PURCHASE_RECEIPT') || 0,
-    soldBoxes: -((mv.get('CASH_SALE') || 0) + (mv.get('CREDIT_SALE') || 0)),
-    returnedBoxes: mv.get('CUSTOMER_RETURN') || 0,
-    adjustedBoxes: (mv.get('ADJUSTMENT') || 0) + (mv.get('CORRECTION') || 0) + (mv.get('STOCK_COUNT') || 0) + (mv.get('DAMAGE') || 0),
+    ...moved,
   };
 
   const supplierDue = suppliers.reduce((s, x) => s + x.outstanding, 0);
@@ -154,7 +147,9 @@ async function buildPeriodBody({ start, end, prev, topProducts = 8 }) {
     brands: (prof.byBrand || []).map((b) => ({
       name: b.name, revenue: b.revenue, cost: b.cost, profit: b.profit, margin: b.margin, boxes: b.boxes,
     })),
-    topProducts: (prof.byProduct || []).slice(0, topProducts).map((p) => ({ name: p.name, revenue: p.revenue, boxes: p.boxes })),
+    // the best sellers by sales value (byProduct is ranked by profit: audit repo02)
+    topProducts: [...(prof.byProduct || [])].sort((a, b) => b.revenue - a.revenue).slice(0, topProducts)
+      .map((p) => ({ name: p.name, revenue: p.revenue, boxes: p.boxes })),
     repPerformance,
     inventory,
     movement: inventory,

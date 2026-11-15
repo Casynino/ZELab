@@ -53,7 +53,7 @@ const TYPES = {
   WITHDRAWAL_REQUESTED: { label: 'Rep asked to withdraw commission or bonus (with where to send it)', priority: 'ACTION' },
   LOW_STOCK: { label: 'Low stock alert', priority: 'WARNING' },
   OUT_OF_STOCK: { label: 'Out of stock alert', priority: 'CRITICAL' },
-  DAILY_SUMMARY: { label: 'Daily business report (21:00, with PDF)', priority: 'INFO' },
+  DAILY_SUMMARY: { label: 'Daily business report (21:00, covering 21:00 the day before to 21:00, with PDF)', priority: 'INFO' },
   WEEKLY_REPORT: { label: 'Weekly business report (Tuesday 08:00, with PDF)', priority: 'INFO' },
   MONTHLY_REPORT: { label: 'Monthly business report (1st of month 08:00, with PDF)', priority: 'INFO' },
   YEARLY_REPORT: { label: 'Yearly business report (1 January 08:00, with PDF)', priority: 'INFO' },
@@ -242,19 +242,60 @@ async function deliver(row) {
   });
   // Out of retries — surface it inside ZELab so the owner knows a WhatsApp
   // message was lost (reliability rule: log, retry, then notify the admin).
-  if (status === 'FAILED') {
-    require('./notification.service').notifyAdmins({
-      type: 'GENERAL',
-      severity: 'CRITICAL',
-      title: result.quotaExhausted ? 'WhatsApp quota exhausted — messages are NOT being delivered' : 'WhatsApp notification failed',
-      message: result.quotaExhausted
-        ? `WhatsApp alerts to ${row.toPhone || 'the owner number'} are no longer being delivered: the messaging provider reports the quota is used up. Every alert to that number will fail until it is renewed or the provider is changed.`
-        : `A ${row.type.replaceAll('_', ' ').toLowerCase()} message could not be delivered after ${attempts} attempts. Check Settings → WhatsApp notifications.`,
-      entityType: 'WhatsAppNotification',
-      entityId: row.id,
-    }).catch(() => {});
-  }
+  if (status === 'FAILED') await failureAlert(row, { quotaExhausted: result.quotaExhausted, attempts }).catch(() => {});
   return { queued: true, sent: result.sent, status: updated.status, attempts, id: row.id };
+}
+
+// The in-app notice for a message that will not be delivered.
+//  - To a rep's number: ONE notice per rep per day, naming the rep (audit repo06, 15 Nov 2026: two reps whose
+//    CallMeBot quota ran out raised 57 identical "messages are NOT being delivered" notices in six weeks,
+//    burying the owner's own failed daily report among them).
+//  - The owner's quota: one notice a day too — every message to him fails the same way until it is renewed.
+//  - Any other failed message to the owner: one notice for that message, as before; a report says where the
+//    PDF is kept and that the 09:00 check sends it once more (catchUpReports).
+const REPORT_TYPES = new Set(['DAILY_SUMMARY', 'WEEKLY_REPORT', 'MONTHLY_REPORT', 'YEARLY_REPORT']);
+async function repNameFor(row) {
+  const where = row.refType === 'SalesRepresentative' && row.refId ? { id: row.refId } : { whatsappPhone: row.toPhone };
+  const rep = await prisma.salesRepresentative.findFirst({ where, select: { code: true, user: { select: { name: true } } } }).catch(() => null);
+  return rep?.user?.name || rep?.code || row.toPhone;
+}
+// Raised only when no notice with this id exists yet, read or not: "once" means once.
+async function alertOnce(entityId, data) {
+  const seen = await prisma.notification.findFirst({ where: { entityId, userId: null }, select: { id: true } }).catch(() => null);
+  if (seen) return null;
+  return require('./notification.service').notifyAdmins({ type: 'GENERAL', severity: 'CRITICAL', entityType: 'WhatsAppNotification', entityId, ...data });
+}
+async function failureAlert(row, { quotaExhausted = false, attempts = MAX_ATTEMPTS } = {}) {
+  const day = dateEAT();
+  if (row.toPhone) {
+    const rep = await repNameFor(row);
+    return alertOnce(`wa-rep-${quotaExhausted ? 'quota' : 'failed'}-${row.toPhone}-${day}`, quotaExhausted
+      ? {
+        title: `${rep}'s WhatsApp quota is used up — their alerts are not delivered`,
+        message: `The messaging provider reports that ${rep}'s CallMeBot quota (${row.toPhone}) is used up, so the alerts ZELab sends to their WhatsApp are not arriving. They still see every alert in the app. It starts working again once the quota is renewed.`,
+      }
+      : {
+        title: `WhatsApp alerts to ${rep} are failing`,
+        message: `An alert to ${rep}'s WhatsApp (${row.toPhone}) could not be delivered after ${attempts} attempts. They still see it in the app. Check their WhatsApp settings on their profile.`,
+      });
+  }
+  if (quotaExhausted) {
+    return alertOnce(`wa-owner-quota-${day}`, {
+      title: 'WhatsApp quota exhausted — messages are NOT being delivered',
+      message: 'WhatsApp alerts to the owner number are no longer being delivered: the messaging provider reports the quota is used up. Every alert to that number will fail until it is renewed or the provider is changed.',
+    });
+  }
+  const what = row.type.replaceAll('_', ' ').toLowerCase();
+  return require('./notification.service').notifyAdmins({
+    type: 'GENERAL',
+    severity: 'CRITICAL',
+    title: 'WhatsApp notification failed',
+    message: REPORT_TYPES.has(row.type)
+      ? `The ${what} WhatsApp could not be delivered after ${attempts} attempts. The report itself is kept: open it in ZELab → Profile → Reports. ${String(row.dedupeKey || '').endsWith(':retry') ? 'This was already the second try, so it is not sent again.' : 'The 09:00 check sends the WhatsApp once more.'}`
+      : `A ${what} message could not be delivered after ${attempts} attempts. Check Settings → WhatsApp notifications.`,
+    entityType: 'WhatsAppNotification',
+    entityId: row.id,
+  });
 }
 
 // Queue a notification: log it (dedupe on dedupeKey) and try to send now.
@@ -331,6 +372,50 @@ async function expireStale(now) {
   return count + (await expireOldStockLists(now));
 }
 
+// A waiting message flush() will never pick again is closed as FAILED and the owner is told — once for the
+// lot, not once per message (audit repo05, 15 Nov 2026: monthly:2026-07 sat PENDING with its five tries
+// used, never failed, never reported, and the catch-up skipped July because its key existed). Two kinds:
+//  - all five tries used, the last one more than 10 minutes ago: the process stopped between claiming the
+//    row and writing the answer;
+//  - waiting longer than FLUSH_WINDOW_HOURS (held by the budget or quiet hours): flush() only sends
+//    newer ones.
+// A report closed this way is sent once more by the 09:00 check (catchUpReports), like any failed report.
+async function failStuck(now) {
+  // never one being sent right now: its last try started over 10 minutes ago, or it was never tried
+  const settled = [{ lastAttemptAt: null }, { lastAttemptAt: { lt: new Date(now - 10 * 60 * 1000) } }];
+  const rows = await prisma.whatsAppNotification.findMany({
+    where: {
+      status: 'PENDING',
+      OR: [
+        { attempts: { gt: MAX_ATTEMPTS - 1 }, OR: settled },
+        { createdAt: { lt: new Date(now - FLUSH_WINDOW_HOURS * 3600 * 1000) }, OR: settled },
+      ],
+    },
+    select: { id: true, type: true, attempts: true },
+    take: 500,
+  });
+  if (!rows.length) return 0;
+  const close = async (ids, lastError) => (ids.length
+    ? (await prisma.whatsAppNotification.updateMany({ where: { id: { in: ids }, status: 'PENDING' }, data: { status: 'FAILED', lastError } })).count
+    : 0);
+  const maxed = rows.filter((r) => r.attempts >= MAX_ATTEMPTS).map((r) => r.id);
+  const old = rows.filter((r) => r.attempts < MAX_ATTEMPTS).map((r) => r.id);
+  const count = (await close(maxed, `Not sent: all ${MAX_ATTEMPTS} tries were used and the last one never finished`))
+    + (await close(old, `Not sent: it waited more than ${FLUSH_WINDOW_HOURS} hours`));
+  if (count) {
+    const kinds = [...new Set(rows.map((r) => r.type.replaceAll('_', ' ').toLowerCase()))].join(', ');
+    require('./notification.service').notifyAdmins({
+      type: 'GENERAL',
+      severity: 'CRITICAL',
+      title: count === 1 ? 'A WhatsApp message was never delivered' : `${count} WhatsApp messages were never delivered`,
+      message: `${count === 1 ? 'A message' : `${count} messages`} (${kinds}) could not be sent and ${count === 1 ? 'is' : 'are'} now marked failed. Reports are kept in ZELab → Profile → Reports, and the 09:00 check sends a failed report once more. See Settings → WhatsApp notifications.`,
+      entityType: 'WhatsAppNotification',
+      entityId: `wa-stuck-${now}`,
+    }).catch(() => {});
+  }
+  return count;
+}
+
 // A stock list from an earlier day still waiting carries old numbers: today's list replaces it (it follows
 // at the sweep or the next stock move). One being sent right now (tried in the last 10 minutes) is left alone.
 async function expireOldStockLists(now = Date.now()) {
@@ -363,6 +448,7 @@ async function flush({ throttleMs = 60000 } = {}) {
   lastFlushAt = now;
 
   const expired = await expireStale(now);
+  const failedStale = await failStuck(now);
   const quiet = await inQuietHours();
   const waiting = {
     status: 'PENDING',
@@ -433,7 +519,7 @@ async function flush({ throttleMs = 60000 } = {}) {
     const attempted = r.attempts !== undefined;
     if (attempted && i < rows.length - 1) await new Promise((res) => setTimeout(res, 8000));
   }
-  return { retried: rows.length, sent, ...(expired ? { expired } : {}) };
+  return { retried: rows.length, sent, ...(expired ? { expired } : {}), ...(failedStale ? { failedStale } : {}) };
 }
 
 // ── Event notifications ──────────────────────────────────────────────────────
@@ -759,7 +845,13 @@ async function extensionTaken(settlement, { newDeadline, rate }) {
 // Deduplicated on the order AND its deadline, so a deadline is warned about once
 // however often the sweep runs — and an order given more time is warned again
 // before its new deadline (it was warned once per order, ever: audit #45).
-const DEADLINE_WARN_MINUTES = 10;
+//
+// The window is an hour (it was 10 minutes, audit repo00, 15 Nov 2026). The checks do not run like a clock:
+// GitHub's "every 5 minutes" ran about five times a day, so a 10-minute window watched about 3% of the day
+// and one fine in nine was warned about. The app now also runs the check itself (dueChecksSoon, at most
+// every 5 minutes while anyone uses ZELab), and an hour means a check that comes late still warns before
+// the fine; the message says the real minutes left.
+const DEADLINE_WARN_MINUTES = 60;
 
 async function deadlineWarnings(withinMinutes = DEADLINE_WARN_MINUTES) {
   const notification = require('./notification.service');
@@ -812,6 +904,26 @@ async function deadlineWarnings(withinMinutes = DEADLINE_WARN_MINUTES) {
   return { candidates: due.length, queued };
 }
 
+// ── Checks that are due at a moment, run from the app itself ────────────────
+// The owner's deadline warning (and the 21:00 report's fallback) cannot wait for a scheduler that may not
+// come: GitHub's 5-minute schedule ran about five times a day (audit repo00, 15 Nov 2026), and Vercel's free
+// plan allows one cron a day. So any signed-in request starts them, at most once every DUE_CHECK_MS per
+// server instance, in the background (background() hands the work to waitUntil, so the answer is not held
+// back). Both are idempotent: a deadline is warned about once (its dedupe key), the daily report goes once
+// (daily:<day>), so two instances running them at the same moment send nothing twice.
+const DUE_CHECK_MS = 5 * 60 * 1000;
+let lastDueCheckAt = 0;
+async function dueChecks() {
+  await deadlineWarnings().catch((e) => console.error('[due-checks] deadline warnings failed:', e.message));
+  await dailySummaryCatchup().catch((e) => console.error('[due-checks] daily report fallback failed:', e.message));
+}
+function dueChecksSoon(now = Date.now()) {
+  if (now - lastDueCheckAt < DUE_CHECK_MS) return false;
+  lastDueCheckAt = now;
+  background(dueChecks());
+  return true;
+}
+
 // The 09:00 sweep: one list for everything low now (or today's waiting list brought up to date).
 async function scanStockAlerts() {
   return syncStockAlerts();
@@ -819,12 +931,13 @@ async function scanStockAlerts() {
 
 // 15. Daily business report — the 21:00 (Tanzania time) evening report: a short
 // WhatsApp summary with the link to the full PDF (built and archived by
-// dailyBusinessReport.service). The cheap checks come first so the catch-up
-// poll below never builds a PDF for a report that was already sent, switched
-// off, or has nowhere to go.
+// dailyBusinessReport.service). It covers 21:00 the evening before to 21:00 today,
+// so each report starts where the last one stopped (audit repo01, 15 Nov 2026).
+// The cheap checks come first so the catch-up poll below never builds a PDF for a
+// report that was already sent, switched off, or has nowhere to go.
 async function dailySummary({ force = false } = {}) {
   if (!force) {
-    // Before 21:00 the day is not over: a run then sent and archived a part-day report under the day's
+    // Before 21:00 the report's window is not over: a run then sent and archived a part-day report under the day's
     // key, so the real 21:00 report and the next morning's catch-up both skipped it as already sent
     // (final audit, 12 Nov 2026). The weekly, monthly and yearly reports refuse the same way. A forced
     // send (?force=1) is still a manual look at the day so far, under its own key.
@@ -859,15 +972,41 @@ async function dailySummaryCatchup() {
 // looked at, so a long outage never ends in a flood of old reports. Reports
 // that are switched off, or WhatsApp not set up, are left alone (otherwise the
 // same report would be rebuilt every morning).
+//
+// A report whose WhatsApp FAILED has its key too, yet it never reached the owner (audit repo04, 15 Nov 2026:
+// daily:2026-11-10 failed after five tries and nothing sent it again). It is sent ONCE more, under
+// <key>:retry, with the text and archived PDF link it had — the report on file is not rebuilt — so the
+// resend itself is on record and a second failure is not retried every morning. A message closed as failed
+// because it waited too long (flush → failStuck) counts as failed here too.
 async function catchUpReports(now = nowEAT()) {
   if (!(await getConfig()).configured) return { skipped: 'not-configured' };
-  const isMissing = async (type, dedupeKey) => (await isEnabled(type))
-    && !(await prisma.whatsAppNotification.findFirst({ where: { dedupeKey }, select: { id: true } }));
+  // 'missing' (no row), a failed row still to resend, or null (went out, waiting, or already resent)
+  const stateOf = async (type, dedupeKey) => {
+    if (!(await isEnabled(type))) return null;
+    const row = await prisma.whatsAppNotification.findFirst({ where: { dedupeKey } });
+    if (!row) return 'missing';
+    if (row.status !== 'FAILED') return null;
+    const resent = await prisma.whatsAppNotification.findFirst({ where: { dedupeKey: `${dedupeKey}:retry` }, select: { id: true } });
+    return resent ? null : row;
+  };
+  const resend = async (type, dedupeKey, failed) => {
+    const r = await queue(type, {
+      priority: failed.priority,
+      dedupeKey: `${dedupeKey}:retry`,
+      refType: failed.refType,
+      refId: failed.refId,
+      text: failed.text,
+    });
+    return { resent: true, ...r };
+  };
 
   const out = {};
   const attempt = async (kind, name, key, dedupeKey, type, send) => {
     try {
-      out[kind] = (await isMissing(type, dedupeKey)) ? { key, ...(await send()) } : { key, missing: false };
+      const state = await stateOf(type, dedupeKey);
+      out[kind] = state === 'missing' ? { key, ...(await send()) }
+        : state ? { key, ...(await resend(type, dedupeKey, state)) }
+        : { key, missing: false };
     } catch (err) {
       out[kind] = { key, error: String(err.message).slice(0, 200) };
       require('./notification.service').notifyAdmins({
@@ -1048,6 +1187,9 @@ module.exports = {
   isEnabled,
   retryFailed,
   deadlineWarnings,
+  dueChecks,
+  dueChecksSoon,
+  _failureAlert: failureAlert,
   extensionTaken,
   DEADLINE_WARN_MINUTES,
   providerBudgetCap,

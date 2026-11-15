@@ -319,7 +319,7 @@ Cash Balance: TSh 10,160,000
 
 Revenue Growth: +15%
 
-Top Product: Pepa King Size — TSh 2,400,000
+Top Product by Sales: Pepa King Size — TSh 2,400,000
 Top Rep: Asha Mwinyi — TSh 3,100,000
 
 Brand Sales:
@@ -485,8 +485,10 @@ ZELab`);
 });
 
 // Audit, 12 Nov 2026: a request split between two cities listed the same product twice with nothing to
-// tell the lines apart. Each line now says its city, as on the owner's STOCK REQUEST; one city says none.
-test('STOCK REQUEST APPROVED (rep): a request split between cities says each line\'s city', () => {
+// tell the lines apart. Since 15 Nov 2026 (audit ui-r07: " · Dodoma" after the boxes ran past the 41
+// characters that fit on one phone line) the city heads its group — "Dodoma — OHIS" — as on the owner's
+// STOCK REQUEST; one city says none.
+test('STOCK REQUEST APPROVED (rep): a request split between cities groups its lines under each city', () => {
   const items = [
     { name: 'Civlily Kubwa (Brown) Na Filter', approved: 2, requested: 2, unit: 'Box', city: 'Arusha' },
     { name: 'Civlily Ndogo (Brown) Na Filter', approved: 1, requested: 1, unit: 'Box', city: 'Arusha' },
@@ -494,12 +496,35 @@ test('STOCK REQUEST APPROVED (rep): a request split between cities says each lin
     { name: 'OHIS Ndogo (Brown) Na Filter', approved: 1, requested: 2, unit: 'Box', city: 'Dodoma' },
   ];
   const text = t.repText({ kind: 'STOCK_REQUEST_APPROVED', request: 'REQ-20261112-0007', order: 'STL-20261112-0018', deadline: at, items });
-  assert.match(text, /\n\nOHIS\n\(1\) Ndogo \(Brown\) Na Filter: 1 of 2 Boxes · Dodoma\n\nCivlily\n\(2\) Ndogo \(Brown\) Na Filter: 1 Box · Arusha\n\(3\) Kubwa \(Brown\) Na Filter: 2 Boxes · Arusha\n\(4\) Kubwa \(Brown\) Na Filter: 1 Box · Dodoma\n/);
-  // One city only (or old requests with no city): no city on the lines.
+  assert.match(text, /\n\nArusha — Civlily\n\(1\) Ndogo \(Brown\) Na Filter: 1 Box\n\(2\) Kubwa \(Brown\) Na Filter: 2 Boxes\n\nDodoma — OHIS\n\(3\) Ndogo \(Brown\) Na Filter: 1 of 2 Boxes\n\nDodoma — Civlily\n\(4\) Kubwa \(Brown\) Na Filter: 1 Box\n/);
+  // One city only (or old requests with no city): no city anywhere, the brand alone heads the lines.
   const one = t.repText({ kind: 'STOCK_REQUEST_APPROVED', request: 'R', items: items.map((i) => ({ ...i, city: 'Arusha' })) });
-  assert.doesNotMatch(one, /·/);
+  assert.doesNotMatch(one, /Arusha|·/);
+  assert.match(one, /\n\nOHIS\n\(1\) /);
   const none = t.repText({ kind: 'STOCK_REQUEST_APPROVED', request: 'R', items: items.map(({ city, ...i }) => i) });
-  assert.doesNotMatch(none, /·/);
+  assert.doesNotMatch(none, /—|·/);
+});
+
+// Audit ui-r07, 15 Nov 2026: "(2) Ndogo (White) Bila Filter: 2 Boxes · Dodoma" was 47 characters and a Dar es
+// Salaam line 54; about 43 fit on Nino's phone. A request split between cities keeps every product line within
+// 41 characters, like a one-city request, at 99 boxes and with the longest city name. (Pepa Ndogo Kubwa is
+// left out: its own name is too long for that line in any request — "(2) Ndogo Kubwa (Brown) Bila Filter:
+// 99 Boxes" is 44 — and the names are kept in full, Nino 15 Nov 2026.)
+test('a request split between cities keeps every product line within 41 characters', () => {
+  const all = ['Pepa Ndogo (Brown) Bila Filter', 'OHIS Ndogo (Brown) Bila Filter', 'OHIS Ndogo (White) Bila Filter',
+    'OHIS Ndogo (Brown) Na Filter', 'OHIS Kubwa (Brown) Na Filter', 'OHIS Kubwa (Brown) Bila Filter', 'Civlily Ndogo (Brown) Bila Filter',
+    'Civlily Ndogo (White) Bila Filter', 'Civlily Ndogo (Brown) Na Filter', 'Civlily Kubwa (Brown) Bila Filter', 'Civlily Kubwa (White) Bila Filter',
+    'Civlily Kubwa (Brown) Na Filter', 'Civlily Kubwa (Mix) Na Filter', 'Civlily Ndogo (Mix) Bila Filter'];
+  const cities = ['Dar es Salaam', 'Dodoma'];
+  const owner = t.owner.stockRequest({ by: 'Mrema', items: all.map((name, k) => ({ name, qty: 99, city: cities[k % 2] })), total: 1 });
+  const rep = t.repText({ kind: 'STOCK_REQUEST_APPROVED', request: 'R', items: all.map((name, k) => ({ name, approved: 99, requested: 99, unit: 'Box', city: cities[k % 2] })) });
+  for (const text of [owner, rep]) {
+    const productLines = text.split('\n').filter((l) => /^\(\d+\) /.test(l));
+    assert.ok(productLines.length > 0);
+    for (const l of productLines) assert.ok(l.length <= 41, `too long for one phone line: "${l}"`);
+    assert.ok(!/·/.test(text), 'no city after the boxes');
+    assert.match(text, /\n\nDar es Salaam — Pepa\n\(1\) /);
+  }
 });
 
 // Audit, 11 Nov 2026: the admin changing a rep's pending request went out in the general wording, every

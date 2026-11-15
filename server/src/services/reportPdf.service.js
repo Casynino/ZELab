@@ -23,12 +23,17 @@ const plural = (n, one, many) => `${n0(n)} ${n === 1 ? one : many}`;
 
 // What differs between the three: wording and the little chart.
 const KINDS = {
+  // A daily report covers 21:00 the day before to 21:00 on its day (dailyBusinessReport.reportWindow), so it
+  // says so: in its header, its blurb and its chart (audit repo01, 15 Nov 2026).
   daily: {
     kind: 'Daily report',
     title: 'Daily business report',
-    blurb: (d) => `Everything sold, spent and moved through the business accounts on ${d.period.label}. The arrows compare with the day before.`,
-    compare: 'the day before',
-    chart: { title: 'Last 7 days', sub: 'sales per day, today in red' },
+    period: (d) => (d.period.covers ? `${d.period.label}  ·  ${d.period.covers}` : d.period.label),
+    blurb: (d) => (d.period.coversLong
+      ? `Everything sold, spent and moved through the business accounts ${d.period.coversLong} (Tanzania time). Each daily report starts where the one before it stopped, so nothing falls between two reports. The arrows compare with the 24 hours before.`
+      : `Everything sold, spent and moved through the business accounts on ${d.period.label}. The arrows compare with the day before.`),
+    compare: 'the 24 hours before',
+    chart: { title: 'Last 7 report days', sub: 'sales from 21:00 to 21:00, this report in red' },
   },
   weekly: {
     kind: 'Weekly report',
@@ -94,9 +99,14 @@ function yearShort(d) {
   if (brand && brand.revenue > 0) lines.push(`${brand.name} led the brands with ${tsh(brand.revenue)}, ${oneDp(share(brand.revenue, f.revenue))} of sales.`);
   const rep = ex.reps[0];
   if (rep) lines.push(`Best sales rep of the year: ${rep.name}, ${tsh(rep.revenue)} from ${plural(rep.boxes, 'box', 'boxes')}.`);
-  lines.push(`${tsh(d.cashPosition)} is held across the business accounts.`);
+  lines.push(`${tsh(closingBalance(d))} was held across the business accounts at the end of the year.`);
   return lines;
 }
+
+// What the accounts held at the END of the period — the cash statement's "Balance at the end" — never
+// their balance when the PDF was built (audit repo07, 15 Nov 2026: October's PDF said 4,342,535 here and
+// 6,425,000 in its own cash statement; a Tuesday weekly counted Monday's money).
+const closingBalance = (d) => d.extras?.cashStatement?.closing ?? d.cashPosition;
 
 // The twelve months: sales, profit (a loss below the line), the best and weakest, a table, the quarters.
 function monthSection(r, d) {
@@ -178,11 +188,12 @@ function inShort(d, cfg) {
   if (cfg !== KINDS.daily && best && best.revenue > 0 && ex.byDay.length > 1) lines.push(`Best day: ${best.long}, with ${tsh(best.revenue)} in sales.`);
   const brand = [...d.brands].sort((a, b) => b.revenue - a.revenue)[0];
   if (brand && brand.revenue > 0) lines.push(`${brand.name} led the brands with ${tsh(brand.revenue)}, ${oneDp(share(brand.revenue, f.revenue))} of sales.`);
-  const top = d.topProducts[0];
-  if (top && top.revenue > 0) lines.push(`Most sold product: ${top.name}${top.boxes != null ? `, ${plural(top.boxes, 'box', 'boxes')}` : ''}.`);
+  // ranked by sales value (audit repo02: it was the most profitable product, printed as the best seller)
+  const top = [...d.topProducts].sort((a, b) => b.revenue - a.revenue)[0];
+  if (top && top.revenue > 0) lines.push(`Top product by sales: ${top.name}, ${tsh(top.revenue)}${top.boxes != null ? ` from ${plural(top.boxes, 'box', 'boxes')}` : ''}.`);
   const rep = ex.reps[0];
   if (rep) lines.push(`Best sales rep: ${rep.name}, ${tsh(rep.revenue)} from ${plural(rep.boxes, 'box', 'boxes')}.`);
-  lines.push(`${tsh(d.cashPosition)} is held across the business accounts.`);
+  lines.push(`${tsh(closingBalance(d))} was held across the business accounts at the end of the period.`);
   return lines;
 }
 
@@ -193,7 +204,7 @@ function render(kindKey, d) {
   const r = createReport({
     kind: cfg.kind,
     title: cfg.title,
-    period: d.period.label,
+    period: cfg.period ? cfg.period(d) : d.period.label,
     number: d.number,
     generatedAt: d.generatedAt,
     blurb: cfg.blurb(d),
@@ -220,7 +231,7 @@ function render(kindKey, d) {
     );
   } else if (kindKey === 'daily') {
     ratioTiles.push(
-      { label: 'Sales made', value: n0(ex.orders), sub: 'orders today' },
+      { label: 'Sales made', value: n0(ex.orders), sub: 'orders in these 24 hours' },
       { label: 'Average sale', value: tsh(ex.orders ? f.revenue / ex.orders : 0), sub: 'per order' },
     );
   } else {
@@ -294,8 +305,9 @@ function render(kindKey, d) {
       : null,
     empty: 'No brand sales in this period.',
   });
+  const topProducts = [...d.topProducts].sort((a, b) => b.revenue - a.revenue);
   r.table({
-    title: `Top products (${d.topProducts.length})`,
+    title: `Top products by sales (${topProducts.length})`,
     columns: [
       { label: '#', w: 0.6, muted: true },
       { label: 'Product', w: 5, bold: true },
@@ -303,7 +315,7 @@ function render(kindKey, d) {
       { label: 'Revenue', w: 2, align: 'right', money: true },
       { label: 'Share of sales', w: 1.6, align: 'right' },
     ],
-    rows: d.topProducts.map((p, i) => [String(i + 1), p.name, p.boxes == null ? '' : p.boxes, p.revenue, oneDp(share(p.revenue, f.revenue))]),
+    rows: topProducts.map((p, i) => [String(i + 1), p.name, p.boxes == null ? '' : p.boxes, p.revenue, oneDp(share(p.revenue, f.revenue))]),
     empty: 'No products sold in this period.',
   });
 
@@ -397,8 +409,11 @@ function render(kindKey, d) {
     { label: 'Bought from suppliers', style: 'indent', text: signed(mv.purchasedBoxes) },
     { label: 'Sold', style: 'indent', text: signed(-mv.soldBoxes) },
     { label: 'Returned by customers', style: 'indent', text: signed(mv.returnedBoxes) },
-    { label: 'Adjustments and damage', style: 'indent', text: signed(mv.adjustedBoxes) },
   );
+  // boxes put back on sales made before this period (cancelled or refunded); a sale made and cancelled in
+  // the period is simply not in "Sold" (reportData.stockMovement)
+  if (mv.cancelledBoxes) mvRows.push({ label: 'Earlier sales cancelled or refunded', style: 'indent', text: signed(mv.cancelledBoxes) });
+  mvRows.push({ label: 'Adjustments and damage', style: 'indent', text: signed(mv.adjustedBoxes) });
   if (mv.closingBoxes != null) mvRows.push({ label: 'Boxes at the end', text: n0(mv.closingBoxes), style: 'total' });
   const owed = [
     { label: 'Orders out with reps', text: `${n0(d.settlements.active)}  ·  ${tsh(d.settlements.activeValue)}` },
@@ -414,14 +429,14 @@ function render(kindKey, d) {
   );
 
   // ── Accounts ──────────────────────────────────────────────────────────────
-  r.section('Business accounts', 'what each account holds right now');
+  r.section('Business accounts', kindKey === 'daily' ? 'what each account held at the 21:00 cut-off' : 'what each account held at the end of the period');
   r.table({
     columns: [
       { label: 'Account', w: 5, bold: true },
       { label: 'Balance (TSh)', w: 2.4, align: 'right', money: true },
     ],
     rows: d.accounts.map((a) => [a.name, a.balance]),
-    foot: ['Total available funds', d.cashPosition],
+    foot: ['Total', d.cashPosition],
     empty: 'No accounts set up.',
   });
 

@@ -129,12 +129,15 @@ function periodRange(period) {
 
 // `client` and `accountId` let a balance correction read ONE account's balance inside its own transaction,
 // by the very same formula every screen shows (recordBalanceCorrection). Called bare, it lists them all.
-async function accountBalances({ client = prisma, accountId = null } = {}) {
+// `asOf` (a Date) gives what each account held at that moment, by the same formula with only the movements
+// up to then: a report PDF states the balances at the END of its period, not when it was built (audit
+// repo07, 15 Nov 2026). Without it nothing changes.
+async function accountBalances({ client = prisma, accountId = null, asOf = null } = {}) {
   await ensureDefaults();
   // Balances = opening + post-epoch movements. Pre-epoch ledger rows are audit
   // history only; the accounts' openingBalance IS the truth at the epoch.
   const epoch = await reports.financeEpoch();
-  const window = epoch ? { occurredAt: { gte: epoch } } : {};
+  const window = epoch || asOf ? { occurredAt: { ...(epoch ? { gte: epoch } : {}), ...(asOf ? { lte: asOf } : {}) } } : {};
   const one = accountId ? { accountId } : {};
   const [accounts, grouped, offAccount] = await Promise.all([
     client.businessAccount.findMany({
@@ -1527,7 +1530,10 @@ async function report(opts = {}) {
       net: cf.net,
       closingBalance: cf.closingBalance,
     },
-    topProducts: prof.byProduct.slice(0, 8),
+    // The best sellers, by sales value (audit repo02, 15 Nov 2026): the reports print them as "Top product"
+    // with revenue and boxes, and byProduct is ranked by profit, so the most PROFITABLE product was
+    // printed as the best seller (October: OHIS at 1,440,000 above Civlily at 2,275,000).
+    topProducts: [...prof.byProduct].sort((a, b) => b.revenue - a.revenue).slice(0, 8),
     topBrands: prof.byBrand,
   };
 }
