@@ -83,6 +83,8 @@ const productUpdate = {
     categoryId: id.optional(),
     baseUnitName: z.string().trim().max(40).optional(),
     purchasePrice: money.optional(),
+    // The buying price the edit form loaded, sent with a changed purchasePrice: a receipt since then moved it.
+    expectedPurchasePrice: money.optional(),
     sellingPrice: money.optional(),
     minStockLevel: z.number().int().min(0).optional(),
     reorderQuantity: z.number().int().min(0).optional(),

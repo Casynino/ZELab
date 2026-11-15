@@ -30,6 +30,7 @@ const tx = {
   purchaseOrder: model('purchaseOrder'),
   financeTransaction: model('financeTransaction'),
   supplier: { findUnique: async () => ({ name: 'OHIS yiwu', brandId: 'brand-ohis' }) },
+  product: { findMany: async () => [] }, // none switched off (audit purc08)
   businessAccount: { findUnique: async () => ({ id: 'acct-1', isActive: true, type: 'CASH' }) },
 };
 

@@ -85,6 +85,7 @@ test('paying the total, or leaving it empty, still records a paid sale', async (
 // OHIS: 21 boxes in the warehouse, 42 out with reps (63 in all), minimum 50 — LOW, although 63 > 50.
 // Civ: 80 in the warehouse, none with reps — fine.
 function stockDb() {
+  db.purchaseOrderItem = { findMany: async () => [] }; // nothing bought and on the way
   db.product = {
     findMany: async () => [
       { id: 'ohis', name: 'OHIS Pepa Ndogo', sku: 'O1', minStockLevel: 50, reorderQuantity: 0, purchasePrice: 1000, baseUnitName: 'Box', isActive: true },

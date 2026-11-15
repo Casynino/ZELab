@@ -194,6 +194,10 @@ export function ProductModal({ open, onClose, editing, brands, categories, units
       };
       if (isEdit) {
         const { sku, ...rest } = scalar;
+        // The buying price goes up only when it was changed here, with the price this form loaded: receiving cargo
+        // sets it to the average cost, and a form opened before that must not write the old one back (audit purc10).
+        if (Math.round(rest.purchasePrice * 100) === Math.round(Number(editing.purchasePrice) * 100)) delete rest.purchasePrice;
+        else rest.expectedPurchasePrice = Number(editing.purchasePrice);
         await api.put(`/products/${editing.id}`, rest);
         await api.put(`/products/${editing.id}/packagings`, { packagings });
         return true;
@@ -225,8 +229,11 @@ export function ProductModal({ open, onClose, editing, brands, categories, units
     onError: (e) => {
       const msg = apiError(e);
       // A taken SKU or barcode is said on its own box, opened, not only in a toast.
-      const field = e?.response?.status === 409 ? (/barcode/i.test(msg) ? 'barcode' : /sku/i.test(msg) ? 'sku' : null) : null;
-      if (!field) { toast.error(msg); return; }
+      const priceMoved = e?.response?.status === 409 && /buying price/i.test(msg);
+      const field = e?.response?.status === 409 && !priceMoved ? (/barcode/i.test(msg) ? 'barcode' : /sku/i.test(msg) ? 'sku' : null) : null;
+      // The list reloads, so the product opened again shows the price it has now.
+      if (priceMoved) qc.invalidateQueries({ queryKey: ['products'] });
+      if (!field) { toast.error(msg, priceMoved ? { duration: 9000 } : undefined); return; }
       setShowMore(true);
       setError(field, { type: 'taken', message: TAKEN[field] });
       toast.error(TAKEN[field]);

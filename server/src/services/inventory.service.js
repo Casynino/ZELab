@@ -394,27 +394,40 @@ async function recomputeCacheFor(client, { productId, type, warehouseId, salesRe
 }
 
 // Rebuild every cache row from the ledger. Used by an admin maintenance route.
+// In ONE transaction that first takes the ledger table in EXCLUSIVE mode (audit purc03, 15 Nov 2026): it read
+// every balance, zeroed the caches and wrote the old reading back, so a sale committed in between was lost from
+// warehouse_stocks / rep_stocks (which the low-stock alerts read). EXCLUSIVE lets plain reads through but waits for
+// every movement already writing to finish and holds new ones at their ledger insert until the rebuild commits.
+// Every movement writes its ledger row before its cache row, so nothing can change the caches in between, and the
+// one lock taken first cannot deadlock against them. Seconds at most; maintenance only.
 async function recomputeAllCaches(client = prisma) {
-  const [whRows, repRows] = await Promise.all([warehouseBalances(client), repBalances(client)]);
-  await client.$transaction([
-    client.warehouseStock.updateMany({ data: { baseQuantity: 0 } }),
-    client.repStock.updateMany({ data: { baseQuantity: 0 } }),
-  ]);
-  for (const r of whRows) {
-    await client.warehouseStock.upsert({
-      where: { productId_warehouseId: { productId: r.productId, warehouseId: r.warehouseId } },
-      create: { productId: r.productId, warehouseId: r.warehouseId, baseQuantity: r.baseQuantity },
-      update: { baseQuantity: r.baseQuantity },
-    });
-  }
-  for (const r of repRows) {
-    await client.repStock.upsert({
-      where: { productId_salesRepId: { productId: r.productId, salesRepId: r.salesRepId } },
-      create: { productId: r.productId, salesRepId: r.salesRepId, baseQuantity: r.baseQuantity },
-      update: { baseQuantity: r.baseQuantity },
-    });
-  }
-  return { warehouseRows: whRows.length, repRows: repRows.length };
+  const rebuild = async (tx) => {
+    if (typeof tx.$executeRawUnsafe === 'function') {
+      await tx.$executeRawUnsafe('LOCK TABLE "inventory_transactions" IN EXCLUSIVE MODE');
+    }
+    const [whRows, repRows] = await Promise.all([warehouseBalances(tx), repBalances(tx)]);
+    await tx.warehouseStock.updateMany({ data: { baseQuantity: 0 } });
+    await tx.repStock.updateMany({ data: { baseQuantity: 0 } });
+    for (const r of whRows) {
+      await tx.warehouseStock.upsert({
+        where: { productId_warehouseId: { productId: r.productId, warehouseId: r.warehouseId } },
+        create: { productId: r.productId, warehouseId: r.warehouseId, baseQuantity: r.baseQuantity },
+        update: { baseQuantity: r.baseQuantity },
+      });
+    }
+    for (const r of repRows) {
+      await tx.repStock.upsert({
+        where: { productId_salesRepId: { productId: r.productId, salesRepId: r.salesRepId } },
+        create: { productId: r.productId, salesRepId: r.salesRepId, baseQuantity: r.baseQuantity },
+        update: { baseQuantity: r.baseQuantity },
+      });
+    }
+    return { warehouseRows: whRows.length, repRows: repRows.length };
+  };
+  // A transaction client (no $transaction of its own) is already one transaction.
+  return typeof client.$transaction === 'function'
+    ? client.$transaction(rebuild, { timeout: 60000, maxWait: 10000 })
+    : rebuild(client);
 }
 
 module.exports = {

@@ -4,7 +4,7 @@ const prisma = require('../config/prisma');
 const ApiError = require('../utils/ApiError');
 const inventory = require('./inventory.service');
 const { randomCode } = require('../utils/numbering');
-const { toNumber } = require('../utils/money');
+const { toNumber, round2, formatCurrency } = require('../utils/money');
 
 const PRODUCT_INCLUDE = {
   brand: true,
@@ -105,6 +105,15 @@ async function updateProduct(id, payload) {
   if (!product) throw ApiError.notFound('Product not found');
   // Switching off is refused while a settlement of it waits for approval (audit reversals-stock-1).
   if (payload.isActive === false && product.isActive) await assertNoPendingSettlements(product);
+  // Receiving cargo sets the buying price to the average cost of every box held. An edit form opened before that
+  // must not write its old price back (audit purc10): the form sends the price only when it was changed, with the
+  // price it loaded, and a price that has moved on since is refused rather than overwritten.
+  if (payload.purchasePrice !== undefined && payload.expectedPurchasePrice !== undefined
+    && round2(toNumber(product.purchasePrice)) !== round2(toNumber(payload.expectedPurchasePrice))) {
+    throw ApiError.conflict(
+      `The buying price of ${product.name} is now ${formatCurrency(product.purchasePrice)}: it changed after this form was opened (receiving stock sets it to the average cost). Close the form, open the product again and check the price.`,
+    );
+  }
 
   const data = {};
   const fields = [
@@ -299,7 +308,7 @@ async function deleteProduct(id) {
     prisma.returnItem.count({ where }),
     prisma.stockCountItem.count({ where }),
     prisma.settlementSubmission.count({ where }),
-    prisma.purchaseOrderItem.findMany({ where, select: { purchaseOrder: { select: { poNumber: true } } }, take: 20 }),
+    prisma.purchaseOrderItem.findMany({ where, select: { purchaseOrder: { select: { poNumber: true, status: true } } }, take: 20 }),
     prisma.stockRequestItem.findMany({ where, select: { stockRequest: { select: { requestNumber: true } } }, take: 20 }),
   ]);
 
@@ -320,7 +329,10 @@ async function deleteProduct(id) {
     return { ...updated, deleted: false, deactivated: true, holdings: h, message };
   }
 
-  const orders = [...new Set(poLines.map((l) => l.purchaseOrder?.poNumber).filter(Boolean))];
+  // A cancelled order's lines are frozen (audit purc04), so it cannot be "taken off" one: only switching off is left.
+  const numbers = (lines) => [...new Set(lines.map((l) => l.purchaseOrder?.poNumber).filter(Boolean))];
+  const orders = numbers(poLines.filter((l) => l.purchaseOrder?.status !== 'CANCELLED'));
+  const cancelled = numbers(poLines.filter((l) => l.purchaseOrder?.status === 'CANCELLED'));
   const requests = [...new Set(requestLines.map((l) => l.stockRequest?.requestNumber).filter(Boolean))];
   if (orders.length || requests.length) {
     const on = [
@@ -329,6 +341,11 @@ async function deleteProduct(id) {
     ].filter(Boolean).join(' and ');
     throw ApiError.badRequest(
       `${product.name} is on ${on}, so it cannot be removed. Take it off ${orders.length + requests.length === 1 ? 'that' : 'those'} first, or switch the product off in Edit.`,
+    );
+  }
+  if (cancelled.length) {
+    throw ApiError.badRequest(
+      `${product.name} is on cancelled purchase ${cancelled.length === 1 ? 'order' : 'orders'} ${cancelled.slice(0, 5).join(', ')}, kept as ${cancelled.length === 1 ? 'a record' : 'records'}, so it cannot be removed. Switch the product off in Edit instead.`,
     );
   }
 

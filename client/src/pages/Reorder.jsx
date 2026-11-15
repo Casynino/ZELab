@@ -149,6 +149,9 @@ export default function Reorder() {
             <> <b className="text-foreground">{formatNumber(s.belowMinCount)}</b> product{s.belowMinCount === 1 ? ' sits' : 's sit'} at or below the
               {' '}minimum stock level in the warehouse — where the cover is still long that is printed as a reason, not sounded as an alarm.</>
           )}
+          {s.coveredCount > 0 && (
+            <> <b className="text-foreground">{formatNumber(s.coveredCount)}</b> more {s.coveredCount === 1 ? 'is' : 'are'} short, but already covered by stock bought and on the way.</>
+          )}
           {s.noVelocityCount > 0 && (
             <> {formatNumber(s.noVelocityCount)} sold nothing at all in {pace}, so they have no run-out date to rank by.</>
           )}
@@ -204,6 +207,7 @@ export default function Reorder() {
                       <span className="tabular-nums">{formatNumber(r.onHand)}</span>
                       <span className="text-xs text-faint"> {pluralizeUnit(r.baseUnitName)}</span>
                       <div className="text-[11px] text-faint">minimum {formatNumber(r.minStockLevel)}</div>
+                      {r.onTheWay > 0 && <div className="text-[11px] text-sky-300">{formatNumber(r.onTheWay)} on the way</div>}
                     </TD>
                     <TD>
                       {r.recommendedQty > 0 ? (
@@ -268,7 +272,10 @@ export default function Reorder() {
                             <div className="text-foreground">{r.name}</div>
                             <div className="text-xs text-faint">{r.brand}</div>
                           </TD>
-                          <TD className="tabular-nums">{formatNumber(r.onHand)}</TD>
+                          <TD className="tabular-nums">
+                            {formatNumber(r.onHand)}
+                            {r.onTheWay > 0 && <div className="text-[11px] text-sky-300">{formatNumber(r.onTheWay)} on the way</div>}
+                          </TD>
                           <TD className="tabular-nums">{r.avgDailySales > 0 ? r.avgDailySales : <span className="text-faint">—</span>}</TD>
                           <TD className="tabular-nums">
                             {r.daysRemaining === null

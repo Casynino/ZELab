@@ -116,6 +116,25 @@ function assertArrivalNotBeforeOrder(orderedAt, expectedArrival) {
   }
 }
 
+// Switched off = deleted (audit purc08, 15 Nov 2026): a supplier or product the owner switched off gets no new order
+// and is not paid for — the screens hide them, but a stale tab or a direct call reached them. Orders already bought
+// are still received and costed; only buying is refused.
+async function assertBuyable(tx, { supplierId, productIds = [] }) {
+  if (supplierId) {
+    const s = await tx.supplier.findUnique({ where: { id: supplierId }, select: { name: true, isActive: true } });
+    if (s && s.isActive === false) {
+      throw ApiError.badRequest(`${s.name} is switched off (deleted), so nothing can be ordered from it or paid to it. Switch the supplier back on in Edit supplier first, or choose another supplier.`);
+    }
+  }
+  const ids = [...new Set(productIds)].filter(Boolean);
+  if (!ids.length) return;
+  const off = await tx.product.findMany({ where: { id: { in: ids }, isActive: false }, select: { name: true } });
+  if (off.length) {
+    const one = off.length === 1;
+    throw ApiError.badRequest(`${off.map((p) => p.name).join(', ')} ${one ? 'is' : 'are'} switched off, so ${one ? 'it' : 'they'} cannot be bought. Switch ${one ? 'it' : 'them'} back on in Products, or take ${one ? 'it' : 'them'} off this order.`);
+  }
+}
+
 async function createPurchaseOrder(payload, actor) {
   if (!payload.items || payload.items.length === 0) {
     throw ApiError.badRequest('A purchase order needs at least one item');
@@ -127,6 +146,7 @@ async function createPurchaseOrder(payload, actor) {
   }
   assertArrivalNotBeforeOrder(payload.orderedAt, payload.expectedArrival);
   return prisma.$transaction(async (tx) => {
+    await assertBuyable(tx, { supplierId: payload.supplierId, productIds: payload.items.map((i) => i.productId) });
     const lines = [];
     for (const i of payload.items) {
       const { baseQuantity } = await inventory.convertToBase(tx, i.productId, i.packagingUnitId, i.quantity);
@@ -203,8 +223,8 @@ async function listPurchaseOrders(filters, pagination) {
   const counts = Object.fromEntries(byStatus.map((r) => [r.status, r._count]));
 
   const boxesOf = (po) => (po.items || []).reduce((n, it) => n + (it.baseQuantity || 0), 0);
-  // Still to come: what was bought less what a confirmed check-in already brought in.
-  const leftOf = (po) => (po.items || []).reduce((n, it) => n + Math.max(0, (it.baseQuantity || 0) - (it.receivedBase || 0)), 0);
+  // Still to come: what was bought less what was received and what was marked missing (it will never come).
+  const leftOf = (po) => (po.items || []).reduce((n, it) => n + Math.max(0, (it.baseQuantity || 0) - (it.receivedBase || 0) - (it.missingBase || 0)), 0);
   const withBoxes = items.map((po) => ({ ...po, boxes: boxesOf(po) }));
   const onTheWay = {
     orders: incoming.length,
@@ -313,6 +333,16 @@ async function updateLockedOrder(tx, id, payload) {
   const po = await tx.purchaseOrder.findUnique({ where: { id } });
   if (!po) throw ApiError.notFound('Purchase order not found');
   if (po.status === 'RECEIVED') throw ApiError.badRequest('A received purchase order cannot be edited');
+  // A cancelled order stays as the record of what was ordered — and of any payment made and reversed for it — so
+  // what it bought, from whom, at what cost and when are frozen; only its notes can change (audit purc04: its
+  // product and total were rewritten after Undo purchase, so it no longer matched its own ledger entries).
+  if (po.status === 'CANCELLED') {
+    const frozen = ['items', 'supplierId', 'shippingCost', 'clearingCost', 'otherCost', 'warehouseId', 'orderedAt', 'expectedArrival', 'currency']
+      .filter((k) => payload[k] !== undefined);
+    if (frozen.length) {
+      throw ApiError.badRequest(`${po.poNumber} is cancelled: it stays as it was, as the record of that order. Only its notes can change. Make a new order instead.`);
+    }
+  }
   // Received is reached only by receiving (audit #40): marking it here left the order "received" with
   // no stock ever brought in, and Receive then refused it as already received.
   if (payload.status === 'RECEIVED') {
@@ -334,6 +364,14 @@ async function updateLockedOrder(tx, id, payload) {
     if (payload.status === 'CANCELLED' && ARRIVING.includes(po.status)) {
       throw ApiError.badRequest(`${po.poNumber} is bought and on its way — it cannot be cancelled. Use Undo purchase if it was confirmed by mistake, or receive it and mark what never came as missing.`);
     }
+  }
+
+  // A new supplier, or a product newly put on the order, must not be switched off. One already on a draft may
+  // stay while the draft is edited; Confirm purchase refuses it.
+  if (payload.supplierId && payload.supplierId !== po.supplierId) await assertBuyable(tx, { supplierId: payload.supplierId });
+  if (payload.items) {
+    const had = new Set((await tx.purchaseOrderItem.findMany({ where: { purchaseOrderId: id }, select: { productId: true } })).map((l) => l.productId));
+    await assertBuyable(tx, { productIds: payload.items.map((i) => i.productId).filter((pid) => !had.has(pid)) });
   }
 
   // A PO with money already paid against it cannot simply be cancelled:
@@ -656,6 +694,8 @@ async function confirmPurchase(id, { accountId, occurredAt, notes, expectedArriv
     if (po.items.some((i) => !(toNumber(i.unitCost) > 0))) {
       throw ApiError.badRequest('Every product needs its buying price before the purchase is confirmed. Edit the order and fill them in.');
     }
+    // No money goes to a switched-off supplier, nor for a switched-off product.
+    await assertBuyable(tx, { supplierId: po.supplierId, productIds: po.items.map((i) => i.productId) });
     // An order made before this flow may already be paid, on the order or through the supplier's balance;
     // only what is left is paid now.
     const due = await stillToPay(tx, po);
@@ -875,13 +915,17 @@ async function receiveCargo(id, { items = [], notes, arrivedAt, clientKey } = {}
 
 // Purchase history by product line: every price paid for a product, order by order, with what came in.
 // The same product bought at different prices keeps each price on its own order line.
+// Bought only, with or without dates (audit purc09: drafts — prices never paid — showed until a date was chosen, then
+// vanished, and so did every order bought before Confirm purchase existed, which have no purchase date). The date is
+// the one the page shows: when it was bought, or for an older order, when it was made.
 async function listPurchaseLines({ productId, from, to } = {}) {
-  const po = { status: { not: 'CANCELLED' } };
+  const po = { status: { notIn: ['DRAFT', 'CANCELLED'] } };
   if (from || to) {
-    po.purchasedAt = {
+    const range = {
       ...(from ? { gte: new Date(`${from}T00:00:00+03:00`) } : {}),
       ...(to ? { lte: new Date(`${to}T23:59:59.999+03:00`) } : {}),
     };
+    po.OR = [{ purchasedAt: range }, { purchasedAt: null, createdAt: range }];
   }
   const rows = await prisma.purchaseOrderItem.findMany({
     where: { ...(productId ? { productId } : {}), purchaseOrder: po },
