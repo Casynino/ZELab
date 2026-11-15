@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import clsx from 'clsx';
-import { ArrowUpRight, ChevronRight, Eye, EyeOff } from 'lucide-react';
+import { ArrowUpRight, ChevronsRight, Eye, EyeOff } from 'lucide-react';
 
 // The rep's balance as a small digital wallet card (Nino, 10 Nov 2026: "a nice
 // digital card, like a wallet, well designed, premium look, small — show the
@@ -31,21 +31,38 @@ export default function WalletCard({
   const toggle = () => setHidden((h) => { saveHidden(!h); return !h; });
   const mask = (s) => (hidden ? '•••' : s);
 
-  // The whole card opens the wallet's transactions; the eye and Withdraw keep their own job.
+  // The whole card opens the wallet's transactions — a tap, or a swipe across it, as the hint on it says
+  // (Nino, 15 Nov 2026, after a banking app he showed). The eye and Withdraw keep their own job.
   const own = (fn) => (e) => { e.stopPropagation(); fn?.(e); };
+  const touch = useRef(null);
+  const swiped = useRef(false);
+  const onTouchStart = (e) => { const t = e.touches[0]; touch.current = { x: t.clientX, y: t.clientY }; swiped.current = false; };
+  const onTouchEnd = (e) => {
+    const from = touch.current; touch.current = null;
+    if (!from || !onOpen) return;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - from.x;
+    const dy = t.clientY - from.y;
+    // A sideways swipe, not a page scroll.
+    if (Math.abs(dx) > 40 && Math.abs(dy) < 30) { swiped.current = true; onOpen(); }
+  };
+  const onClick = () => { if (swiped.current) { swiped.current = false; return; } onOpen?.(); };
   return (
     <section
       role={onOpen ? 'button' : undefined}
       tabIndex={onOpen ? 0 : undefined}
       aria-label={onOpen ? 'Open my wallet: every transaction' : undefined}
-      onClick={onOpen}
+      onClick={onOpen ? onClick : undefined}
+      onTouchStart={onOpen ? onTouchStart : undefined}
+      onTouchEnd={onOpen ? onTouchEnd : undefined}
       onKeyDown={onOpen ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(); } } : undefined}
       className={clsx(
         // The card keeps the size it had with its figures row (Nino, 15 Nov 2026: "same size as before"):
         // the label at the top, the balance low on the card, as on a bank card.
         'relative isolate flex min-h-[148px] flex-col overflow-hidden rounded-[22px] p-4 text-white ring-1 ring-inset',
         negative ? 'ring-rose-400/25' : 'ring-white/[0.09]',
-        onOpen && 'cursor-pointer transition active:scale-[0.995]',
+        // Touched, it lifts a little towards the finger, the way the card in his example rises.
+        onOpen && 'wallet-lift cursor-pointer',
       )}
       style={{
         background: negative
@@ -83,36 +100,44 @@ export default function WalletCard({
         <img src="/brand/zelab-dark.svg" alt="ZELab" className="h-[15px] w-auto shrink-0 opacity-90" />
       </div>
 
-      {/* The balance, and the one action beside it. They wrap onto two lines only
-          when a very long figure meets a very narrow phone. */}
-      <div className="mt-auto flex flex-wrap items-center justify-between gap-x-3 pt-4">
-        {/* A small arrow right after the figure says the card opens (Nino, 15 Nov 2026: no word on the
-            card, just a way to see it can be opened) — the way a banking app marks a tappable balance. */}
-        <span className="flex min-w-0 items-center gap-1">
-          <span
+      {/* Bottom of the card: the balance with the hint under it on the left, Withdraw as a round button with its
+          arrow on the right (Nino, 15 Nov 2026: "small and nice", like his example). */}
+      <div className="mt-auto flex items-end justify-between gap-3 pt-4">
+        <div className="min-w-0">
+          <p
             className={clsx(
-              'min-w-0 text-[27px] font-bold leading-none tabular-nums',
+              'truncate text-[27px] font-bold leading-none tabular-nums',
               negative ? 'text-rose-300' : 'text-white',
               hidden && 'tracking-[0.18em]',
             )}
           >
             {hidden ? DOTS : balance}
-          </span>
-          {onOpen && <ChevronRight className="h-6 w-6 shrink-0 text-white/35" strokeWidth={2.2} aria-hidden="true" />}
-        </span>
-        {/* A word, not a pill: bold white and an arrow, no fill, no outline. The
-            height is only for the thumb — nothing of it shows. */}
+          </p>
+          {onOpen && (
+            <p className="mt-2 flex items-center gap-1 text-[11px] font-medium text-white/55">
+              <ChevronsRight className="wallet-nudge h-3.5 w-3.5 shrink-0" strokeWidth={2.4} aria-hidden="true" />
+              Swipe to view details
+            </p>
+          )}
+        </div>
         <button
           type="button"
           onClick={own(onWithdraw)}
+          onTouchStart={(e) => e.stopPropagation()}
+          onTouchEnd={(e) => e.stopPropagation()}
           disabled={!canWithdraw}
-          className={clsx(
-            'flex h-11 shrink-0 items-center gap-1 text-[15px] font-semibold transition active:opacity-70',
-            canWithdraw ? 'text-white' : 'cursor-not-allowed text-white/45',
-          )}
+          aria-label="Withdraw"
+          className={clsx('flex shrink-0 flex-col items-center gap-1 transition active:scale-95', !canWithdraw && 'cursor-not-allowed')}
         >
-          Withdraw
-          <ArrowUpRight className="h-[17px] w-[17px]" strokeWidth={2.4} />
+          <span
+            className={clsx(
+              'flex h-11 w-11 items-center justify-center rounded-full ring-1 ring-inset backdrop-blur-sm',
+              canWithdraw ? 'bg-white/[0.16] text-white ring-white/25' : 'bg-white/[0.06] text-white/40 ring-white/10',
+            )}
+          >
+            <ArrowUpRight className="h-[18px] w-[18px]" strokeWidth={2.4} />
+          </span>
+          <span className={clsx('text-[11px] font-semibold', canWithdraw ? 'text-white' : 'text-white/45')}>Withdraw</span>
         </button>
       </div>
 

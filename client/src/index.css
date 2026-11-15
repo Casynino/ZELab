@@ -777,3 +777,28 @@ body {
   .rows-or-table > .rot-swap { display: none; }
   .rows-or-table > .rot-table { display: block; }
 }
+
+/* Rep wallet card (15 Nov 2026, after the banking app Nino showed): the double arrow of "Swipe to view details"
+   nudges sideways now and then, and the card lifts a little when a finger is on it. Both stop for anyone who
+   asked their phone for less motion. */
+@keyframes wallet-nudge {
+  0%, 60%, 100% { transform: translateX(0); opacity: .55; }
+  75% { transform: translateX(3px); opacity: 1; }
+  88% { transform: translateX(0); opacity: .8; }
+}
+.wallet-nudge { animation: wallet-nudge 2.4s ease-in-out infinite; }
+.wallet-lift {
+  transition: transform .22s cubic-bezier(.2, .8, .2, 1), box-shadow .22s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.wallet-lift:active {
+  transform: translateY(-3px) scale(1.012);
+  box-shadow: 0 22px 40px -18px rgba(0, 0, 0, .95), 0 0 0 1px rgba(255, 255, 255, .06), inset 0 1px 0 rgba(255, 255, 255, .09) !important;
+}
+@media (hover: hover) {
+  .wallet-lift:hover { transform: translateY(-2px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .wallet-nudge { animation: none; }
+  .wallet-lift, .wallet-lift:active, .wallet-lift:hover { transition: none; transform: none; }
+}
