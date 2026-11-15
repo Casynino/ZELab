@@ -14,13 +14,14 @@ const finance = require('./finance.service');
 const notification = require('./notification.service');
 const { nextDocNumber } = require('../utils/numbering');
 const { toNumber, round2, formatCurrency } = require('../utils/money');
+const { keyedId, isIdClash } = require('../utils/clientKey');
 
 // ── Submit (PENDING — no Sale, no impact) ────────────────────────────────────
 
 // ONE line of a submission, inside a transaction: every check, and the PENDING
 // row. Shared by the single submit and the several-at-once submit below, so a
 // product can never be accepted by one and refused by the other.
-async function submitLineTx(tx, settlementId, payload, actor) {
+async function submitLineTx(tx, settlementId, payload, actor, { id = null } = {}) {
   const productId = payload.productId;
   const boxes = Math.trunc(Number(payload.boxes));
   if (!productId) throw ApiError.badRequest('Select a product to settle');
@@ -94,6 +95,7 @@ async function submitLineTx(tx, settlementId, payload, actor) {
   const submissionNumber = await nextDocNumber(tx.settlementSubmission, 'submissionNumber', 'SUB');
   const sub = await tx.settlementSubmission.create({
     data: {
+      ...(id ? { id } : {}),
       submissionNumber,
       settlementId,
       salesRepId: s.salesRepId,
@@ -146,10 +148,47 @@ function tellOwner(results, actor) {
   wa.background(wa.settlementSubmittedBatch({ results, settlement: s, repName }));
 }
 
+// A press already saved under this window's key (see utils/clientKey): its submissions, in the order they
+// were listed, or null. Read under the order's lock, so a second press that waited for the first finds it.
+// Marked `replayed` so the controller does not audit it twice; the owner is not told twice either.
+async function alreadySent(client, settlementId, ids, actor) {
+  if (!ids.length) return null;
+  const rows = await client.settlementSubmission.findMany({ where: { id: { in: ids } } });
+  if (!rows.length) return null;
+  if (rows.some((r) => r.settlementId !== settlementId || (r.submittedById || null) !== (actor?.id || null))) {
+    throw ApiError.conflict('This settlement was already sent from another window. Close it and open the order again.');
+  }
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  return ids.map((id) => byId.get(id)).filter(Boolean).map((r) => ({ ...r, replayed: true }));
+}
+
+// Run a keyed submit; when the same press won a race on another connection at the very same moment, the
+// primary key refuses this copy and the saved one is handed back instead.
+async function keyedRun(settlementId, ids, actor, run) {
+  try {
+    return await run();
+  } catch (err) {
+    if (ids.length && isIdClash(err)) {
+      const seen = await alreadySent(prisma, settlementId, ids, actor);
+      if (seen) return { replay: seen };
+    }
+    throw err;
+  }
+}
+
 async function submit(settlementId, payload, actor) {
-  const result = await prisma.$transaction((tx) => submitLineTx(tx, settlementId, payload, actor), { timeout: 30000 });
-  tellOwner([result], actor);
-  return result.sub;
+  const ids = [keyedId('settle', actor?.id, payload?.clientKey, 0)].filter(Boolean);
+  const out = await keyedRun(settlementId, ids, actor, () => prisma.$transaction(async (tx) => {
+    if (ids.length) {
+      await settlement.lockOrder(tx, settlementId);
+      const seen = await alreadySent(tx, settlementId, ids, actor);
+      if (seen) return { replay: seen };
+    }
+    return submitLineTx(tx, settlementId, payload, actor, { id: ids[0] || null });
+  }, { timeout: 30000 }));
+  if (out.replay) return out.replay[0];
+  tellOwner([out], actor);
+  return out.sub;
 }
 
 // Several products on one order in one go ("submit what I sold" as a list, not one
@@ -165,11 +204,18 @@ async function submitMany(settlementId, payload, actor) {
   const ids = items.map((i) => i?.productId);
   if (new Set(ids).size !== ids.length) throw ApiError.badRequest('Each product can be listed once');
 
-  const results = await prisma.$transaction(async (tx) => {
+  const keyIds = payload?.clientKey ? items.map((_, i) => keyedId('settle', actor?.id, payload.clientKey, i)).filter(Boolean) : [];
+  const results = await keyedRun(settlementId, keyIds, actor, () => prisma.$transaction(async (tx) => {
+    if (keyIds.length) {
+      await settlement.lockOrder(tx, settlementId);
+      const seen = await alreadySent(tx, settlementId, keyIds, actor);
+      if (seen) return { replay: seen };
+    }
     const done = [];
-    for (const item of items) done.push(await submitLineTx(tx, settlementId, item, actor));
+    for (const [i, item] of items.entries()) done.push(await submitLineTx(tx, settlementId, item, actor, { id: keyIds[i] || null }));
     return done;
-  }, { timeout: 30000 });
+  }, { timeout: 30000 }));
+  if (results.replay) return results.replay;
 
   tellOwner(results, actor);
   return results.map((r) => r.sub);
@@ -191,7 +237,7 @@ async function approve(submissionId, actor) {
     if (claimed.count !== 1) throw ApiError.conflict('This submission was already decided.');
     const { sale, settlement: dec } = await settlement.settleBoxesTx(
       tx,
-      { settlementId: sub.settlementId, productId: sub.productId, packagingUnitId: sub.packagingUnitId, boxes: sub.boxes, method: sub.method },
+      { settlementId: sub.settlementId, productId: sub.productId, packagingUnitId: sub.packagingUnitId, boxes: sub.boxes, method: sub.method, amount: sub.amount },
       actor,
     );
     await tx.settlementSubmission.update({ where: { id: submissionId }, data: { saleId: sale.id } });
@@ -202,7 +248,9 @@ async function approve(submissionId, actor) {
   // rep chose on submission (falls back to Cash), tagged with the product's
   // brand so OHIS and Civlily books stay separate. Keyed to the sale (refId) so
   // the historical backfill never double-counts it.
-  const prod = await prisma.product.findUnique({ where: { id: sub.productId }, select: { brandId: true } }).catch(() => null);
+  const prod = await prisma.product.findUnique({ where: { id: sub.productId }, select: { brandId: true, name: true } }).catch(() => null);
+  // The product as it is called now: the name stored at submit can be an old one (audit reps06).
+  const productName = prod?.name || sub.productName;
   finance.recordSaleIncome({
     saleId: out.sale.id,
     saleNumber: out.sale.saleNumber,
@@ -216,6 +264,10 @@ async function approve(submissionId, actor) {
 
   const rep = await prisma.salesRepresentative.findUnique({ where: { id: sub.salesRepId }, select: { userId: true } });
   const closed = out.dec.status === 'SETTLED';
+  // This approval accounted for the order's last box (settleBoxesTx refuses an order already closed).
+  if (closed) {
+    settlement.tellAdminsOrderClosed({ id: sub.settlementId, settlementNumber: out.dec.settlementNumber, repName: out.dec.salesRep?.user?.name });
+  }
   // Commission the rep just earned on these boxes + their new available balance,
   // so the "settlement approved" message shows the money — in-app and WhatsApp.
   let earnedLine = 'Commission has been credited.';
@@ -233,12 +285,12 @@ async function approve(submissionId, actor) {
     severity: 'INFO',
     title: 'Settlement approved',
     message: closed
-      ? `Your settlement of ${sub.boxes} box(es) of ${sub.productName} was approved and order ${out.dec.settlementNumber} is now fully closed. ${earnedLine}`
-      : `Your settlement of ${sub.boxes} box(es) of ${sub.productName} (${formatCurrency(sub.amount)}) was approved. ${earnedLine}`,
+      ? `Your settlement of ${sub.boxes} box(es) of ${productName} was approved and order ${out.dec.settlementNumber} is now fully closed. ${earnedLine}`
+      : `Your settlement of ${sub.boxes} box(es) of ${productName} (${formatCurrency(sub.amount)}) was approved. ${earnedLine}`,
     whatsapp: {
       kind: 'SETTLEMENT_APPROVED',
       boxes: sub.boxes,
-      product: sub.productName,
+      product: productName,
       amount: sub.amount,
       earned: figures.earned,
       available: figures.available,
@@ -277,13 +329,17 @@ async function reject(submissionId, actor, reason) {
   if (done.count !== 1) throw ApiError.conflict('This submission was already decided.');
   const updated = await prisma.settlementSubmission.findUnique({ where: { id: submissionId } });
 
-  const rep = await prisma.salesRepresentative.findUnique({ where: { id: sub.salesRepId }, select: { userId: true } });
+  const [rep, prod] = await Promise.all([
+    prisma.salesRepresentative.findUnique({ where: { id: sub.salesRepId }, select: { userId: true } }),
+    prisma.product.findUnique({ where: { id: sub.productId }, select: { name: true } }).catch(() => null),
+  ]);
+  const productName = prod?.name || sub.productName; // as it is called now (audit reps06)
   notification.notifyUser(rep?.userId, {
     type: 'GENERAL',
     severity: 'WARNING',
     title: 'Settlement rejected',
-    message: `Your settlement of ${sub.boxes} box(es) of ${sub.productName} was rejected. Please review and resubmit.${reason ? ` Reason: ${reason}` : ''}`,
-    whatsapp: { kind: 'SETTLEMENT_REJECTED', boxes: sub.boxes, product: sub.productName, reason },
+    message: `Your settlement of ${sub.boxes} box(es) of ${productName} was rejected. Please review and resubmit.${reason ? ` Reason: ${reason}` : ''}`,
+    whatsapp: { kind: 'SETTLEMENT_REJECTED', boxes: sub.boxes, product: productName, reason },
     entityType: 'Settlement',
     entityId: sub.settlementId,
   }).catch(() => {});
@@ -296,19 +352,24 @@ async function listPending() {
   const subs = await prisma.settlementSubmission.findMany({ where: { status: 'PENDING' }, orderBy: { submittedAt: 'asc' } });
   const repIds = [...new Set(subs.map((s) => s.salesRepId))];
   const stlIds = [...new Set(subs.map((s) => s.settlementId))];
-  const [reps, stls] = await Promise.all([
-    prisma.salesRepresentative.findMany({ where: { id: { in: repIds } }, include: { user: { select: { name: true } } } }),
+  const productIds = [...new Set(subs.map((s) => s.productId))];
+  const [reps, stls, products] = await Promise.all([
+    prisma.salesRepresentative.findMany({ where: { id: { in: repIds } }, select: { id: true, code: true, user: { select: { name: true } } } }),
     prisma.settlement.findMany({ where: { id: { in: stlIds } }, select: { id: true, settlementNumber: true } }),
+    prisma.product.findMany({ where: { id: { in: productIds } }, select: { id: true, name: true } }),
   ]);
   const repName = new Map(reps.map((r) => [r.id, r.user?.name || r.code]));
   const stlNum = new Map(stls.map((s) => [s.id, s.settlementNumber]));
+  // The product's name now, not the one stored when it was submitted (audit reps06: renamed products still
+  // showed their old name); the stored one only if the product is gone.
+  const prodName = new Map(products.map((p) => [p.id, p.name]));
   return subs.map((s) => ({
     id: s.id,
     submissionNumber: s.submissionNumber,
     settlementId: s.settlementId,
     settlementNumber: stlNum.get(s.settlementId) || null,
     salesRep: repName.get(s.salesRepId) || null,
-    productName: s.productName,
+    productName: prodName.get(s.productId) || s.productName,
     boxes: s.boxes,
     amount: toNumber(s.amount),
     method: s.method,

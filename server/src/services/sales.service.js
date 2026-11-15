@@ -43,6 +43,11 @@ async function assertCashBack(tx, takes, what) {
   }
 }
 
+// Marks a line priced at what a rep already paid on a settlement submission (audit reps00, 15 Nov 2026). Only
+// code can set it — a Symbol never arrives in a request body — so a till sale can never use it to go below the
+// listed price.
+const AGREED_PRICE = Symbol('agreedPrice');
+
 function priceLine(input, product, packaging) {
   const factor = packaging.baseQuantity;
   const baseQuantity = input.quantity * factor;
@@ -56,8 +61,11 @@ function priceLine(input, product, packaging) {
   // Goods are never sold below the listed price. A caller may price ABOVE it,
   // but anything under is refused rather than quietly accepted — a discount is
   // the way to sell for less, and it is recorded as one.
+  // A settlement is booked at the price the rep was told and paid when he submitted it, even if the
+  // catalogue price was raised before ZELab approved it: the sale, the account and the order must all hold
+  // what was actually paid.
   const packagingUnitPrice = input.unitPrice != null ? Number(input.unitPrice) : cataloguePrice;
-  if (packagingUnitPrice < cataloguePrice) {
+  if (packagingUnitPrice < cataloguePrice && !input[AGREED_PRICE]) {
     throw ApiError.badRequest(
       `${product.name} sells for ${formatCurrency(cataloguePrice)} per ${packaging.packagingUnit?.name || 'unit'}. ` +
       `${formatCurrency(packagingUnitPrice)} is below that — use Discount to sell for less.`,
@@ -672,4 +680,4 @@ async function saleMoneyAndRefunds(id) {
   };
 }
 
-module.exports = { createSale, createSaleTx, listSales, getSale, cancelSale, cancelSaleTx, refundSale, saleMoneyAndRefunds, resolveSaleRegion, SALE_INCLUDE, REP_SALE_REFUSED };
+module.exports = { AGREED_PRICE, createSale, createSaleTx, listSales, getSale, cancelSale, cancelSaleTx, refundSale, saleMoneyAndRefunds, resolveSaleRegion, SALE_INCLUDE, REP_SALE_REFUSED };

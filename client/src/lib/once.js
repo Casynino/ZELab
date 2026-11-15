@@ -25,3 +25,9 @@ export function makeOnce() {
 // answer was lost. The window treats it as done (closes, reloads the balances, says so), not as an error,
 // so nobody changes the note by one letter and sends it again (audit backend-integrity-2).
 export const wentThrough = (error) => error?.response?.status === 409;
+
+// One key per opened window, sent with its press (Settle, Request, Return — audit ui-r00/ui-r01): the server
+// keeps one record per key, so a press repeated after a lost answer is recognised and adds nothing.
+export const newClientKey = () => (globalThis.crypto?.randomUUID
+  ? globalThis.crypto.randomUUID()
+  : `k-${Date.now()}-${Math.round(Math.random() * 1e9)}`);

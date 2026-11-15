@@ -28,7 +28,22 @@ export const pageQueries = {
   bonusMe: () => ({ queryKey: ['bonus', 'me'], queryFn: dataOf('/commissions/bonus/me') }),
 
   // Requests.
-  stockRequestsMine: () => ({ queryKey: ['stock-requests', 'rep-all'], queryFn: listOf('/stock-requests', { limit: 100 }) }),
+  // A rep's own: the waiting ones on their own read, so one can never fall behind the newest hundred, then
+  // the newest hundred decided ones; `historyTotal` counts them all (audit ui-r05). Older pages: useOlderPages.
+  stockRequestsMine: () => ({
+    queryKey: ['stock-requests', 'rep-all'],
+    queryFn: async () => {
+      const [waiting, history] = await Promise.all([
+        listOf('/stock-requests', { status: 'PENDING', limit: 100 })(),
+        listOf('/stock-requests', { decided: 'true', limit: 100 })(),
+      ]);
+      return {
+        ...history,
+        data: [...(waiting?.data || []), ...(history?.data || [])],
+        meta: { ...(history?.meta || {}), historyTotal: history?.meta?.total ?? (history?.data || []).length },
+      };
+    },
+  }),
   stockRequestsWaiting: () => ({ queryKey: ['stock-requests', 'pending-approvals'], queryFn: listOf('/stock-requests', { status: 'PENDING', limit: 50 }) }),
   // Pending requests live in the approval strip above — the history table
   // shows decided ones unless the filter explicitly asks for pending. The

@@ -893,7 +893,8 @@ export default function Layout() {
     { to: '/', label: 'Home', icon: LayoutDashboard },
     { to: '/stock-requests', label: 'Requests', icon: ClipboardList, badge: pendingActions.stockRequests },
     { to: '/settlements', label: 'Settle', icon: Timer, badge: pendingActions.settlements },
-    { to: '/finance', label: 'Money', icon: Wallet },
+    // The same word as the sidebar (Nino, 11 Nov 2026: "Wallet"); it read "Money" here (audit ui-r10).
+    { to: '/finance', label: 'Wallet', icon: Wallet },
     // A rep has no Finance; their money is the wallet, one tap from anywhere. It takes
     // the place of the bottom "Menu" for them — the burger at the top already opens
     // the same menu (Nino, 11 Nov 2026), so the two were the same thing twice.

@@ -9,6 +9,7 @@ const { nextDocNumber } = require('../utils/numbering');
 const { toNumber } = require('../utils/money');
 const { eatDayBounds } = require('../utils/dates');
 const { rearmedReminderStage } = require('../utils/reminders');
+const { keyedId, isIdClash } = require('../utils/clientKey');
 
 const RETURN_INCLUDE = {
   items: { include: { product: { include: { brand: { select: { name: true } } } }, packagingUnit: true } },
@@ -157,7 +158,27 @@ async function createReturn(payload, actor) {
     throw ApiError.badRequest('A sales return needs both salesRepId (from) and warehouseId (to)');
   }
 
+  // One press = one return (audit ui-r00): the window's key becomes the id of each return it creates (one per
+  // order when it splits), so a double tap or a retry after a lost answer finds them instead of sending more.
+  const keyedIds = payload.clientKey
+    ? Array.from({ length: 50 }, (_, i) => keyedId('return', actor?.id, payload.clientKey, i)).filter(Boolean)
+    : [];
+  const seenReturns = async (client) => {
+    if (!keyedIds.length) return null;
+    const rows = await client.return.findMany({ where: { id: { in: keyedIds } }, include: RETURN_INCLUDE });
+    if (!rows.length) return null;
+    const at = new Map(keyedIds.map((id, i) => [id, i]));
+    return rows.sort((a, b) => at.get(a.id) - at.get(b.id)).map((r) => ({ ...r, replayed: true }));
+  };
+  let made = 0; // returns created by this press so far: the next one takes the next keyed id
+
   const result = await prisma.$transaction(async (tx) => {
+    if (keyedIds.length) {
+      // Under the order's lock, so a second press waits for the first and then finds what it saved.
+      if (settlementId) await settlement.lockOrder(tx, settlementId);
+      const seen = await seenReturns(tx);
+      if (seen) return seen;
+    }
     const productIds = [...new Set(items.map((i) => i.productId))];
     const products = await tx.product.findMany({ where: { id: { in: productIds } } });
     const productMap = new Map(products.map((p) => [p.id, p]));
@@ -194,8 +215,10 @@ async function createReturn(payload, actor) {
 
     const makeReturn = async (stlId, stlLines, extraNote) => {
       const returnNumber = await nextDocNumber(tx.return, 'returnNumber', 'RET');
+      const keyed = keyedIds[made++] || null;
       return tx.return.create({
         data: {
+          ...(keyed ? { id: keyed } : {}),
           returnNumber,
           type,
           status: 'PENDING',
@@ -272,7 +295,13 @@ async function createReturn(payload, actor) {
     }
 
     return [await makeReturn(settlementId, lines, null)];
-  }, { timeout: 30000 });
+  }, { timeout: 30000 }).catch(async (err) => {
+    // Both presses ran at the very same moment and the other one saved first: hand those back.
+    const seen = keyedIds.length && isIdClash(err) ? await seenReturns(prisma) : null;
+    if (!seen) throw err;
+    return seen;
+  });
+  if (result[0]?.replayed) return { ...result[0], related: result.map((r) => r.returnNumber) };
 
   // Notify admins and warehouse staff for every created return record.
   const wa = require('./whatsappNotify.service');
@@ -306,12 +335,14 @@ async function approveReturn(id, actor) {
   if (found.status !== 'PENDING') throw ApiError.conflict(`This return is already ${found.status.toLowerCase()}`);
 
   let ret;
+  let order = null; // the linked order after this approval
   await prisma.$transaction(async (tx) => {
+    const decidedAt = new Date();
     // Claim it first, only if still pending: a double tap, a second admin or the 24-hour expiry landing at
     // the same moment waits for this one and then finds it decided — the boxes move exactly once.
     const claimed = await tx.return.updateMany({
       where: { id, status: 'PENDING' },
-      data: { status: 'APPROVED', decidedById: actor ? actor.id : null, decidedAt: new Date() },
+      data: { status: 'APPROVED', decidedById: actor ? actor.id : null, decidedAt },
     });
     if (claimed.count !== 1) throw ApiError.conflict('This return was already decided.');
     ret = await tx.return.findUnique({ where: { id }, include: RETURN_INCLUDE });
@@ -418,9 +449,20 @@ async function approveReturn(id, actor) {
 
     // Sync the linked settlement (if any)
     if (ret.settlementId) {
-      await settlement.recomputeStatus(tx, ret.settlementId);
+      order = await settlement.recomputeStatus(tx, ret.settlementId);
+      // The order's fines were paused while this return waited on ZELab. Approving it gives those hours
+      // back, as rejecting or cancelling it does — an order still open was otherwise fined at once for the
+      // time it sat waiting (audit reps03). It also lifts an Overdue status whose deadline is ahead again.
+      if (order && order.status !== 'SETTLED') {
+        await creditPausedHours(tx, ret.settlementId, ret.processedAt, decidedAt);
+      }
     }
   }, { timeout: 30000 });
+
+  const closed = Boolean(order?.closedNow);
+  if (closed) {
+    settlement.tellAdminsOrderClosed({ id: order.id, settlementNumber: order.settlementNumber, repName: ret.salesRep?.user?.name });
+  }
 
   // Notify the rep
   const repUserId = ret.salesRep?.user?.id;
@@ -430,8 +472,8 @@ async function approveReturn(id, actor) {
       type: 'GENERAL',
       severity: 'INFO',
       title: 'Return approved',
-      message: `Your return of ${totalBoxes} box(es) (${ret.returnNumber}) has been approved and added to inventory.`,
-      whatsapp: { kind: 'RETURN_APPROVED', number: ret.returnNumber, boxes: totalBoxes },
+      message: `Your return of ${totalBoxes} box(es) (${ret.returnNumber}) has been approved and added to inventory.${closed ? ` Order ${order.settlementNumber} is now fully closed.` : ''}`,
+      whatsapp: { kind: 'RETURN_APPROVED', number: ret.returnNumber, boxes: totalBoxes, closed, order: order?.settlementNumber },
       entityType: 'Return',
       entityId: id,
     }).catch(() => {});

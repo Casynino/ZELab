@@ -19,7 +19,8 @@ import { ROLES, SETTLEMENT_STATUS_META } from '@/lib/constants';
 import { formatCurrency, formatDate, formatDateTime, formatNumber, unitWord } from '@/lib/format';
 import OrderDetailModal, { RejectSubmissionModal } from '@/components/OrderDetail';
 import ActiveOrderCard from '@/components/ActiveOrderCard';
-import CollapsibleList from '@/components/CollapsibleList';
+import CollapsibleList, { ShowOlder } from '@/components/CollapsibleList';
+import { useOlderPages, withOlder } from '@/lib/useOlderPages';
 import {
   PageHeader, Card, PageSpinner, EmptyState, Badge, Button,
   Pagination, LoadError, Table, THead, TBody, TR, TH, TD,
@@ -51,14 +52,24 @@ function RepSettlements({ viewing, setViewing }) {
     ...pageQueries.settlementsMine(),
     refetchInterval: STEADY,
   });
+  // The list comes active orders first, so an open order is always on the first page; the completed ones
+  // past the newest hundred load on "Show older", and the count counts them all (audit ui-r05).
+  const older = useOlderPages({
+    key: ['settlements', 'rep-all'],
+    url: '/settlements',
+    params: { limit: 100 },
+    total: data?.meta?.total,
+    firstCount: (data?.data || []).length,
+  });
 
   if (isLoading) return <PageSpinner />;
   // A request that never came back is not "No orders yet" (audit #68).
   if (isError && !data) return <LoadError what="your orders" onRetry={refetch} />;
 
-  const all = data?.data || [];
+  const all = withOlder(data?.data, older.rows);
   const active = all.filter((s) => s.status !== 'SETTLED');
   const completed = all.filter((s) => s.status === 'SETTLED');
+  const completedTotal = Math.max(completed.length, (data?.meta?.total ?? 0) - active.length);
 
   // One short heading per list, no page title above them, no icons and no red badge (Nino, 11 Nov 2026:
   // "just say Active orders — if there are none, just show the completed orders; too many words").
@@ -94,10 +105,11 @@ function RepSettlements({ viewing, setViewing }) {
       )}
 
       {completed.length > 0 && (
-        <CollapsibleList title="Completed orders" count={completed.length} defaultOpen={active.length === 0}>
+        <CollapsibleList title="Completed orders" count={completedTotal} defaultOpen={active.length === 0}>
           {completed.map((s) => (
             <CompletedRow key={s.id} s={s} onClick={() => setViewing(s.id)} />
           ))}
+          {older.hasMore && <ShowOlder loading={older.loading} onClick={older.more} />}
         </CollapsibleList>
       )}
     </div>

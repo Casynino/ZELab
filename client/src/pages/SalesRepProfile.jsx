@@ -531,7 +531,7 @@ function AddStockModal({ repId, repName, onClose }) {
     >
       <div className="space-y-4">
         <p className="rounded-lg border border-border bg-elevated px-3 py-2 text-xs text-muted">
-          Boxes are issued out of ZELab and attached to {repName}'s latest active order (a new order opens if they have none).
+          Boxes are issued out of ZELab and attached to {repName}'s latest active order. A new 72-hour order opens if they have none, or if that order is already overdue.
           Their order value, outstanding balance and stock-held all update, and they get a notification.
         </p>
         <Field label="Product (from ZELab)" required hint={isLoading ? 'Loading stock…' : `${rows.length} product${rows.length !== 1 ? 's' : ''} in stock`}>

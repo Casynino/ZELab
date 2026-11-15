@@ -44,6 +44,15 @@ function fineClockStart(s) {
   return Math.max(deadline, from);
 }
 
+// From when the sweep counts the days it has already charged on an order: the moment its deadline was last
+// extended (by the rep's 96 hours or by ZELab), else from the start. An undo clears these columns, and is
+// only allowed while the order has no fine at all, so it never hides a charged day.
+const EXTENSION_KINDS = new Set(['SELF_EXTENSION', 'ADMIN_EXTENSION']);
+function fineCountFrom(s) {
+  if (!s?.deadlineChangedAt || !EXTENSION_KINDS.has(s.deadlineChangeKind)) return null;
+  return new Date(s.deadlineChangedAt);
+}
+
 // Penalty-days owed for an overdue settlement: 1 the instant the deadline passes,
 // then +1 every 24h. (deadlineAt <= now is guaranteed by the caller.)
 function penaltyDaysDue(deadlineAt, now) {
@@ -78,7 +87,7 @@ async function applyDuePenalties() {
       // is owed at all.
       const fresh = await tx.settlement.findUnique({
         where: { id: s.id },
-        select: { status: true, deadlineAt: true, penaltyFrom: true, selfExtendedAt: true, settlementNumber: true },
+        select: { status: true, deadlineAt: true, penaltyFrom: true, selfExtendedAt: true, settlementNumber: true, deadlineChangedAt: true, deadlineChangeKind: true },
       });
       if (!fresh || fresh.status === 'SETTLED') return null;
       Object.assign(s, fresh);
@@ -87,7 +96,14 @@ async function applyDuePenalties() {
       const due = penaltyDaysDue(clock, now);
       // Count EVERY daily row including WAIVED ones: a forgiven fine is still a charged penalty-day, so
       // forgiveness never causes a re-charge. Rows with daysOverdue = 0 are return-expiry fines.
-      const charged = await tx.settlementPenalty.count({ where: { settlementId: s.id, daysOverdue: { gt: 0 } } });
+      // Only the days charged since the deadline was last extended, though: an extension is a fresh
+      // deadline and a fresh fine clock, so days fined before it are not days of this clock (audit reps04 —
+      // an order with N fines got its first N late days after the new deadline free). Hours a return's
+      // wait gave back are not an extension: that clock carries on, and so does its count.
+      const since = fineCountFrom(s);
+      const charged = await tx.settlementPenalty.count({
+        where: { settlementId: s.id, daysOverdue: { gt: 0 }, ...(since ? { appliedAt: { gte: since } } : {}) },
+      });
       if (due <= charged) return null;
 
       const rate = dailyRateFor(s);
@@ -358,6 +374,7 @@ async function listPenalties({ salesRepId, settlementId, status, page = 1, limit
 
 module.exports = {
   fineClockStart,
+  fineCountFrom,
   applyDuePenalties,
   penaltyBreakdownForRep,
   totalPenaltiesForRep,

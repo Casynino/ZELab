@@ -9,6 +9,7 @@ const { nextDocNumber, withDocNumberRetry } = require('../utils/numbering');
 const { toNumber, round2, formatCurrency } = require('../utils/money');
 const { requestItemRegions } = require('../constants/regions');
 const { dateTime, boxes: unitCount } = require('./whatsappText'); // "3 Boxes", "1 Carton"
+const { keyedId, isIdClash } = require('../utils/clientKey');
 
 // A product switched off in Products cannot be requested or issued any more (audit, 11 Nov 2026): the
 // app hid it, but the API took it, and an approved order for it could never be settled.
@@ -98,8 +99,22 @@ async function create(salesRepId, payload) {
   if (city.error) throw ApiError.badRequest(city.error);
   const items = mergeLines(city.items);
 
+  // One press = one request (audit ui-r01): the window's key becomes the request's id, so a double tap or a
+  // retry after a lost answer finds the first request instead of sending a second one to the owner.
+  const keyed = keyedId('stockreq', salesRepId, payload.clientKey);
+  const seenAs = async (client) => {
+    if (!keyed) return null;
+    const seen = await client.stockRequest.findUnique({ where: { id: keyed }, include: INCLUDE });
+    if (seen && seen.salesRepId !== salesRepId) throw ApiError.conflict('Refresh the page and send the request again.');
+    return seen ? { ...seen, replayed: true } : null;
+  };
+  const already = await seenAs(prisma);
+  if (already) return already;
+
   // Two requests sent at the same moment can pick the same REQ number; the loser is run again.
   const result = await withDocNumberRetry(() => prisma.$transaction(async (tx) => {
+    const seen = await seenAs(tx); // the first press committed while this one was retried
+    if (seen) return seen;
     const productIds = [...new Set(items.map((i) => i.productId))];
     const products = await tx.product.findMany({ where: { id: { in: productIds } } });
     const pMap = new Map(products.map((p) => [p.id, p]));
@@ -136,6 +151,7 @@ async function create(salesRepId, payload) {
     const requestNumber = await nextDocNumber(tx.stockRequest, 'requestNumber', 'REQ');
     return tx.stockRequest.create({
       data: {
+        ...(keyed ? { id: keyed } : {}),
         requestNumber,
         salesRepId,
         warehouseId: payload.warehouseId || null,
@@ -147,7 +163,13 @@ async function create(salesRepId, payload) {
       },
       include: INCLUDE,
     });
-  }));
+  })).catch(async (err) => {
+    // Both presses ran at the very same moment and the other one saved first: hand that one back.
+    const seen = keyed && isIdClash(err) ? await seenAs(prisma) : null;
+    if (!seen) throw err;
+    return seen;
+  });
+  if (result.replayed) return result;
 
   notification.notifyAdmins({
     type: 'GENERAL',

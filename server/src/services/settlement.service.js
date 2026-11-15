@@ -10,6 +10,7 @@ const { nextDocNumber } = require('../utils/numbering');
 const { toNumber, round2, formatCurrency } = require('../utils/money');
 const { dayjs } = require('../utils/dates');
 const { dateTime } = require('./whatsappText'); // "14 Nov 2026 | 07:09 EAT", as the other rep notices
+const { compareProducts, compareBrands } = require('../utils/productOrder');
 
 const SETTLEMENT_WINDOW_HOURS = 72;
 const APPROACHING_HOURS = 12; // flag as "approaching" within this many hours of deadline
@@ -377,8 +378,17 @@ async function orderBreakdown(s, client = prisma) {
   const pendingRetMap = new Map(pendingRetRows.map((r) => [r.productId, r._sum.baseQuantity || 0]));
 
   const productIds = [...new Set([...assignedMap.keys(), ...settledMap.keys(), ...retMap.keys()])];
-  const products = await client.product.findMany({ where: { id: { in: productIds } }, select: { id: true, name: true, sku: true, sellingPrice: true, brandId: true, brand: { select: { name: true } } } });
+  const products = await client.product.findMany({ where: { id: { in: productIds } }, select: { id: true, name: true, sku: true, sellingPrice: true, brandId: true, createdAt: true, brand: { select: { name: true } } } });
   const pMap = new Map(products.map((p) => [p.id, p]));
+  // A product that did not exist yet when this order opened (its boxes were added later) is priced from the
+  // day it was created, not by the no-brand fallback — the same rule as commission.earnedForRep (audit reps01).
+  const orderWhen = s.issuedAt || s.createdAt;
+  const lateRate = new Map();
+  for (const p of products) {
+    if (p.createdAt && orderWhen && new Date(p.createdAt) > new Date(orderWhen)) {
+      lateRate.set(p.id, await commission.rateForBrandAt(p.brand?.name, orderWhen, p.createdAt));
+    }
+  }
 
   let assignedBoxes = 0;
   let settledBoxes = 0;
@@ -406,7 +416,7 @@ async function orderBreakdown(s, client = prisma) {
     pendingReturnBoxes += pendingReturn;
     returnedValue += returned * toNumber(p.sellingPrice);
     remainingValue += remaining * toNumber(p.sellingPrice);
-    const perBox = rateByBrand.get(brandKey(p.brand?.name)) ?? 0;
+    const perBox = lateRate.get(pid) ?? rateByBrand.get(brandKey(p.brand?.name)) ?? 0;
     commissionEarned += settled * perBox;
     return { productId: pid, name: p.name, sku: p.sku, brandId: p.brandId || null, brandName: p.brand?.name || null, commissionPerBox: perBox, sellingPrice: toNumber(p.sellingPrice), assigned, settled, returned, pendingReturn, remaining };
   });
@@ -416,7 +426,10 @@ async function orderBreakdown(s, client = prisma) {
   const outstanding = Math.max(0, round2(orderValue - settledValue - returnedValue));
 
   return {
-    lines: lines.sort((a, b) => b.assigned - a.assigned),
+    // The fixed product order every list uses (Pepa, OHIS, Civlily; then the curated order in each brand),
+    // not by boxes issued: the order window and the Settle sheet's brand groups changed order from one
+    // order to the next (audit ui-r06).
+    lines: lines.sort((a, b) => compareBrands(a.brandName, b.brandName) || compareProducts(a.name, b.name)),
     totals: {
       assignedBoxes,
       settledBoxes,
@@ -488,12 +501,16 @@ async function get(id) {
     where: { settlementId: id, status: 'PENDING' },
     orderBy: { submittedAt: 'desc' },
   });
+  // Products by the name they have now; the one stored at submit can be an old one (audit reps06).
+  const subNames = new Map((pendingSubs.length
+    ? await prisma.product.findMany({ where: { id: { in: [...new Set(pendingSubs.map((p) => p.productId))] } }, select: { id: true, name: true } })
+    : []).map((p) => [p.id, p.name]));
   decorated.pendingSubmissions = pendingSubs.length;
   decorated.pendingSubmissionsList = pendingSubs.map((p) => ({
     id: p.id,
     submissionNumber: p.submissionNumber,
     productId: p.productId,
-    productName: p.productName,
+    productName: subNames.get(p.productId) || p.productName,
     boxes: p.boxes,
     amount: toNumber(p.amount),
     method: p.method,
@@ -517,7 +534,7 @@ async function recomputeStatus(client, id) {
       : toNumber(s.settledValue) > 0 || bd.totals.returnedValue > 0
         ? 'PARTIAL'
         : 'OPEN';
-  return client.settlement.update({
+  const updated = await client.settlement.update({
     where: { id },
     data: {
       returnedValue: round2(bd.totals.returnedValue),
@@ -525,6 +542,22 @@ async function recomputeStatus(client, id) {
       settledAt: fullyAccounted && !s.settledAt ? new Date() : s.settledAt,
     },
   });
+  // Whether THIS recompute closed the order, so the caller can say so once, after its commit (audit reps07:
+  // an order closed by an approval was closed silently).
+  return updated ? { ...updated, closedNow: fullyAccounted && s.status !== 'SETTLED' } : updated;
+}
+
+// The owner's bell when an order closes — by the Close button, or by the approval that accounted for its
+// last box. A bell only, as it always was; the rep is told in the approval's own message.
+function tellAdminsOrderClosed({ id, settlementNumber, repName }) {
+  notification.notifyAdmins({
+    type: 'GENERAL',
+    severity: 'INFO',
+    title: `Order closed: ${settlementNumber}`,
+    message: `${repName || 'A rep'} fully settled order ${settlementNumber}. All boxes accounted for.`,
+    entityType: 'Settlement',
+    entityId: id,
+  }).catch(() => {});
 }
 
 // Boxes of one product still outstanding on an order (issued − settled −
@@ -576,7 +609,9 @@ async function productOutstanding(client, settlement, productId) {
 // auto-closes once every issued box is settled or returned. Re-validates the
 // outstanding quantity at call time. Returns the sale + decorated settlement.
 // Reached ONLY when The Doctor approves a settlement submission.
-async function settleBoxesTx(tx, { settlementId, productId, packagingUnitId, boxes, method }, actor) {
+// `amount` is what the rep paid on his submission. The sale is booked at exactly that, so a price changed
+// between his submit and ZELab's approval moves neither the sale, the account nor the order (audit reps00).
+async function settleBoxesTx(tx, { settlementId, productId, packagingUnitId, boxes, method, amount }, actor) {
   await lockOrder(tx, settlementId); // settledValue below is read and written under the order's lock
   const s = await tx.settlement.findUnique({ where: { id: settlementId } });
   if (!s) throw ApiError.notFound('Settlement not found');
@@ -602,7 +637,12 @@ async function settleBoxesTx(tx, { settlementId, productId, packagingUnitId, box
       type: 'CASH',
       salesRepId: s.salesRepId,
       settlementId,
-      items: [{ productId, packagingUnitId: pkgUnitId, quantity: boxes }],
+      items: [{
+        productId,
+        packagingUnitId: pkgUnitId,
+        quantity: boxes,
+        ...(amount != null ? { unitPrice: round2(toNumber(amount) / boxes), [sales.AGREED_PRICE]: true } : {}),
+      }],
       notes: `Settlement ${s.settlementNumber}${method ? ` · ${method}` : ''}`,
     },
     actor,
@@ -619,10 +659,10 @@ async function settleBoxesTx(tx, { settlementId, productId, packagingUnitId, box
 }
 
 // Admin issues additional boxes to a rep, OUT of ZELab's warehouse. If the
-// rep already has an active (unsettled) order the boxes are appended to that
+// rep already has an active order still inside its deadline the boxes are appended to that
 // order: the stock moves warehouse→rep, the order's linked transfer records the
 // extra boxes (so the box-by-box breakdown stays exact), the order value grows,
-// and status/outstanding recompute. If the rep has no active order a fresh
+// and status/outstanding recompute. If the rep has no such order (none, or only overdue ones) a fresh
 // warehouse→rep issuance opens a new 72h settlement. Notifies ONLY the rep.
 // Both sides (warehouse balance, rep stock held, order, settlement) move in the
 // SAME db transaction, so admin and rep can never see divergent numbers.
@@ -659,9 +699,11 @@ async function addStockToRep(salesRepId, payload, actor) {
       const from = { type: inventory.LOCATION.WAREHOUSE, warehouseId };
       const to = { type: inventory.LOCATION.SALES_REP, salesRepId };
 
-      // Latest active (unsettled) order for this rep, if one is still open.
+      // Latest active order for this rep that is still inside its deadline. An overdue order is not one:
+      // boxes put on it would be late the moment they arrived and keep its daily fine running (audit reps02),
+      // so they open a fresh 72-hour order instead, like any other issue of stock.
       const active = await tx.settlement.findFirst({
-        where: { salesRepId, status: { not: 'SETTLED' }, transferId: { not: null } },
+        where: { salesRepId, status: { in: ['OPEN', 'PARTIAL'] }, deadlineAt: { gt: new Date() }, transferId: { not: null } },
         orderBy: { issuedAt: 'desc' },
       });
 
@@ -751,11 +793,12 @@ async function addStockToRep(salesRepId, payload, actor) {
   notification.notifyUser(result.rep.user?.id, {
     type: 'GENERAL',
     severity: 'INFO',
-    title: '📦 New stock added',
+    // No emoji and "ZELab", like every other rep notice (audit ui-r09).
+    title: 'New stock added',
     message:
       result.mode === 'attached'
-        ? `The Doctor added ${result.boxes} box(es) of ${result.productName} to your active order ${result.settlementNumber}. Your settlement has been updated.`
-        : `The Doctor issued ${result.boxes} box(es) of ${result.productName} to you — new order ${result.settlementNumber}.`,
+        ? `ZELab added ${result.boxes} box(es) of ${result.productName} to your active order ${result.settlementNumber}. Your settlement has been updated.`
+        : `ZELab issued ${result.boxes} box(es) of ${result.productName} to you — new order ${result.settlementNumber}.`,
     whatsapp: { kind: 'STOCK_ADDED', product: result.productName, boxes: result.boxes, order: result.settlementNumber, attached: result.mode === 'attached' },
     entityType: 'Settlement',
     entityId: result.settlement.id,
@@ -795,14 +838,7 @@ async function settle(id, actor, { notes } = {}) {
     return { s, updated: await tx.settlement.findUnique({ where: { id }, include: INCLUDE_HISTORY }) };
   });
 
-  notification.notifyAdmins({
-    type: 'GENERAL',
-    severity: 'INFO',
-    title: `Order closed: ${s.settlementNumber}`,
-    message: `${updated.salesRep?.user?.name || 'A rep'} fully settled order ${s.settlementNumber}. All boxes accounted for.`,
-    entityType: 'Settlement',
-    entityId: id,
-  }).catch(() => {});
+  tellAdminsOrderClosed({ id, settlementNumber: s.settlementNumber, repName: updated.salesRep?.user?.name });
   notification.notifyUser(updated.salesRep?.user?.id, {
     type: 'GENERAL',
     severity: 'INFO',
@@ -1629,6 +1665,7 @@ module.exports = {
   settleBoxesTx,
   addStockToRep,
   recomputeStatus,
+  tellAdminsOrderClosed,
   refreshOverdue,
   sendDueReminders,
   summary,

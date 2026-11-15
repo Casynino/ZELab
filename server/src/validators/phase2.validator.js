@@ -118,6 +118,8 @@ const poAddCost = {
 // --- Stock requests --------------------------------------------------------
 const stockRequestCreate = {
   body: z.object({
+    // One per opened New request window: a double tap or a retry after a lost answer sends nothing new.
+    clientKey: z.string().trim().min(8).max(80).optional(),
     warehouseId: id.optional().nullable(),
     notes: z.string().max(500).optional().nullable(),
     region: z.string().max(80).optional().nullable(),
@@ -166,6 +168,8 @@ const settlementSettleBoxes = {
     reference: z.string().max(120).optional().nullable(),
     notes: z.string().max(500).optional().nullable(),
     paidAt: dateStr,
+    // One per opened Settle window: a double tap or a retry after a lost answer saves nothing new.
+    clientKey: z.string().trim().min(8).max(80).optional(),
   }),
 };
 
@@ -177,6 +181,7 @@ const settlementSettleMany = {
       boxes: z.number().int().positive(),
       accountId: id.optional().nullable(),
     })).min(1).max(20),
+    clientKey: z.string().trim().min(8).max(80).optional(), // one per opened window, as above
   }),
 };
 

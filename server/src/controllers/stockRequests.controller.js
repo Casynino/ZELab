@@ -11,6 +11,7 @@ const { ROLES } = require('../middleware/authorize');
 const create = asyncHandler(async (req, res) => {
   if (!req.user.salesRepId) throw ApiError.forbidden('Only sales representatives can request stock');
   const request = await stockRequest.create(req.user.salesRepId, req.body);
+  if (request.replayed) return ok(res, request); // the same press again: already sent and recorded
   await audit.record(req, { action: 'CREATE', entityType: 'StockRequest', entityId: request.id, newValues: { requestNumber: request.requestNumber } });
   return created(res, request);
 });

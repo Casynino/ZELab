@@ -22,7 +22,10 @@ test('under a day it is told in hours, rounded down; the last hour is due now', 
 test('late: the first hour is "just overdue", then whole hours late', () => {
   assert.equal(timeLeftLabel(-0.5), 'just overdue');
   assert.equal(timeLeftLabel(-1.7), '1h overdue');
-  assert.equal(timeLeftLabel(-49.2), '49h overdue');
+  assert.equal(timeLeftLabel(-23.9), '23h overdue');
+  // Past a day, whole days (audit ui-r10: "234h overdue" beside "6d left").
+  assert.equal(timeLeftLabel(-49.2), '2d overdue');
+  assert.equal(timeLeftLabel(-234), '9d overdue');
 });
 
 test('no figure gives the placeholder', () => {
