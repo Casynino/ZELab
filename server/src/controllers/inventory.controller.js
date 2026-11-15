@@ -77,58 +77,61 @@ const stockIn = asyncHandler(async (req, res) => {
   return created(res, { warehouseId, type, movements: result });
 });
 
+// The products of an adjustment or damage entry: the list, or the one product of the old body. Sorted by product
+// so two entries saved at the same moment lock the same stock rows in the same order (never wait on each other).
+const linesOf = (body) => (body.items || [{ productId: body.productId, packagingUnitId: body.packagingUnitId, quantity: body.quantity }])
+  .slice().sort((a, b) => (a.productId < b.productId ? -1 : a.productId > b.productId ? 1 : 0));
+
+// One adjustment or damage entry, every product in ONE transaction: a line that cannot be taken (not enough at
+// the place, or boxes an open order still owes) refuses the whole entry, so nothing half-moves.
+async function moveLines(req, { type, increase }) {
+  const { location, reason, occurredAt } = req.body;
+  const lines = linesOf(req.body);
+  return prisma.$transaction(async (tx) => {
+    const products = await tx.product.findMany({ where: { id: { in: lines.map((l) => l.productId) } }, select: { id: true, purchasePrice: true } });
+    const price = new Map(products.map((p) => [p.id, p.purchasePrice]));
+    const movements = [];
+    for (const line of lines) {
+      const { baseQuantity } = await inventory.convertToBase(tx, line.productId, line.packagingUnitId, line.quantity);
+      const common = {
+        productId: line.productId,
+        packagingUnitId: line.packagingUnitId,
+        quantity: line.quantity,
+        baseQuantity,
+        type,
+        location,
+        unitCost: toNumber(price.get(line.productId)),
+        referenceType: 'ADJUSTMENT',
+        userId: req.user.id,
+        notes: reason,
+        occurredAt: occurredAt ? new Date(occurredAt) : undefined,
+      };
+      if (increase) { movements.push(await inventory.increaseStock(tx, common)); continue; }
+      await refuseOwedRepBoxes(tx, { location, productId: line.productId, baseQuantity });
+      movements.push(await inventory.decreaseStock(tx, common));
+    }
+    return { lines, movements };
+  });
+}
+
 // Manual signed adjustment with a mandatory reason.
 const adjust = asyncHandler(async (req, res) => {
-  const { location, productId, packagingUnitId, quantity, direction, reason, occurredAt } = req.body;
-
-  const movement = await prisma.$transaction(async (tx) => {
-    const { baseQuantity } = await inventory.convertToBase(tx, productId, packagingUnitId, quantity);
-    const product = await tx.product.findUnique({ where: { id: productId }, select: { purchasePrice: true } });
-    const common = {
-      productId,
-      packagingUnitId,
-      quantity,
-      baseQuantity,
-      type: 'ADJUSTMENT',
-      location,
-      unitCost: toNumber(product?.purchasePrice),
-      referenceType: 'ADJUSTMENT',
-      userId: req.user.id,
-      notes: reason,
-      occurredAt: occurredAt ? new Date(occurredAt) : undefined,
-    };
-    if (direction === 'INCREASE') return inventory.increaseStock(tx, common);
-    await refuseOwedRepBoxes(tx, { location, productId, baseQuantity });
-    return inventory.decreaseStock(tx, common);
-  });
-
-  await audit.record(req, { action: 'ADJUSTMENT', entityType: 'Product', entityId: productId, newValues: { direction, quantity, reason } });
-  return created(res, movement);
+  const { direction, reason } = req.body;
+  const { lines, movements } = await moveLines(req, { type: 'ADJUSTMENT', increase: direction === 'INCREASE' });
+  for (const l of lines) {
+    await audit.record(req, { action: 'ADJUSTMENT', entityType: 'Product', entityId: l.productId, newValues: { direction, quantity: l.quantity, reason, ...(lines.length > 1 ? { products: lines.length } : {}) } });
+  }
+  return created(res, req.body.items ? { movements } : movements[0]);
 });
 
 // Write off damaged stock.
 const damage = asyncHandler(async (req, res) => {
-  const { location, productId, packagingUnitId, quantity, reason, occurredAt } = req.body;
-  const movement = await prisma.$transaction(async (tx) => {
-    const { baseQuantity } = await inventory.convertToBase(tx, productId, packagingUnitId, quantity);
-    const product = await tx.product.findUnique({ where: { id: productId }, select: { purchasePrice: true } });
-    await refuseOwedRepBoxes(tx, { location, productId, baseQuantity });
-    return inventory.decreaseStock(tx, {
-      productId,
-      packagingUnitId,
-      quantity,
-      baseQuantity,
-      type: 'DAMAGE',
-      location,
-      unitCost: toNumber(product?.purchasePrice),
-      referenceType: 'ADJUSTMENT',
-      userId: req.user.id,
-      notes: reason,
-      occurredAt: occurredAt ? new Date(occurredAt) : undefined,
-    });
-  });
-  await audit.record(req, { action: 'DAMAGE', entityType: 'Product', entityId: productId, newValues: { quantity, reason } });
-  return created(res, movement);
+  const { reason } = req.body;
+  const { lines, movements } = await moveLines(req, { type: 'DAMAGE', increase: false });
+  for (const l of lines) {
+    await audit.record(req, { action: 'DAMAGE', entityType: 'Product', entityId: l.productId, newValues: { quantity: l.quantity, reason, ...(lines.length > 1 ? { products: lines.length } : {}) } });
+  }
+  return created(res, req.body.items ? { movements } : movements[0]);
 });
 
 // Current on-hand balances, grouped by product with per-location breakdown.

@@ -45,27 +45,39 @@ const stockIn = {
   }),
 };
 
+// Several products in one adjustment or damage entry (Nino, 15 Nov 2026: "I should be able to adjust more than
+// one product"): `items`, all applied or none. The one-product body (productId, packagingUnitId, quantity) is
+// still taken as it was. Each product once, so one line can never hide behind another.
+const stockLine = z.object({ productId: id, packagingUnitId: id, quantity: z.number().int().positive() });
+const oneOrMany = (schema) => schema
+  .extend({
+    productId: id.optional(),
+    packagingUnitId: id.optional(),
+    quantity: z.number().int().positive().optional(),
+    items: z.array(stockLine).min(1, 'Pick at least one product').max(40, 'At most 40 products at a time').optional(),
+  })
+  .refine((b) => (b.items ? !b.productId : !!(b.productId && b.packagingUnitId && b.quantity)), {
+    message: 'Send either one product (productId, packagingUnitId, quantity) or a list of items',
+  })
+  .refine((b) => !b.items || new Set(b.items.map((i) => i.productId)).size === b.items.length, {
+    message: 'Each product can only be in the list once', path: ['items'],
+  });
+
 const adjustment = {
-  body: z.object({
+  body: oneOrMany(z.object({
     location: locationSchema,
-    productId: id,
-    packagingUnitId: id,
-    quantity: z.number().int().positive(),
     direction: z.enum(['INCREASE', 'DECREASE']),
     reason: z.string().min(1, 'A reason is required for adjustments').max(500),
     occurredAt: z.string().datetime().optional(),
-  }),
+  })),
 };
 
 const damage = {
-  body: z.object({
+  body: oneOrMany(z.object({
     location: locationSchema,
-    productId: id,
-    packagingUnitId: id,
-    quantity: z.number().int().positive(),
     reason: z.string().min(1, 'A reason is required').max(500),
     occurredAt: z.string().datetime().optional(),
-  }),
+  })),
 };
 
 const transferCreate = {

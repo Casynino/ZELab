@@ -106,8 +106,10 @@ function ReceiveModal({ onClose }) {
   );
 }
 
-// One product per request (the server takes one): tap the product, then how many. A rep's stock is never
-// chosen for you — it sits behind Change → "A rep's stock", with the warning that his order does not move.
+// Several products in one entry (Nino, 15 Nov 2026: "I should be able to adjust more than one product"): tap +
+// on each, one reason for all; the server moves them all or none. One product keeps its "23 → 13 at Main"
+// line. A rep's stock is never chosen for you — it sits behind Change → "A rep's stock", with the warning
+// that his order does not move.
 function AdjustModal({ mode, onClose }) {
   const isAdjust = mode === 'adjust';
   const qc = useQueryClient();
@@ -133,12 +135,16 @@ function AdjustModal({ mode, onClose }) {
   const removing = !isAdjust || direction === 'DECREASE';
   const stock = useStockAt(loc);
   const rows = useMemo(() => pickerRows(products), [products]);
-  const key = Object.keys(qty)[0];
-  const row = rows.find((r) => r.key === key) || null;
+  const items = pickedItems(rows, qty);
+  const boxes = pickedBoxes(rows, qty);
+  const heldOf = (r) => (stock.ready ? Math.floor((stock.map.get(r.id) || 0) / (r.size || 1)) : null);
+  const pickedRows = rows.filter((r) => Number(qty[r.key]) > 0);
+  // One product picked: its own line in the footer ("23 → 13 at Main").
+  const row = pickedRows.length === 1 ? pickedRows[0] : null;
   const quantity = row ? Number(qty[row.key]) || 0 : 0;
-  const here = row && stock.ready ? Math.floor((stock.map.get(row.id) || 0) / (row.size || 1)) : null;
-  // Never more out than is there — the server refuses it too.
-  const overStock = removing && !!row && (!stock.ready || quantity > here);
+  const here = row ? heldOf(row) : null;
+  // Never more out than is there — the server refuses it too (and then nothing at all moves).
+  const overStock = removing && pickedRows.length > 0 && (!stock.ready || pickedRows.some((r) => Number(qty[r.key]) > heldOf(r)));
 
   const buildLocation = () => {
     if (loc?.type === 'WAREHOUSE') return { type: 'WAREHOUSE', warehouseId: loc.id };
@@ -148,13 +154,14 @@ function AdjustModal({ mode, onClose }) {
 
   const save = useMutation({
     mutationFn: () => {
-      const body = { location: buildLocation(), productId: row.id, packagingUnitId: row.packagingUnitId, quantity: Number(quantity), reason };
+      const body = { location: buildLocation(), items, reason };
       if (mode === 'adjust') return api.post('/inventory/adjustments', { ...body, direction });
       return api.post('/inventory/damage', body);
     },
     onSuccess: () => {
       if (loc?.type === 'WAREHOUSE') saveStockWarehouse(loc.id);
-      toast.success(mode === 'adjust' ? 'Adjustment posted' : 'Damage recorded');
+      const n = items.length > 1 ? ` · ${items.length} products` : '';
+      toast.success(mode === 'adjust' ? `Adjustment posted${n}` : `Damage recorded${n}`);
       refreshAfter(qc, 'stock'); // the Dashboard's stock alerts and a rep's boxes too (audit freshness-4)
       onClose();
     },
@@ -162,7 +169,7 @@ function AdjustModal({ mode, onClose }) {
     onSettled: () => { sending.current = false; },
   });
 
-  const valid = !!loc && !!row && quantity > 0 && !!reason.trim() && !overStock;
+  const valid = !!loc && items.length > 0 && !!reason.trim() && !overStock;
   const submit = () => {
     if (sending.current || save.isPending || !valid) return;
     sending.current = true;
@@ -170,33 +177,36 @@ function AdjustModal({ mode, onClose }) {
   };
   const requestClose = () => {
     if (save.isPending) return;
-    if (!row || confirmDiscard) onClose(); else setConfirmDiscard(true);
+    if (items.length === 0 || confirmDiscard) onClose(); else setConfirmDiscard(true);
   };
   const pick = (next) => { setQty(next); setConfirmDiscard(false); };
   const choosePlace = (next) => { setPlace(next); setEditPlace(false); };
 
-  const n = formatNumber(quantity);
-  const what = `${n} ${boxWord(quantity)}`;
-  const action = !row
-    ? (isAdjust ? 'Post adjustment' : 'Record damage')
-    : quantity <= 0 ? 'Type how many'
-    : !isAdjust ? `Remove ${n} damaged ${boxWord(quantity)} from ${btnPlace}`
+  const n = formatNumber(boxes);
+  const what = `${n} ${boxWord(boxes)}`;
+  const action = items.length === 0
+    ? (pickedRows.length || Object.keys(qty).length ? 'Type how many' : isAdjust ? 'Post adjustment' : 'Record damage')
+    : !isAdjust ? `Remove ${n} damaged ${boxWord(boxes)} from ${btnPlace}`
       : removing ? `Remove ${what} from ${btnPlace}` : `Add ${what} to ${btnPlace}`;
   const after = row && here != null ? (removing ? here - quantity : here + quantity) : null;
 
   return (
     <Modal open onClose={requestClose} size="lg" title={isAdjust ? 'Stock adjustment' : 'Record damage'}
       footer={confirmDiscard ? (
-        <DiscardFooter what={isAdjust ? 'adjustment' : 'damage record'} detail={row ? `${row.short}: ${what} picked will be lost.` : undefined}
+        <DiscardFooter what={isAdjust ? 'adjustment' : 'damage record'} detail={items.length ? `${row ? `${row.short}: ` : ''}${what} picked will be lost.` : undefined}
           onDiscard={onClose} onKeep={() => setConfirmDiscard(false)} />
       ) : (
         <>
           <div className="mr-auto min-w-0 flex-1 basis-0 text-sm">
-            {!row ? <span className="text-muted">Tap the product</span> : (
+            {items.length === 0 ? <span className="text-muted">Tap + on each product</span> : (
               <>
                 <div className="truncate text-muted">
-                  <span className="font-medium text-foreground">{row.short}</span>
-                  {after != null && <> · {formatNumber(here)} → <span className="font-semibold tabular-nums text-foreground">{formatNumber(after)}</span> at {btnPlace}</>}
+                  {row ? (
+                    <>
+                      <span className="font-medium text-foreground">{row.short}</span>
+                      {after != null && <> · {formatNumber(here)} → <span className="font-semibold tabular-nums text-foreground">{formatNumber(after)}</span> at {btnPlace}</>}
+                    </>
+                  ) : <span className="font-medium text-foreground">{items.length} products</span>}
                 </div>
                 {!reason.trim() && <div className="text-xs text-amber-300">Pick or write a reason</div>}
               </>
@@ -238,7 +248,7 @@ function AdjustModal({ mode, onClose }) {
             options={[{ value: 'DECREASE', label: 'Remove boxes' }, { value: 'INCREASE', label: 'Add boxes' }]} />
         )}
 
-        <ProductPicker rows={rows} value={qty} onChange={pick} single cap={removing} stock={loc ? stock : null}
+        <ProductPicker rows={rows} value={qty} onChange={pick} cap={removing} stock={loc ? stock : null}
           onlyHeld={!!rep && removing} placeName={placeName || 'here'} loading={productsLoading} emptyText="No products yet." />
 
         <ReasonField value={reason} onChange={setReason} chips={isAdjust ? ADJUST_REASONS : DAMAGE_REASONS} />

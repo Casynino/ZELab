@@ -20,7 +20,10 @@ const tx = {
       ? [{ id: 'o1', settlementNumber: 'STL-1', salesRepId: 'rep1', status: 'OPEN' }]
       : []),
   },
-  product: { findUnique: async () => ({ name: 'Pepa', purchasePrice: 1000 }) },
+  product: {
+    findUnique: async () => ({ name: 'Pepa', purchasePrice: 1000 }),
+    findMany: async ({ where }) => where.id.in.map((id) => ({ id, purchasePrice: 1000 })),
+  },
 };
 install('../src/config/prisma', { $transaction: async (fn) => fn(tx) });
 install('../src/services/audit.service', { record: async () => {} });
