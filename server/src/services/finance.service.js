@@ -225,8 +225,21 @@ async function commissionAccount() {
 // the brand has none of its own. Cash and the commission account are never in
 // the list. This is THE filter behind GET /settlements/payment-accounts; the
 // client renders what it returns rather than re-deciding it on its own.
+// Whether an account reserved for one brand takes money of `brandId`: its own brand, or a brand that pays into it
+// (Pepa pays into Civlily's account, 15 Nov 2026). A general account, or money with no brand, always fits.
+async function accountServesBrand(client, accountBrandId, brandId) {
+  if (!accountBrandId || !brandId || accountBrandId === brandId) return true;
+  const b = await client.brand.findUnique({ where: { id: brandId }, select: { settlesWithBrandId: true } });
+  return !!b && b.settlesWithBrandId === accountBrandId;
+}
+
 async function paymentAccountsForBrand(brandId) {
   await ensureDefaults();
+  // A brand that pays into another brand's account settles there (Pepa → Civlily's Airtel Money).
+  if (brandId) {
+    const b = await prisma.brand.findUnique({ where: { id: brandId }, select: { settlesWithBrandId: true } });
+    if (b?.settlesWithBrandId) brandId = b.settlesWithBrandId;
+  }
   const accounts = await prisma.businessAccount.findMany({
     where: { ...MONEY_ACCOUNT_WHERE, isActive: true },
     orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
@@ -283,6 +296,12 @@ async function createAccount(data) {
 async function updateAccount(id, data) {
   const existing = await prisma.businessAccount.findUnique({ where: { id } });
   if (!existing) throw ApiError.notFound('Account not found');
+  // Changing the opening of an account that has moved money rewrites its whole history without a trace
+  // (15 Nov 2026). A real difference is recorded with Correct balance, which says why and who.
+  if (data.openingBalance !== undefined && round2(toNumber(data.openingBalance)) !== round2(toNumber(existing.openingBalance))
+    && (await prisma.financeTransaction.count({ where: { accountId: id } }))) {
+    throw ApiError.badRequest(`${existing.name} already has money recorded through it, so its opening balance is fixed. Use Correct balance — it records the difference and why.`);
+  }
   if (existing.type === COMMISSION_TYPE) {
     if (data.type !== undefined && data.type !== COMMISSION_TYPE) {
       throw ApiError.badRequest('This is the Commission account. Changing its type would put rep payouts back onto a wallet.');
@@ -517,13 +536,20 @@ async function recordTransaction(data, actor, client = prisma, { checkBrand = fa
   // A brand-reserved account only holds its own brand's money — the rule a
   // correction already obeys (updateTransaction). A new entry skipped it, so
   // M-Pesa could be handed a Civlily expense that could then never be corrected.
-  if (checkBrand && account.brandId && data.brandId && data.brandId !== account.brandId) {
+  if (checkBrand && !(await accountServesBrand(client, account.brandId, data.brandId))) {
     throw ApiError.badRequest(`${account.name} is reserved for another brand's payments`);
+  }
+  // One entry per press of a form (15 Nov 2026): a double tap, or a retry after a lost answer, finds the first
+  // one and records nothing more. The unique column stops two presses racing each other.
+  if (data.clientKey) {
+    const seen = await client.financeTransaction.findUnique({ where: { clientKey: data.clientKey }, select: { txnNumber: true } });
+    if (seen) throw ApiError.conflict(`Already recorded as ${seen.txnNumber} — your first press went through.`);
   }
   const txnNumber = await nextDocNumber(client.financeTransaction, 'txnNumber', 'FTX');
   return client.financeTransaction.create({
     data: {
       txnNumber,
+      clientKey: data.clientKey || null,
       accountId: data.accountId,
       direction: data.direction,
       type: data.type || (data.direction === 'IN' ? 'INCOME' : 'EXPENSE'),
@@ -540,6 +566,78 @@ async function recordTransaction(data, actor, client = prisma, { checkBrand = fa
       createdById: actor ? actor.id : null,
     },
   });
+}
+
+// ── Business money only (15 Nov 2026) ──────────────────────────────────────────
+// Every payment comes out of a recorded business account, and never more than it holds: no account may go
+// below zero. The account row is locked (FOR UPDATE) and its balance read inside the same transaction, by the
+// formula every screen shows, so two payments at once queue up instead of both spending the same shillings.
+// Personal money is put in first ("Put my money in"), then paid out like any other.
+async function assertFunds(tx, accountId, amount, what = 'this payment') {
+  if (!accountId) throw ApiError.badRequest('Choose the account the money is paid from.');
+  // $queryRaw, not $executeRaw: it returns the locked row, which also says whether the account exists.
+  const locked = await tx.$queryRaw`SELECT id FROM "business_accounts" WHERE id = ${accountId} FOR UPDATE`;
+  if (!locked.length) throw ApiError.badRequest('Select a valid account');
+  const [acc] = await accountBalances({ client: tx, accountId });
+  if (!acc) throw ApiError.badRequest('Select a valid account');
+  if (acc.isCommissionRecord) {
+    throw ApiError.badRequest(`${acc.name} is a record of past payouts, not a wallet — pay from Cash, Airtel Money or M-Pesa.`);
+  }
+  const amt = round2(toNumber(amount));
+  if (acc.balance < amt - 0.001) {
+    throw ApiError.badRequest(
+      `Not enough money in ${acc.name}: it holds ${formatCurrency(acc.balance)} and ${what} needs ${formatCurrency(amt)}, `
+      + `so ${formatCurrency(round2(amt - acc.balance))} is missing. If you are paying with your own money, record it first with Put my money in, or pay from another account.`,
+      { code: 'NOT_ENOUGH_MONEY', balance: acc.balance, needed: amt },
+    );
+  }
+  return acc;
+}
+
+// The old Correct balance body ({ direction, amount }, still accepted): out only if the account holds it.
+const recordPlainAdjustment = (data, actor) => (data.direction === 'OUT'
+  ? spend(data, actor, { checkBrand: true }, 'this correction')
+  : withDocNumberRetry(() => recordTransaction(data, actor, prisma, { checkBrand: true })));
+
+// A repeat press of the same form, recognised under the account's lock — before the balance is judged, so a
+// double tap is told "already recorded", never "not enough money" because the first press spent it.
+async function assertNotRecorded(tx, accountId, clientKey) {
+  if (!clientKey || !accountId) return;
+  await tx.$queryRaw`SELECT id FROM "business_accounts" WHERE id = ${accountId} FOR UPDATE`;
+  const seen = await tx.financeTransaction.findUnique({ where: { clientKey }, select: { txnNumber: true } });
+  if (seen) throw ApiError.conflict(`Already recorded as ${seen.txnNumber} — your first press went through.`);
+}
+
+// A money-out entry written only if its account can pay it, in one transaction.
+const spend = (data, actor, opts = {}, what) => withDocNumberRetry(() => prisma.$transaction(async (tx) => {
+  await assertNotRecorded(tx, data.accountId, data.clientKey);
+  await assertFunds(tx, data.accountId, data.amount, what);
+  return recordTransaction(data, actor, tx, opts);
+}));
+
+// A rep's commission or bonus withdrawal paid from a business account (15 Nov 2026 — it used to be the owner's
+// pocket, recorded off every account). Called inside the withdrawal's own transaction, after the withdrawal is
+// locked and claimed, so the payment and PAID land together or not at all. A business expense: it comes off the
+// account and off profit; "Commission Payments" / "Bonus Payments" say which. Never twice: one row per withdrawal.
+async function recordPayoutFromAccount(tx, w, { accountId, occurredAt, who }, actor) {
+  const already = await tx.financeTransaction.findFirst({ where: { refType: 'CommissionWithdrawal', refId: w.id }, select: { txnNumber: true } });
+  if (already) throw ApiError.conflict(`This withdrawal is already paid (${already.txnNumber}).`);
+  const amount = round2(toNumber(w.amount));
+  await assertFunds(tx, accountId, amount, `this ${w.source === 'BONUS' ? 'bonus' : 'commission'} payment`);
+  return recordTransaction(
+    {
+      accountId,
+      direction: 'OUT',
+      type: 'EXPENSE',
+      amount,
+      ...payoutWords(w.source, who),
+      refType: 'CommissionWithdrawal',
+      refId: w.id,
+      occurredAt,
+    },
+    actor,
+    tx,
+  );
 }
 
 // Money spent on stock is not a P&L expense — the cost of those boxes reaches
@@ -566,12 +664,16 @@ const HAND_TYPED = { checkBrand: true };
 // The owner's own money. A contribution is his personal cash entering the
 // business (he pays rep commissions this way); a drawing is profit he takes
 // out. Neither is trade: excluded from revenue, profit, and money in/out.
-const recordOwnerMoney = ({ direction, ...data }, actor) => recordTransaction({
-  ...handTyped(data),
-  direction,
-  type: direction === 'IN' ? 'OWNER_CONTRIBUTION' : 'OWNER_DRAWING',
-  category: direction === 'IN' ? 'Owner contribution' : 'Owner drawing',
-}, actor, prisma, HAND_TYPED);
+const recordOwnerMoney = ({ direction, ...data }, actor) => {
+  const row = {
+    ...handTyped(data),
+    direction,
+    type: direction === 'IN' ? 'OWNER_CONTRIBUTION' : 'OWNER_DRAWING',
+    category: direction === 'IN' ? 'Owner contribution' : 'Owner drawing',
+  };
+  // Taking profit out can only take what the account holds; putting money in needs no check.
+  return direction === 'OUT' ? spend(row, actor, HAND_TYPED, 'taking this out') : withDocNumberRetry(() => recordTransaction(row, actor, prisma, HAND_TYPED));
+};
 
 // "Correct balance": the owner says what an account really holds, and the server writes the difference
 // from the balance as it is NOW, not from a figure the browser worked out earlier (audit freshness-1).
@@ -602,6 +704,8 @@ async function recordBalanceCorrection({ accountId, targetBalance, expectedBalan
     }
     const delta = round2(target - live);
     if (delta === 0) throw ApiError.badRequest(`${acc.name} already holds ${formatCurrency(live)} — nothing to record`);
+    // No account holds less than nothing (15 Nov 2026).
+    if (target < 0) throw ApiError.badRequest('An account cannot hold less than zero. Type what it really holds today.');
     return recordTransaction(
       {
         accountId,
@@ -621,12 +725,16 @@ async function recordBalanceCorrection({ accountId, targetBalance, expectedBalan
   }));
 }
 
-const recordExpense = (data, actor) => recordTransaction({
-  ...handTyped(data),
-  direction: 'OUT',
-  type: isStockPurchaseCategory(data.category) ? 'STOCK_PURCHASE' : 'EXPENSE',
-}, actor, prisma, HAND_TYPED);
-const recordIncome = (data, actor) => recordTransaction({ ...handTyped(data), direction: 'IN', type: 'INCOME' }, actor, prisma, HAND_TYPED);
+const recordExpense = async (data, actor) => {
+  if (!String(data.description || '').trim()) throw ApiError.badRequest('Say what the money was spent on.');
+  if (!String(data.category || '').trim()) throw ApiError.badRequest('Choose a category for this expense.');
+  return spend({
+    ...handTyped(data),
+    direction: 'OUT',
+    type: isStockPurchaseCategory(data.category) ? 'STOCK_PURCHASE' : 'EXPENSE',
+  }, actor, HAND_TYPED, 'this expense');
+};
+const recordIncome = (data, actor) => withDocNumberRetry(() => recordTransaction({ ...handTyped(data), direction: 'IN', type: 'INCOME' }, actor, prisma, HAND_TYPED));
 
 // Automatic money-in for a completed cash sale (settlement or direct warehouse).
 // `accountId` = the payment account the money actually went to (rep's choice on
@@ -689,8 +797,9 @@ function payoutWords(source, who) {
 async function writePayoutRowOnce(withdrawalId, makeData) {
   return prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "commission_withdrawals" WHERE id = ${withdrawalId} FOR UPDATE`;
+    // Any row for this withdrawal — a pocket record (COMMISSION_PAYMENT) or an account payout (EXPENSE).
     const existing = await tx.financeTransaction.findFirst({
-      where: { type: 'COMMISSION_PAYMENT', refType: 'CommissionWithdrawal', refId: withdrawalId },
+      where: { refType: 'CommissionWithdrawal', refId: withdrawalId },
     });
     if (existing) return { row: existing, created: false };
     const row = await makeData(tx);
@@ -716,7 +825,7 @@ async function recordCommissionPayment({ amount, who, reference, refId, occurred
     // return it instead of writing a second one.
     if (refId) {
       const existing = await prisma.financeTransaction.findFirst({
-        where: { type: 'COMMISSION_PAYMENT', refType: 'CommissionWithdrawal', refId },
+        where: { refType: 'CommissionWithdrawal', refId },
       });
       if (existing) return existing;
     }
@@ -840,6 +949,10 @@ async function listTransactions(filters, pagination) {
   // rep. The withdrawal it mirrors is the record of that, so the name is read
   // from there rather than from the row's own description text: a rep renamed
   // since the payout should read by the name they have now.
+  const reversedRows = items.length
+    ? await prisma.financeTransaction.findMany({ where: { reversalOfId: { in: items.map((t) => t.id) } }, select: { reversalOfId: true, txnNumber: true } })
+    : [];
+  const reversedBy = new Map(reversedRows.map((r) => [r.reversalOfId, r.txnNumber]));
   const payoutRefs = [...new Set(items.filter((t) => t.refType === 'CommissionWithdrawal' && t.refId).map((t) => t.refId))];
   const payouts = new Map();
   if (payoutRefs.length) {
@@ -853,7 +966,7 @@ async function listTransactions(filters, pagination) {
   return {
     items: items.map((t) => {
       const isPayout = t.type === 'COMMISSION_PAYMENT';
-      const w = isPayout && t.refType === 'CommissionWithdrawal' ? payouts.get(t.refId) : null;
+      const w = t.refType === 'CommissionWithdrawal' ? payouts.get(t.refId) : null;
       return {
         ...t,
         brandName: t.brandId ? brandName.get(t.brandId) || null : null,
@@ -864,7 +977,11 @@ async function listTransactions(filters, pagination) {
         // account, amount, who, when. Null on every row that is not a payout —
         // a settlement's description carries a rep's name too, and that rep is
         // the person who HANDED money over, not someone who was paid.
-        payee: isPayout ? (w?.salesRep?.user?.name || payeeFromDescription(t.description)) : null,
+        payee: isPayout || (t.refType === 'CommissionWithdrawal' && w)
+          ? (w?.salesRep?.user?.name || payeeFromDescription(t.description))
+          : null,
+        // Reversed entries and their reversals, named on the row (15 Nov 2026).
+        reversedBy: reversedBy.get(t.id) || null,
         payeeCode: w?.salesRep?.code || null,
         payoutStatus: w?.status || null,
         paidAt: w?.paidAt || null,
@@ -887,6 +1004,24 @@ async function updateTransaction(id, data) {
   const existing = await prisma.financeTransaction.findUnique({ where: { id } });
   if (!existing) throw ApiError.notFound('Transaction not found');
   assertRealCategory(data.category);
+  // What moved and where is final once recorded (15 Nov 2026): a wrong amount or account is corrected by
+  // reversing the entry and recording it again, so both stay in the ledger. Words can still be fixed.
+  if (data.amount !== undefined && data.amount !== null && round2(toNumber(data.amount)) !== round2(toNumber(existing.amount))) {
+    throw ApiError.badRequest('A recorded amount cannot be changed. Reverse this entry and record it again with the right amount — both stay in the ledger.');
+  }
+  if (data.accountId !== undefined && data.accountId !== existing.accountId) {
+    throw ApiError.badRequest('The account of a recorded entry cannot be changed. Reverse it and record it again on the right account, or move the money with a transfer.');
+  }
+  // A reversed entry and its reversal stay a matching pair: same day, brand and category (the words can change).
+  const inPair = existing.reversalOfId || (await prisma.financeTransaction.count({ where: { reversalOfId: id } }));
+  if (inPair) {
+    if (data.brandId !== undefined && (data.brandId || null) !== (existing.brandId || null)) {
+      throw ApiError.badRequest('A reversed entry and its reversal keep their brand.');
+    }
+    if (data.category !== undefined && (data.category || null) !== (existing.category || null)) {
+      throw ApiError.badRequest('A reversed entry and its reversal keep their category.');
+    }
+  }
   const patch = {};
   ['category', 'description', 'notes', 'accountId', 'reference', 'brandId'].forEach((k) => { if (data[k] !== undefined) patch[k] = data[k]; });
   if (data.amount !== undefined) {
@@ -911,6 +1046,14 @@ async function updateTransaction(id, data) {
       patch.occurredAt = new Date(s);
     }
   }
+  if (patch.occurredAt) {
+    if (inPair) throw ApiError.badRequest('A reversed entry and its reversal keep their dates.');
+    // Moving a row across the day the books started would add it to (or drop it from) every balance unseen.
+    const epoch = await reports.financeEpoch();
+    if (epoch && (new Date(existing.occurredAt) >= epoch) !== (patch.occurredAt >= epoch)) {
+      throw ApiError.badRequest(`The date cannot move across ${eatDateOf(epoch)}, the day the books started — that would add this money to, or take it out of, the balances.`);
+    }
+  }
   const amountChanged = patch.amount !== undefined && patch.amount !== round2(toNumber(existing.amount));
   // A payout's record IS the withdrawal's amount — like deleting it, changing it is done on the payout.
   if (existing.refType === 'CommissionWithdrawal' && amountChanged) {
@@ -931,7 +1074,7 @@ async function updateTransaction(id, data) {
   if (existing.type === 'COMMISSION_PAYMENT' && account.type !== COMMISSION_TYPE) {
     throw ApiError.badRequest('Commission you paid from your own pocket is recorded in one place and cannot be filed against a wallet.');
   }
-  if (account.brandId && targetBrandId && targetBrandId !== account.brandId) {
+  if (!(await accountServesBrand(prisma, account.brandId, targetBrandId))) {
     throw ApiError.badRequest(`${account.name} is reserved for another brand's payments`);
   }
 
@@ -968,7 +1111,7 @@ async function updateTransaction(id, data) {
 // fixing money recorded against the wrong account when an edit isn't enough).
 // Posts a linked OUT + IN pair of type TRANSFER — balance-effective on both
 // accounts but excluded from income/expense/cash-flow reporting.
-async function transferBetweenAccounts({ fromAccountId, toAccountId, amount, notes, occurredAt }, actor) {
+async function transferBetweenAccounts({ fromAccountId, toAccountId, amount, notes, occurredAt, clientKey }, actor) {
   const amt = round2(toNumber(amount));
   if (!(amt > 0)) throw ApiError.badRequest('Enter an amount greater than zero');
   if (!fromAccountId || !toAccountId) throw ApiError.badRequest('Choose both accounts');
@@ -990,11 +1133,15 @@ async function transferBetweenAccounts({ fromAccountId, toAccountId, amount, not
 
   const when = resolveOccurredAt(occurredAt);
   const reference = `Transfer ${from.name} → ${to.name}`;
-  return prisma.$transaction(async (tx) => {
+  return withDocNumberRetry(() => prisma.$transaction(async (tx) => {
+    // A repeat press first, then the balance again under the account's lock: a payment made since the check
+    // above may have spent it.
+    await assertNotRecorded(tx, from.id, clientKey);
+    await assertFunds(tx, from.id, amt, 'this transfer');
     const outNumber = await nextDocNumber(tx.financeTransaction, 'txnNumber', 'FTX');
     const outTxn = await tx.financeTransaction.create({
       data: {
-        txnNumber: outNumber, accountId: from.id, direction: 'OUT', type: 'TRANSFER', amount: amt,
+        txnNumber: outNumber, clientKey: clientKey || null, accountId: from.id, direction: 'OUT', type: 'TRANSFER', amount: amt,
         category: 'Account transfer', description: `Transfer to ${to.name}`, reference,
         notes: notes || null, occurredAt: when, createdById: actor?.id || null,
       },
@@ -1009,39 +1156,100 @@ async function transferBetweenAccounts({ fromAccountId, toAccountId, amount, not
       },
     });
     return { out: outTxn, in: inTxn, amount: amt, from: from.name, to: to.name };
-  });
+  }));
 }
 
+// Entries are never deleted (15 Nov 2026): a mistake is undone by a reversal, so the ledger keeps both.
 async function deleteTransaction(id) {
   const existing = await prisma.financeTransaction.findUnique({ where: { id } });
   if (!existing) throw ApiError.notFound('Transaction not found');
-  // Rows that mirror a source document cannot be deleted here: the next
-  // backfill would quietly re-create them — into the DEFAULT account, dated
-  // from the document — so the "deleted" money would reappear somewhere else.
-  // The honest way to remove them is to cancel the document they mirror.
-  if (existing.refType === 'Sale') {
-    throw ApiError.badRequest('This row mirrors a sale. Cancel the sale itself and this entry follows — deleting it here would only make the books disagree with the sales record.');
-  }
-  if (existing.refType === 'CommissionWithdrawal') {
-    throw ApiError.badRequest('This row mirrors a commission payout. Reverse the payout from the Commissions screen instead.');
-  }
-  // A transfer is two legs of one movement. Removing one leg would conjure
-  // money out of (or into) thin air, so both legs go together.
-  if (existing.type === 'TRANSFER') {
-    await prisma.financeTransaction.deleteMany({
-      where: {
-        OR: [
-          { id },
-          { type: 'TRANSFER', refType: 'Transfer', refId: id },
-          ...(existing.refType === 'Transfer' && existing.refId ? [{ id: existing.refId }] : []),
-        ],
-      },
-    });
-    return existing;
-  }
-  await prisma.financeTransaction.delete({ where: { id } });
-  return existing;
+  throw ApiError.badRequest('Recorded money is never deleted. Use Reverse: it records the opposite entry and keeps both in the ledger.');
 }
+
+// The kinds of entry a person typed in, and so may reverse here. Money that mirrors a sale, a purchase order, a
+// supplier bill or a rep payout is corrected where it came from, never by a free-standing reversal.
+const REVERSIBLE_TYPES = ['INCOME', 'EXPENSE', 'STOCK_PURCHASE', 'OWNER_CONTRIBUTION', 'OWNER_DRAWING', 'ADJUSTMENT', 'TRANSFER'];
+
+// Reverse an entry: a new entry on the same account, of the same kind, for minus the same amount, tied to the
+// original (`reversalOfId`, unique — an entry is reversed once). Every total that counted the original now nets
+// it to nothing; the balance is back where it was; the ledger shows both and who did it. A transfer is reversed
+// on both sides. Undoing money that came IN cannot take an account below zero.
+async function reverseTransaction(id, { reason } = {}, actor) {
+  const why = String(reason || '').trim();
+  if (!why) throw ApiError.badRequest('Say why this entry is being reversed — it stays in the ledger beside it.');
+  return withDocNumberRetry(() => prisma.$transaction(async (tx) => {
+    const original = await tx.financeTransaction.findUnique({ where: { id } });
+    if (!original) throw ApiError.notFound('Transaction not found');
+    if (original.reversalOfId) throw ApiError.badRequest('This entry is itself a reversal — record the money again instead.');
+    // A payment a person made to a supplier (balance or an older order) can be reversed; the reversal keeps its link
+    // so the supplier's paid and owed figures net out. A payment made by Confirm purchase is undone on the order.
+    if (original.refType === 'PurchaseOrder') {
+      const po = await tx.purchaseOrder.findUnique({ where: { id: original.refId }, select: { poNumber: true, purchasedAt: true, dispatchedAt: true } });
+      if (po?.purchasedAt && po.dispatchedAt && new Date(original.createdAt) >= new Date(po.dispatchedAt)) {
+        throw ApiError.badRequest(`This is the payment of ${po.poNumber}, made with Confirm purchase. Use Undo purchase on the order instead.`);
+      }
+    }
+    const linked = ['Supplier', 'PurchaseOrder'].includes(original.refType) && original.type === 'STOCK_PURCHASE';
+    if (!REVERSIBLE_TYPES.includes(original.type) || (original.refType && !linked && original.type !== 'TRANSFER')) {
+      const where = original.refType === 'Sale' ? 'Cancel the sale it came from.'
+        : original.refType === 'CommissionWithdrawal' ? 'It is a rep payout, recorded with the withdrawal.'
+          : original.refType === 'PurchaseOrder' || original.refType === 'Supplier' ? 'It is a supplier or purchase order payment.'
+            : 'It was recorded by the app, not typed in.';
+      throw ApiError.badRequest(`This entry cannot be reversed here. ${where}`);
+    }
+    // Both sides of a transfer, found from either side.
+    const legs = [original];
+    if (original.type === 'TRANSFER') {
+      const partner = original.refType === 'Transfer' && original.refId
+        ? await tx.financeTransaction.findUnique({ where: { id: original.refId } })
+        : await tx.financeTransaction.findFirst({ where: { type: 'TRANSFER', refType: 'Transfer', refId: original.id } });
+      if (partner) legs.push(partner);
+    }
+    for (const leg of legs) {
+      if (await tx.financeTransaction.findUnique({ where: { reversalOfId: leg.id }, select: { id: true } })) {
+        throw ApiError.conflict('This entry was already reversed.');
+      }
+    }
+    // Money that counted in no balance — from before the books started, or on an account since switched off —
+    // has nothing to reverse: a reversal dated today would add or remove money that was never there.
+    const epoch = await reports.financeEpoch();
+    if (epoch && legs.some((l) => new Date(l.occurredAt) < epoch)) {
+      throw ApiError.badRequest('This entry is from before the books started, so it is in no balance and there is nothing to reverse.');
+    }
+    const closed = await tx.businessAccount.findFirst({ where: { id: { in: legs.map((l) => l.accountId) }, isActive: false }, select: { name: true } });
+    if (closed) throw ApiError.badRequest(`${closed.name} is switched off. Switch it back on before reversing this entry, so both sides count.`);
+    // Undoing money that came in takes it back out of that account: only what is there.
+    for (const leg of legs.filter((l) => l.direction === 'IN')) {
+      await assertFunds(tx, leg.accountId, leg.amount, `reversing ${leg.txnNumber}`);
+    }
+    const made = [];
+    for (const leg of legs) {
+      const txnNumber = await nextDocNumber(tx.financeTransaction, 'txnNumber', 'FTX');
+      made.push(await tx.financeTransaction.create({
+        data: {
+          txnNumber,
+          reversalOfId: leg.id,
+          accountId: leg.accountId,
+          direction: leg.direction,
+          type: leg.type,
+          amount: round2(-toNumber(leg.amount)),
+          brandId: leg.brandId,
+          category: leg.category,
+          description: `Reversal of ${leg.txnNumber}${leg.description ? ` — ${leg.description}` : ''}`.slice(0, 500),
+          reference: leg.reference,
+          // A supplier or order payment keeps its link, so that supplier's figures net out. A transfer's reversal
+          // legs point at their originals by reversalOfId; refType stays off so the pair is never taken for a new one.
+          ...(linked ? { refType: leg.refType, refId: leg.refId } : {}),
+          notes: why.slice(0, 2000),
+          occurredAt: new Date(),
+          createdById: actor?.id || null,
+        },
+      }));
+    }
+    return { original, reversals: made };
+  }));
+}
+
 
 // --- Categories ------------------------------------------------------------
 
@@ -1231,8 +1439,21 @@ async function cashflow(opts = {}) {
   // here; `owner.commissionFromPocket` carries that half.
   const ownerNet = owner.accountMovement;
 
+  // Rep payouts from an account are expenses, but the reader asked to see them as their own line (15 Nov 2026):
+  // taken out of EXPENSE and shown as REP_COMMISSION.
+  const repPaid = byTypeRows.length
+    ? await prisma.financeTransaction.aggregate({
+      where: { ...typeWhere, type: 'EXPENSE', direction: 'OUT', refType: 'CommissionWithdrawal' }, _sum: { amount: true }, _count: true,
+    })
+    : null;
+  const repAmount = round2(toNumber(repPaid?._sum?.amount));
   const byType = byTypeRows
     .map((r) => ({ type: r.type, direction: r.direction, amount: round2(toNumber(r._sum.amount)), count: r._count }))
+    .map((r) => (r.type === 'EXPENSE' && r.direction === 'OUT' && repAmount
+      ? { ...r, amount: round2(r.amount - repAmount), count: r.count - (repPaid._count || 0) }
+      : r))
+    .concat(repAmount ? [{ type: 'REP_COMMISSION', direction: 'OUT', amount: repAmount, count: repPaid._count || 0 }] : [])
+    .filter((r) => r.amount !== 0 || r.count > 0)
     .sort((a, b) => b.amount - a.amount);
 
   const series = months.map((mo, i) => (mo.beforeEpoch
@@ -1280,10 +1501,9 @@ async function report(opts = {}) {
   const [expenses, supplierPayments, commissionPaid, otherIncome] = await Promise.all([
     sumOf({ direction: 'OUT', type: 'EXPENSE' }),
     sumOf({ direction: 'OUT', type: 'STOCK_PURCHASE' }),
-    // A RECORD of what reps were paid, reported on its own line. It is the
-    // owner's money, not the business's, so it is absent from cash flow above
-    // and from netProfit below — by design, not by omission.
-    sumOf({ direction: 'OUT', type: 'COMMISSION_PAYMENT' }),
+    // What reps were paid: payouts from a business account (since 15 Nov 2026 — already inside `expenses`, and so
+    // inside netProfit) and the older pocket records (outside cash flow and profit), together on one line.
+    sumOf({ direction: 'OUT', refType: 'CommissionWithdrawal' }),
     sumOf({ direction: 'IN', type: 'INCOME' }),
   ]);
   return {
@@ -1561,7 +1781,7 @@ async function paySupplierBalance(supplierId, { accountId, amount, notes, occurr
   if (amt > outstanding + 0.001) {
     throw ApiError.badRequest(`You only owe ${s.name} TZS ${outstanding.toLocaleString()}`);
   }
-  return recordTransaction(
+  return spend(
     {
       accountId,
       direction: 'OUT',
@@ -1577,6 +1797,8 @@ async function paySupplierBalance(supplierId, { accountId, amount, notes, occurr
       occurredAt,
     },
     actor,
+    { checkBrand: true },
+    `paying ${s.name}`,
   );
 }
 
@@ -1622,7 +1844,7 @@ async function paySupplier({ purchaseOrderId, accountId, amount, notes, occurred
     }
     throw ApiError.badRequest(`Only TZS ${remaining.toLocaleString()} is outstanding on ${po.poNumber}`);
   }
-  return recordTransaction(
+  return spend(
     {
       accountId,
       direction: 'OUT',
@@ -1639,6 +1861,8 @@ async function paySupplier({ purchaseOrderId, accountId, amount, notes, occurred
       occurredAt,
     },
     actor,
+    { checkBrand: true },
+    `paying ${po.poNumber}`,
   );
 }
 
@@ -2354,6 +2578,11 @@ module.exports = {
   recordSaleIncome,
   transferBetweenAccounts,
   recordCommissionPayment,
+  recordPayoutFromAccount,
+  recordPlainAdjustment,
+  accountServesBrand,
+  assertFunds,
+  reverseTransaction,
   recordOwnerMoney,
   recordBalanceCorrection,
   listTransactions,

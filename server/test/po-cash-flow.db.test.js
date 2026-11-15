@@ -60,12 +60,15 @@ const draft = () => purchase.createPurchaseOrder({
   ],
 }, ctx.admin);
 
-test('the whole journey: draft → purchase → dispatch → cost → received in two parts', async () => {
+test('the whole journey: draft → purchase (straight on its way) → cost → received in two parts', async () => {
   const po = await draft();
   assert.equal(po.status, 'DRAFT');
   assert.equal(Number(po.totalCost), 1_600_000);
   assert.equal((await moneyOn(po.id)).length, 0, 'a draft moves no money');
   assert.equal((await finance.supplierDetail(ctx.supplier.id)).totals.outstanding, 0, 'a draft is owed to nobody');
+  // Not bought yet: nothing can be received.
+  const [ia, ib] = (await prisma.purchaseOrderItem.findMany({ where: { purchaseOrderId: po.id }, orderBy: { baseQuantity: 'desc' } }));
+  await rejectsWith(purchase.receiveCargo(po.id, { clientKey: `early-${po.id}`, items: [{ itemId: ia.id, received: 1 }] }, ctx.admin), 400, /not been bought/);
 
   // Not enough in the account: refused with the numbers, nothing written.
   await rejectsWith(purchase.confirmPurchase(po.id, { accountId: ctx.accountId }, ctx.admin), 400, /missing/);
@@ -76,9 +79,11 @@ test('the whole journey: draft → purchase → dispatch → cost → received i
   const before = await balanceOf();
   // Two presses at once: paid exactly once.
   const both = await Promise.allSettled([
-    purchase.confirmPurchase(po.id, { accountId: ctx.accountId, occurredAt: '2026-11-15' }, ctx.admin),
-    purchase.confirmPurchase(po.id, { accountId: ctx.accountId, occurredAt: '2026-11-15' }, ctx.admin),
+    purchase.confirmPurchase(po.id, { accountId: ctx.accountId, occurredAt: '2026-11-15', expectedArrival: '2026-12-20' }, ctx.admin),
+    purchase.confirmPurchase(po.id, { accountId: ctx.accountId, occurredAt: '2026-11-15', expectedArrival: '2026-12-20' }, ctx.admin),
   ]);
+  // Bought = on its way: no separate dispatch step (Nino, 15 Nov 2026).
+  assert.equal(both.find((r) => r.status === 'fulfilled').value.status, 'IN_TRANSIT');
   assert.equal(both.filter((r) => r.status === 'fulfilled').length, 1);
   assert.equal(both.find((r) => r.status === 'rejected').reason.statusCode, 409);
   const paid = await moneyOn(po.id);
@@ -93,12 +98,6 @@ test('the whole journey: draft → purchase → dispatch → cost → received i
   await rejectsWith(purchase.deletePurchaseOrder(po.id), 400);
   await purchase.updatePurchaseOrder(po.id, { notes: 'still editable' });
 
-  // Not on its way yet: nothing can be received.
-  const [ia, ib] = (await prisma.purchaseOrderItem.findMany({ where: { purchaseOrderId: po.id }, orderBy: { baseQuantity: 'desc' } }));
-  await rejectsWith(purchase.receiveCargo(po.id, { clientKey: `early-${po.id}`, items: [{ itemId: ia.id, received: 1 }] }, ctx.admin), 400, /not been dispatched/);
-
-  const sent = await purchase.dispatchOrder(po.id, { dispatchedAt: '2026-11-16', expectedArrival: '2026-12-20' });
-  assert.equal(sent.status, 'IN_TRANSIT');
 
   // Shipping paid in cash as it is recorded: the order stays fully paid.
   const withShip = await purchase.addOrderCost(po.id, { kind: 'shipping', amount: 160_000, accountId: ctx.accountId }, ctx.admin);
@@ -171,7 +170,6 @@ test('the same product at a different price on another order, cartons, and nothi
   }, ctx.admin);
   assert.equal(Number(po.totalCost), 10 * carton.baseQuantity * 440);
   await purchase.confirmPurchase(po.id, { accountId: ctx.accountId }, ctx.admin);
-  await purchase.dispatchOrder(po.id, {});
   const [line] = await prisma.purchaseOrderItem.findMany({ where: { purchaseOrderId: po.id } });
   const stockA = await stockOf(ctx.a.id);
   // 4 cartons arrive fine: they enter stock as boxes; 6 cartons stay outstanding.
@@ -186,14 +184,24 @@ test('the same product at a different price on another order, cartons, and nothi
   assert.ok(prices.includes(10_000) && prices.includes(440), 'both prices are kept, each on its own order');
 });
 
-test('a dispatched order cannot be cancelled; a draft can be deleted', async () => {
+test('a bought order cannot be cancelled, only undone (payment reversed, both kept); a draft can be deleted', async () => {
+  await prisma.businessAccount.update({ where: { id: ctx.accountId }, data: { openingBalance: 50_000_000 } });
   const po = await draft();
   await purchase.confirmPurchase(po.id, { accountId: ctx.accountId }, ctx.admin);
-  // Bought: cancelling is refused while the payment stands (it is reversed in Finance first).
-  await rejectsWith(purchase.updatePurchaseOrder(po.id, { status: 'CANCELLED' }), 400, /paid/);
-  await purchase.dispatchOrder(po.id, {});
-  await rejectsWith(purchase.updatePurchaseOrder(po.id, { status: 'CANCELLED' }), 400, /dispatched/);
+  await rejectsWith(purchase.updatePurchaseOrder(po.id, { status: 'CANCELLED' }), 400, /on its way/);
   await rejectsWith(purchase.updatePurchaseOrder(po.id, { status: 'DRAFT' }), 400, /buttons/); // no walking it back
+  // Undo purchase: the payment is reversed beside it, the account is whole again, the order is a draft.
+  const before = await balanceOf();
+  await rejectsWith(purchase.undoPurchase(po.id, {}, ctx.admin), 400, /why/);
+  const undone = await purchase.undoPurchase(po.id, { reason: 'Paid from the wrong account' }, ctx.admin);
+  assert.equal(undone.status, 'DRAFT');
+  assert.equal(await balanceOf(), before + 1_600_000);
+  const rows = await moneyOn(po.id);
+  assert.equal(rows.length, 2, 'the payment and its reversal both stay');
+  assert.equal(rows.reduce((n, r) => n + Number(r.amount), 0), 0);
+  // Its money history stays tied to it: it can be cancelled, never deleted.
+  await rejectsWith(purchase.deletePurchaseOrder(po.id), 400, /stays as their record/);
+  assert.equal((await purchase.updatePurchaseOrder(po.id, { status: 'CANCELLED' })).status, 'CANCELLED');
 
   const d = await draft();
   await purchase.deletePurchaseOrder(d.id);
@@ -210,7 +218,7 @@ test('an older credit order already paid through the supplier balance is not pai
   const before = await balanceOf();
   assert.equal((await purchase.getPurchaseOrder(po.id)).toPay, 0, 'the window offers nothing to pay');
   const done = await purchase.confirmPurchase(po.id, {}, ctx.admin); // no account needed: nothing left to pay
-  assert.equal(done.status, 'PURCHASED');
+  assert.equal(done.status, 'IN_TRANSIT');
   assert.equal(await balanceOf(), before, 'no second payment');
   assert.equal((await moneyOn(po.id)).length, 0);
   assert.equal((await finance.supplierDetail(ctx.supplier.id)).totals.outstanding, 0, 'supplier not overpaid');
@@ -232,7 +240,7 @@ test('an account reserved for one brand cannot pay for another brand, even in a 
   await rejectsWith(purchase.confirmPurchase(po.id, { accountId: reserved.id }, ctx.admin), 400, /only pays for its own brand/);
   assert.equal((await moneyOn(po.id)).length, 0);
   // A shared account pays it.
-  assert.equal((await purchase.confirmPurchase(po.id, { accountId: ctx.accountId }, ctx.admin)).status, 'PURCHASED');
+  assert.equal((await purchase.confirmPurchase(po.id, { accountId: ctx.accountId }, ctx.admin)).status, 'IN_TRANSIT');
 });
 
 test('a carton price that does not divide evenly still adds up to exactly what was typed', async () => {
@@ -242,6 +250,57 @@ test('a carton price that does not divide evenly still adds up to exactly what w
     items: [{ productId: ctx.a.id, packagingUnitId: ctx.boxUnitId, quantity: 240, unitCost: Math.round((100_000 / 24) * 1e6) / 1e6 }],
   }, ctx.admin);
   assert.equal(Number(po.totalCost), 1_000_000);
+});
+
+test('Undo purchase reverses only what Confirm purchase paid; an older payment stays and the order goes back to ORDERED', async () => {
+  await prisma.businessAccount.update({ where: { id: ctx.accountId }, data: { openingBalance: 80_000_000 } });
+  const po = await draft();
+  await prisma.purchaseOrder.update({ where: { id: po.id }, data: { status: 'ORDERED' } });
+  // A real payment made before the cash-only flow (Finance → Pay PO): 400,000.
+  await finance.paySupplier({ purchaseOrderId: po.id, accountId: ctx.accountId, amount: 400_000 }, ctx.admin);
+  const before = await balanceOf();
+  await purchase.confirmPurchase(po.id, { accountId: ctx.accountId }, ctx.admin); // pays the other 1,200,000
+  assert.equal(await balanceOf(), before - 1_200_000);
+  const undone = await purchase.undoPurchase(po.id, { reason: 'Wrong order' }, ctx.admin);
+  assert.equal(undone.status, 'ORDERED', 'still owed for, its older payment still counted');
+  assert.equal(await balanceOf(), before, 'only the confirm payment came back');
+  const net = (await moneyOn(po.id)).reduce((n, r) => n + Number(r.amount), 0);
+  assert.equal(net, 400_000, 'the older payment stays');
+  // An order never bought with Confirm purchase has nothing to undo.
+  await rejectsWith(purchase.undoPurchase(po.id, { reason: 'again' }, ctx.admin), 400);
+});
+
+test('a supplier payment can be reversed; the reversal keeps its link so the supplier figures net out', async () => {
+  const po = await draft();
+  await prisma.purchaseOrder.update({ where: { id: po.id }, data: { status: 'ORDERED' } });
+  const owed = (await finance.supplierDetail(ctx.supplier.id)).totals.outstanding;
+  const pay = await finance.paySupplierBalance(ctx.supplier.id, { accountId: ctx.accountId, amount: 100_000 }, ctx.admin);
+  assert.equal((await finance.supplierDetail(ctx.supplier.id)).totals.outstanding, owed - 100_000);
+  const { reversals } = await finance.reverseTransaction(pay.id, { reason: 'Paid the wrong supplier' }, ctx.admin);
+  assert.equal(reversals[0].refType, 'Supplier');
+  assert.equal((await finance.supplierDetail(ctx.supplier.id)).totals.outstanding, owed, 'owed again, as before the payment');
+  // A Confirm purchase payment is undone on the order, not reversed in the ledger.
+  const bought = await draft();
+  await purchase.confirmPurchase(bought.id, { accountId: ctx.accountId }, ctx.admin);
+  const [row] = await moneyOn(bought.id);
+  await rejectsWith(finance.reverseTransaction(row.id, { reason: 'x' }, ctx.admin), 400, /Undo purchase/);
+});
+
+test('a cheaper batch lowers the cost per box to the average of what was paid for every box held', async () => {
+  await prisma.businessAccount.update({ where: { id: ctx.accountId }, data: { openingBalance: 80_000_000 } });
+  const held = (await prisma.inventoryTransaction.aggregate({ where: { productId: ctx.b.id }, _sum: { baseQuantity: true } }))._sum.baseQuantity || 0;
+  const costNow = Number((await prisma.product.findUnique({ where: { id: ctx.b.id } })).purchasePrice);
+  const po = await purchase.createPurchaseOrder({
+    supplierId: ctx.supplier.id,
+    items: [{ productId: ctx.b.id, packagingUnitId: ctx.boxUnitId, quantity: 100, unitCost: 5_000 }], // a discount
+  }, ctx.admin);
+  await purchase.confirmPurchase(po.id, { accountId: ctx.accountId }, ctx.admin);
+  const [line] = await prisma.purchaseOrderItem.findMany({ where: { purchaseOrderId: po.id } });
+  await purchase.receiveCargo(po.id, { clientKey: `avg-${po.id}`, items: [{ itemId: line.id, received: 100 }] }, ctx.admin);
+  const after = Number((await prisma.product.findUnique({ where: { id: ctx.b.id } })).purchasePrice);
+  const expected = held > 0 && costNow > 0 ? Math.round(((held * costNow + 100 * 5_000) / (held + 100)) * 100) / 100 : 5_000;
+  assert.equal(after, expected);
+  assert.equal(Number(line.unitCost), 5_000, 'the order keeps the price it was bought at');
 });
 
 test('one-step Receive is refused for new orders', async () => {

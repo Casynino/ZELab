@@ -11,11 +11,14 @@
 // short ones Nino chose on 11 Nov 2026 ("OHIS Ndogo …", "(Mix)"), so the order holds before
 // and after the rename. Anything not in the list sorts last (alphabetically), so adding
 // a new product never breaks the UI — it just appends until it's listed here.
-// OHIS group first (the main brand), then Civlily, as specified by The Doctor.
+// Pepa first (15 Nov 2026), then OHIS, then Civlily, as specified by The Doctor.
 // ============================================================================
 
 const CANONICAL = [
-  // ── OHIS (main brand — shown first) ──
+  // ── Pepa (listed first, 15 Nov 2026) ──
+  'Pepa Ndogo',
+  'Pepa Ndogo Kubwa',
+  // ── OHIS ──
   'OHIS Ndogo (Brown) Bila Filter',
   'OHIS Ndogo (White) Bila Filter',
   'OHIS Ndogo (Brown) Na Filter',
@@ -36,7 +39,8 @@ const CANONICAL = [
 function normalizeName(s) {
   return (s || '')
     .toLowerCase()
-    .replace(/\bpepa\s+/g, '') // the old long names had "Pepa" in them
+    // The old long names ("OHIS Pepa Ndogo …") said "Pepa" after the brand; Pepa as a brand of its own keeps it.
+    .replace(/\b(ohis|civlily)\s+pepa\s+/g, '$1 ')
     .replace(/\(mix colou?rs\)/g, '(mix)')
     .replace(/\s+[-‒–—―]+\s+/g, ' ') // "(Brown) – Bila Filter" (the old names) = "(Brown) Bila Filter" (12 Nov 2026)
     .replace(/\s+/g, ' ')

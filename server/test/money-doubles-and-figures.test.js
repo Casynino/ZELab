@@ -43,7 +43,8 @@ function db(tables = {}) {
           return run;
         };
       }
-      if (name === '$queryRaw') return async (strings, ...values) => { locks.push({ sql: strings.join('?'), values }); return []; };
+      // A row lock answers with the row it locked (an account must exist to be paid from, 15 Nov 2026).
+      if (name === '$queryRaw') return async (strings, ...values) => { locks.push({ sql: strings.join('?'), values }); return [{ id: values[0] || 'locked' }]; };
       return { ...empty, ...(tables[name] || {}) };
     },
   });
@@ -223,7 +224,13 @@ function loadSupplier({ pos, txns = [], credits = [] }) {
       findFirst: async () => null,
       create: async ({ data }) => { created.push(data); return { id: `t${created.length}`, ...data }; },
     },
-    businessAccount: { findUnique: async () => ({ id: 'acc', name: 'Cash in hand', isActive: true, type: 'CASH' }) },
+    // The paying account holds plenty: money out is checked against it under a row lock (15 Nov 2026).
+    businessAccount: {
+      findUnique: async () => ({ id: 'acc', name: 'Cash in hand', isActive: true, type: 'CASH' }),
+      findMany: async () => [{ id: 'acc', name: 'Cash in hand', isActive: true, type: 'CASH', openingBalance: 10_000_000 }],
+      count: async () => 1,
+    },
+    expenseCategory: { count: async () => 1 },
   }));
   stub('../src/services/reports.service', { financeEpoch: async () => null });
   return { finance: fresh('../src/services/finance.service'), created };

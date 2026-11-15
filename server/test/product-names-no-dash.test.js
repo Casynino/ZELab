@@ -7,8 +7,11 @@ const { productRank, compareProducts } = require('../src/utils/productOrder');
 const { productCreate, productUpdate } = require('../src/validators/catalog.validator');
 
 test('the fixed product order knows the names without the dash, and the old dashed names in the same place', () => {
-  assert.equal(productRank('OHIS Ndogo (Brown) Bila Filter'), 0);
-  assert.equal(productRank('OHIS Ndogo (Brown) – Bila Filter'), 0);
+  // Pepa is listed first (15 Nov 2026); the old long name "OHIS Pepa Ndogo …" still finds OHIS Ndogo.
+  assert.equal(productRank('Pepa Ndogo'), 0);
+  assert.equal(productRank('OHIS Ndogo (Brown) Bila Filter'), 2);
+  assert.equal(productRank('OHIS Ndogo (Brown) – Bila Filter'), 2);
+  assert.equal(productRank('OHIS Pepa Ndogo (Brown) – Bila Filter'), 2);
   assert.equal(productRank('Civlily Ndogo (Mix) Bila Filter'), productRank('Civlily Ndogo (Mix) - Bila Filter'));
   assert.notEqual(productRank('Civlily Ndogo (Mix) Bila Filter'), Number.MAX_SAFE_INTEGER);
   const names = ['Civlily Kubwa (Mix) Na Filter', 'OHIS Kubwa (Brown) Bila Filter', 'OHIS Ndogo (Brown) Bila Filter', 'Civlily Ndogo (Brown) Bila Filter'];

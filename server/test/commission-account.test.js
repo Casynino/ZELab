@@ -60,7 +60,8 @@ const sortBy = (list, orderBy) => {
 };
 
 const prismaStub = {
-  brand: { findMany: async () => [] },
+  // No brand pays into another brand's account here (that is Pepa's, 15 Nov 2026).
+  brand: { findMany: async () => [], findUnique: async () => ({ settlesWithBrandId: null }) },
   expenseCategory: { count: async () => 1 },
   businessAccount: {
     count: async () => accounts.length,
@@ -118,7 +119,8 @@ prismaStub.$transaction = (fn) => {
   txChain = run.catch(() => {});
   return run;
 };
-prismaStub.$queryRaw = async () => [];
+// A row lock answers with the row it locked (accounts are locked before money leaves them, 15 Nov 2026).
+prismaStub.$queryRaw = async () => [{ id: 'locked' }];
 
 require.cache[require.resolve('../src/config/prisma')] = { id: 'prisma', filename: 'prisma', loaded: true, exports: prismaStub };
 const reportsPath = require.resolve('../src/services/reports.service');
@@ -325,8 +327,8 @@ test('a payout moves no balance on any money account, and the record is not a ba
 test('nothing but commission may be filed on the commission account', async () => {
   reset();
   await assert.rejects(
-    () => finance.recordExpense({ accountId: commission.id, amount: 40000, category: 'Fuel' }, null),
-    /only holds the record of rep commission/i,
+    () => finance.recordExpense({ accountId: commission.id, amount: 40000, category: 'Fuel', description: 'Fuel for the van' }, null),
+    /only holds the record of rep commission|not a wallet/i,
   );
 });
 

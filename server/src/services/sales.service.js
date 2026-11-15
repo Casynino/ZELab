@@ -27,6 +27,22 @@ function resolveSource({ salesRepId, warehouseId }) {
 }
 
 // Compute a priced line from raw input + product/packaging data.
+// Money handed back (a cancelled sale, a refund) leaves its accounts: each must hold its share (15 Nov 2026), checked
+// under the account's lock in the caller's transaction, accounts in a fixed order so two refunds never deadlock.
+async function assertCashBack(tx, takes, what) {
+  const finance = require('./finance.service'); // lazy: avoids an import cycle
+  const byAccount = new Map();
+  takes.forEach((t) => { if (t.accountId && t.amount > 0) byAccount.set(t.accountId, round2((byAccount.get(t.accountId) || 0) + t.amount)); });
+  // Money filed on the Commission record never sat in a wallet, so handing it back takes nothing from one.
+  const records = byAccount.size
+    ? await tx.businessAccount.findMany({ where: { id: { in: [...byAccount.keys()] }, type: 'COMMISSION' }, select: { id: true } })
+    : [];
+  const skip = new Set(records.map((r) => r.id));
+  for (const accountId of [...byAccount.keys()].sort()) {
+    if (!skip.has(accountId)) await finance.assertFunds(tx, accountId, byAccount.get(accountId), what);
+  }
+}
+
 function priceLine(input, product, packaging) {
   const factor = packaging.baseQuantity;
   const baseQuantity = input.quantity * factor;
@@ -438,7 +454,10 @@ async function cancelSaleTx(tx, id, actor, reason, opts = {}) {
 
   // Reverse the money: remove the ledger income posted for this sale so the
   // account gives the cash back. The backfill skips cancelled sales, so the
-  // row will never be re-created.
+  // row will never be re-created. The cash going back must be in the account
+  // (15 Nov 2026: no account below zero) — checked per account under its lock.
+  const incomeRows = await tx.financeTransaction.findMany({ where: { refType: 'Sale', refId: sale.id, direction: 'IN' }, select: { accountId: true, amount: true } });
+  await assertCashBack(tx, incomeRows.map((r) => ({ accountId: r.accountId, amount: toNumber(r.amount) })), `giving back the money of ${sale.saleNumber}`);
   await tx.financeTransaction.deleteMany({ where: { refType: 'Sale', refId: sale.id, direction: 'IN' } });
 
   const line = notesLine || (reason ? `Cancelled: ${reason}` : null);
@@ -571,6 +590,19 @@ async function refundSale(id, { items, reason, version } = {}, actor) {
       });
     }
 
+    // The cash going back comes off the money this sale brought in, newest row first, never below zero — and
+    // only out of what each account really holds (15 Nov 2026).
+    {
+      let plan2 = plan.cashBack;
+      const takes = [];
+      for (const r of moneyRows) {
+        if (plan2 <= 0) break;
+        const take = round2(Math.min(toNumber(r.amount), plan2));
+        if (take > 0) takes.push({ accountId: r.accountId, amount: take });
+        plan2 = round2(plan2 - take);
+      }
+      await assertCashBack(tx, takes, `refunding ${sale.saleNumber}`);
+    }
     // The cash going back comes off the money this sale brought in, newest row first, never below zero.
     // A row is kept (at a smaller amount) rather than deleted: its refId is what stops the backfill from
     // re-creating the sale's income at the full figure.

@@ -232,12 +232,15 @@ model User {
 // ---------------------------------------------------------------------------
 
 model Brand {
-  id          String   @id @default(cuid())
-  name        String   @unique
-  description String?
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id                 String   @id @default(cuid())
+  name               String   @unique
+  description        String?
+  isActive           Boolean  @default(true)
+  // A brand whose money goes into another brand's account (Pepa pays into Civlily's Airtel Money, 15 Nov 2026):
+  // reps settle it there, and that brand-reserved account accepts it as its own.
+  settlesWithBrandId String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
   products        Product[]
   commissionRates CommissionRate[]
@@ -1581,25 +1584,29 @@ model BusinessAccount {
 }
 
 model FinanceTransaction {
-  id          String           @id @default(cuid())
-  txnNumber   String           @unique
-  accountId   String
-  account     BusinessAccount  @relation(fields: [accountId], references: [id], onDelete: Restrict)
-  direction   FinanceDirection
-  type        FinanceTxnType   @default(INCOME)
-  amount      Decimal          @db.Decimal(16, 2)
-  brandId     String? // which brand this money belongs to (null = general business)
-  category    String? // expense category or income source label
-  description String?
-  reference   String? // human reference, e.g. a settlement/sale number
-  refType     String? // 'Settlement' | 'Sale' | 'Expense' | ...
-  refId       String?
-  receiptUrl  String?
-  notes       String?
-  occurredAt  DateTime         @default(now())
-  createdById String?
-  createdAt   DateTime         @default(now())
-  updatedAt   DateTime         @updatedAt
+  id           String           @id @default(cuid())
+  txnNumber    String           @unique
+  accountId    String
+  account      BusinessAccount  @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  direction    FinanceDirection
+  type         FinanceTxnType   @default(INCOME)
+  amount       Decimal          @db.Decimal(16, 2)
+  brandId      String? // which brand this money belongs to (null = general business)
+  category     String? // expense category or income source label
+  description  String?
+  reference    String? // human reference, e.g. a settlement/sale number
+  refType      String? // 'Settlement' | 'Sale' | 'Expense' | ...
+  refId        String?
+  // One per press of a form (expense, income, owner money, transfer): a double tap finds it and records nothing.
+  clientKey    String?          @unique
+  // A reversal names the entry it undoes (same account and kind, minus the amount). Unique: reversed once.
+  reversalOfId String?          @unique
+  receiptUrl   String?
+  notes        String?
+  occurredAt   DateTime         @default(now())
+  createdById  String?
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
 
   @@index([accountId])
   @@index([direction])

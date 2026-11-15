@@ -119,6 +119,8 @@ function world({ commissionEarned = 300000, tiers = TIERS, legacyPaidAt = null }
         hit.forEach((w) => Object.assign(w, data));
         return { count: hit.length };
       },
+      // Paying writes PAID with update, inside the withdrawal's own transaction (15 Nov 2026).
+      update: async ({ where, data }) => Object.assign(t.withdrawals.find((w) => w.id === where.id), data),
       groupBy: async ({ where }) => {
         const by = new Map();
         t.withdrawals.filter((w) => matches(w, where)).forEach((w) => by.set(w.status, (by.get(w.status) || 0) + w.amount));
@@ -164,6 +166,10 @@ function world({ commissionEarned = 300000, tiers = TIERS, legacyPaidAt = null }
     createIfAbsent: async () => {},
   });
   stub('../src/services/penalty.service', { penaltyBreakdownForRep: async () => ({ total: 0, breakdown: [] }) });
+  // A payout comes off a business account (15 Nov 2026); the money side is tested on a real database in
+  // finance-business-money.db.test.js. Here it only records that it was asked, once per payout.
+  const payouts = [];
+  stub('../src/services/finance.service', { recordPayoutFromAccount: async (_tx, w, opts) => { payouts.push({ id: w.id, ...opts }); return {}; } });
   const bonus = fresh('../src/services/bonus.service');
   const commission = fresh('../src/services/commission.service');
 
@@ -172,7 +178,7 @@ function world({ commissionEarned = 300000, tiers = TIERS, legacyPaidAt = null }
   const ask = (amount, source = 'BONUS') => commission.requestWithdrawal('r1', amount, null, { id: 'u1' }, { source });
   const admin = { id: 'admin', role: 'ADMIN' };
   const staff = { id: 'staff', role: 'WAREHOUSE_STAFF' };
-  return { t, bonus, commission, notices, sell, ask, admin, staff };
+  return { t, bonus, commission, notices, sell, ask, admin, staff, payouts };
 }
 
 const wallet = async (bonus) => (await bonus.progressForRep('r1')).wallet;
@@ -340,7 +346,7 @@ test('a paid bonus starts the next cycle from the request; earlier sales never c
   const w = await ask(500000);
   await later();
   sell(4000000); // after the request: the new cycle
-  const paid = await commission.decideWithdrawal(w.id, 'PAY', admin);
+  const paid = await commission.decideWithdrawal(w.id, 'PAY', admin, { accountId: 'cash' });
   assert.equal(paid.status, 'PAID');
   let p = await bonus.progressForRep('r1');
   assert.equal(new Date(p.cycleStart).getTime(), new Date(w.requestedAt).getTime());
@@ -394,12 +400,12 @@ test('only the owner pays a bonus withdrawal; staff may still pay commission', a
   sell(10000000);
   await bonus.creditMilestones('r1');
   const bw = await ask(500000);
-  await assert.rejects(commission.decideWithdrawal(bw.id, 'PAY', staff), (e) => e.statusCode === 403);
+  await assert.rejects(commission.decideWithdrawal(bw.id, 'PAY', staff, { accountId: 'cash' }), (e) => e.statusCode === 403);
   assert.equal(t.withdrawals.find((w) => w.id === bw.id).status, 'PENDING', 'nothing changed');
   await commission.decideWithdrawal(bw.id, 'APPROVE', staff); // approving moves no money
-  assert.equal((await commission.decideWithdrawal(bw.id, 'PAY', admin)).status, 'PAID');
+  assert.equal((await commission.decideWithdrawal(bw.id, 'PAY', admin, { accountId: 'cash' })).status, 'PAID');
   const cw = await ask(300000, 'COMMISSION');
-  assert.equal((await commission.decideWithdrawal(cw.id, 'PAY', staff)).status, 'PAID');
+  assert.equal((await commission.decideWithdrawal(cw.id, 'PAY', staff, { accountId: 'cash' })).status, 'PAID');
 });
 
 test('a bonus paid by hand before the wallet starts the cycle and is never withdrawable', async () => {
@@ -428,7 +434,7 @@ test('every withdrawal from before reads as COMMISSION and commission figures st
   assert.equal(before.available, 250000);
   sell(15000000);
   const bw = await commission.requestWithdrawal('r1', 1000000, null, { id: 'u1' }, { source: 'BONUS' });
-  await commission.decideWithdrawal(bw.id, 'PAY', admin);
+  await commission.decideWithdrawal(bw.id, 'PAY', admin, { accountId: 'cash' });
   const after = await commission.computeForRep('r1');
   for (const k of ['earned', 'paid', 'pending', 'pendingRequests', 'penalties', 'available', 'eligible']) {
     assert.deepEqual(after[k], before[k], `commission ${k} moved`);
@@ -451,7 +457,7 @@ test('award states for the admin: in the wallet, requested, paid', async () => {
   let a = (await bonus.listAwards())[0];
   assert.equal(a.state, 'REQUESTED');
   assert.equal(a.withdrawal.id, w.id);
-  await commission.decideWithdrawal(w.id, 'PAY', admin);
+  await commission.decideWithdrawal(w.id, 'PAY', admin, { accountId: 'cash' });
   a = (await bonus.listAwards())[0];
   assert.equal(a.state, 'PAID');
   const s = await bonus.summaryAllReps();

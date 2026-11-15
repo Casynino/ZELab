@@ -56,6 +56,7 @@ const prismaStub = {
   },
   financeTransaction: {
     findMany: async ({ where, orderBy, skip = 0, take }) => {
+      if (where?.reversalOfId) return []; // no reversals among these rows
       const rows = sortRows(onAccount(where), orderBy);
       return rows.slice(skip, take == null ? undefined : skip + take);
     },

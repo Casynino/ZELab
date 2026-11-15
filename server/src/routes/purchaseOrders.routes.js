@@ -7,7 +7,7 @@ const validate = require('../middleware/validate');
 const ctrl = require('../controllers/purchases.controller');
 const {
   poCreate, poUpdate, poReceive, poQuery,
-  poConfirmPurchase, poDispatch, poReceiveCargo, poLinesQuery, poAddCost,
+  poConfirmPurchase, poUndoPurchase, poReceiveCargo, poLinesQuery, poAddCost,
 } = require('../validators/phase2.validator');
 const { idParam } = require('../validators/common.validator');
 
@@ -26,7 +26,7 @@ router.put('/:id', owner, validate({ ...idParam, ...poUpdate }), ctrl.updatePO);
 router.post('/:id/receive', owner, validate({ ...idParam, ...poReceive }), ctrl.receivePO); // orders from before the cash-only flow
 router.delete('/:id', owner, validate(idParam), ctrl.deletePO); // only a draft
 router.post('/:id/purchase', owner, validate({ ...idParam, ...poConfirmPurchase }), ctrl.confirmPurchase);
-router.post('/:id/dispatch', owner, validate({ ...idParam, ...poDispatch }), ctrl.dispatchPO);
+router.post('/:id/undo-purchase', owner, validate({ ...idParam, ...poUndoPurchase }), ctrl.undoPurchase);
 router.post('/:id/costs', owner, validate({ ...idParam, ...poAddCost }), ctrl.addCost);
 router.post('/:id/receive-cargo', owner, validate({ ...idParam, ...poReceiveCargo }), ctrl.receiveCargo);
 

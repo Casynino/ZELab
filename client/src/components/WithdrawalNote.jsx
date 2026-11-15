@@ -107,7 +107,7 @@ export function withdrawalState({ commission = {}, latest = null, firstName = ''
       title: forOwner ? `Paid to ${they}` : `Paid — well done${who}`,
       value: formatCurrency(latest.amount),
       line: forOwner
-        ? `Paid ${formatDateTime(latest.paidAt || latest.decidedAt || latest.requestedAt)}, from your own pocket. Recorded on the Commission account.`
+        ? `Paid ${formatDateTime(latest.paidAt || latest.decidedAt || latest.requestedAt)}. Recorded in Finance.`
         : `Paid out ${formatDateTime(latest.paidAt || latest.decidedAt || latest.requestedAt)}. Earned on ${earnedOn(commission)}. Keep settling and the next one builds from here.`,
     };
   }

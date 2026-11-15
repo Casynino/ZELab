@@ -22,6 +22,10 @@ import { formatCurrency, formatNumber, formatDate, formatDateTime, sharePercents
 import { eatISODate, eatDay } from '@/lib/tz';
 import { statementRows, poPayCap } from '@/lib/financeFigures';
 import { figuresAreLive, correctionFrom } from '@/lib/freshness';
+import { wentThrough } from '@/lib/once';
+
+// One key per opened money form (15 Nov 2026): a double tap, or a retry after a lost answer, is recorded once.
+const newKey = () => (globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `k-${Date.now()}-${Math.round(Math.random() * 1e9)}`);
 import { refreshAfter } from '@/lib/afterWrite';
 import { DonutChart, BarChartCard, TrendChart, BarsWithLine } from '@/components/charts';
 import {
@@ -48,6 +52,8 @@ const ACCOUNT_TINT = [
 const TXN_TYPE_LABEL = {
   SETTLEMENT: 'Settlement received', WAREHOUSE_SALE: 'Warehouse sale', INCOME: 'Income',
   EXPENSE: 'Expense', STOCK_PURCHASE: 'Stock purchase', COMMISSION_PAYMENT: 'Commission paid',
+  // Rep commission and bonuses paid from a business account (15 Nov 2026), shown apart from other expenses.
+  REP_COMMISSION: 'Rep commissions',
   TRANSFER: 'Transfer', ADJUSTMENT: 'Adjustment',
   // the owner's own money, in the words of the Overview buttons ("Put my money in" / "Take profit out")
   OWNER_CONTRIBUTION: 'Your money in', OWNER_DRAWING: 'Profit taken out',
@@ -262,16 +268,17 @@ function TransferModal({ accounts: all, onClose }) {
   const [amount, setAmount] = useState('');
   const [notes, setNotes] = useState('');
   const from = accounts.find((a) => a.id === fromId);
+  const key = useRef(newKey());
 
   const save = useMutation({
-    mutationFn: () => api.post('/finance/transfers', { fromAccountId: fromId, toAccountId: toId, amount: Number(amount), notes }),
+    mutationFn: () => api.post('/finance/transfers', { fromAccountId: fromId, toAccountId: toId, amount: Number(amount), notes, clientKey: key.current }),
     onSuccess: (res) => {
       const d = unwrap(res).data;
       toast.success(`Moved ${formatCurrency(d.amount)} from ${d.from} to ${d.to}`);
       invalidateFinance(qc);
       onClose();
     },
-    onError: (e) => toast.error(apiError(e)),
+    onError: (e) => { if (wentThrough(e)) { toast.success('Already recorded'); invalidateFinance(qc); onClose(); return; } toast.error(apiError(e), { duration: 9000 }); },
   });
 
   const valid = fromId && toId && fromId !== toId && Number(amount) > 0;
@@ -362,6 +369,9 @@ function MoneyModal({ mode, accounts: all, categories, onClose }) {
     occurredAt: eatISODate(), notes: '', newCategory: '', brandId: '',
   });
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+  const key = useRef(newKey());
+  const paidFrom = accounts.find((a) => a.id === form.accountId);
+  const short = isExpense && paidFrom ? Math.max(0, (Number(form.amount) || 0) - Number(paidFrom.balance || 0)) : 0;
   const save = useMutation({
     mutationFn: async () => {
       let category = form.category;
@@ -376,14 +386,15 @@ function MoneyModal({ mode, accounts: all, categories, onClose }) {
         category: category || undefined, description: form.description.trim() || undefined,
         occurredAt: form.occurredAt, notes: form.notes.trim() || undefined,
         brandId: form.brandId || undefined,
+        clientKey: key.current,
       });
     },
     onSuccess: () => { toast.success(isExpense ? 'Expense recorded' : 'Income recorded'); invalidateFinance(qc); onClose(); },
     // apiError words a dropped connection and keeps a plain Error's own message (the new-category check).
-    onError: (e) => toast.error(apiError(e)),
+    onError: (e) => { if (wentThrough(e)) { toast.success('Already recorded'); invalidateFinance(qc); onClose(); return; } toast.error(apiError(e), { duration: 9000 }); },
   });
-  const valid = form.accountId && Number(form.amount) > 0
-    && (!isExpense || (form.category && (form.category !== NEW_CATEGORY || form.newCategory.trim())));
+  const valid = form.accountId && Number(form.amount) > 0 && !short
+    && (!isExpense || (form.description.trim() && form.category && (form.category !== NEW_CATEGORY || form.newCategory.trim())));
   return (
     <Modal open onClose={onClose} title={isExpense ? 'Record expense' : 'Record income'}
       footer={<><Button variant="secondary" onClick={onClose}>Cancel</Button><Button loading={save.isPending} disabled={!valid} onClick={() => save.mutate()}>{isExpense ? 'Save expense' : 'Save income'}</Button></>}>
@@ -406,6 +417,11 @@ function MoneyModal({ mode, accounts: all, categories, onClose }) {
             {accounts.map((a) => <option key={a.id} value={a.id}>{a.name} — {formatCurrency(a.balance)}</option>)}
           </Select>
         </Field>
+        {short > 0 && (
+          <p className="rounded-lg bg-rose-500/10 px-3 py-2 text-xs text-rose-300 ring-1 ring-rose-500/20">
+            {paidFrom.name} holds {formatCurrency(paidFrom.balance)} — {formatCurrency(short)} short. If you are paying with your own money, record it first with Put my money in.
+          </p>
+        )}
         <Field label={isExpense ? 'Which brand is this coming out of' : 'Which brand is this money behind'}
           hint="Leave blank if it is not for one brand in particular.">
           <Select value={form.brandId} onChange={set('brandId')}>
@@ -414,7 +430,7 @@ function MoneyModal({ mode, accounts: all, categories, onClose }) {
           </Select>
         </Field>
         <Field label="Date"><Input type="date" value={form.occurredAt} onChange={set('occurredAt')} /></Field>
-        <Field label="Description"><Input value={form.description} onChange={set('description')} placeholder="What was this for?" /></Field>
+        <Field label="Description" required={isExpense}><Input value={form.description} onChange={set('description')} placeholder="What was this for?" /></Field>
         <Field label="Notes"><Textarea rows={2} value={form.notes} onChange={set('notes')} /></Field>
       </div>
     </Modal>
@@ -434,10 +450,14 @@ function OwnerMoneyModal({ mode, accounts: all, onClose }) {
     accountId: accounts.find((a) => a.isDefault)?.id || accounts[0]?.id || '',
     brandId: '',
     occurredAt: eatISODate(),
-    description: isIn ? 'Commission paid from my own pocket' : '',
+    description: isIn ? 'Money put into the business' : '',
     notes: '',
   });
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+  const key = useRef(newKey());
+  const acct = accounts.find((a) => a.id === form.accountId);
+  // Taking profit out can only take what the account holds.
+  const short = !isIn && acct ? Math.max(0, (Number(form.amount) || 0) - Number(acct.balance || 0)) : 0;
   const save = useMutation({
     mutationFn: () => api.post('/finance/owner-money', {
       direction: isIn ? 'IN' : 'OUT',
@@ -447,15 +467,16 @@ function OwnerMoneyModal({ mode, accounts: all, onClose }) {
       occurredAt: form.occurredAt,
       description: form.description.trim() || (isIn ? 'Owner put money in' : 'Owner took profit out'),
       notes: form.notes.trim() || undefined,
+      clientKey: key.current,
     }),
     onSuccess: () => {
       toast.success(isIn ? 'Recorded — your money is in the business' : 'Recorded — profit taken out');
       invalidateFinance(qc);
       onClose();
     },
-    onError: (e) => toast.error(apiError(e)),
+    onError: (e) => { if (wentThrough(e)) { toast.success('Already recorded'); invalidateFinance(qc); onClose(); return; } toast.error(apiError(e), { duration: 9000 }); },
   });
-  const valid = form.accountId && Number(form.amount) > 0;
+  const valid = form.accountId && Number(form.amount) > 0 && !short;
   return (
     <Modal open onClose={onClose} title={isIn ? 'Put my own money in' : 'Take profit out'}
       footer={<><Button variant="secondary" onClick={onClose}>Cancel</Button>
@@ -1599,8 +1620,9 @@ function Accounts({ onQuick, onNavigate }) {
               const acc = accounts.find((a) => a.id === t.accountId);
               const idx = acc && !acc.isCommissionRecord ? colourIdx(acc) : null;
               const payout = isPayoutRow(t);
-              const tone = payout ? 'text-violet-300' : t.direction === 'IN' ? 'text-emerald-300' : 'text-rose-300';
-              const sign = payout ? '' : t.direction === 'IN' ? '+' : '−';
+              // A reversal carries minus the amount: the sign follows the money (signedOf), not just the direction.
+              const tone = payout ? 'text-violet-300' : signedOf(t) >= 0 ? 'text-emerald-300' : 'text-rose-300';
+              const sign = payout ? '' : signedOf(t) >= 0 ? '+' : '−';
               const what = (payout && t.payee ? `Commission to ${t.payee}` : t.description) || t.category || TXN_TYPE_LABEL[t.type] || t.type;
               return (
                 <li key={t.id} className={`border-b border-white/[0.06] last:border-0 ${k === 3 ? 'lg:border-0' : ''}`}>
@@ -1614,7 +1636,7 @@ function Accounts({ onQuick, onNavigate }) {
                       </span>
                     </span>
                     <span className={`shrink-0 whitespace-nowrap text-[13px] font-semibold tabular-nums ${tone}`}>
-                      {hidden ? '•••' : `${sign}${formatCurrency(t.amount)}`}
+                      {hidden ? '•••' : `${sign}${formatCurrency(payout ? t.amount : Math.abs(Number(t.amount)))}`}
                     </span>
                   </button>
                 </li>
@@ -1654,11 +1676,9 @@ function Ledger({ expensesOnly }) {
     ...pageQueries.financeTransactions({ page, account, type, brand, category, search, expensesOnly }),
     placeholderData: keepOnPageTurn({ account, type, brand, category, expensesOnly }),
   });
-  const del = useMutation({
-    mutationFn: (id) => api.delete(`/finance/transactions/${id}`, { data: { reason: 'Removed from finance ledger' } }),
-    onSuccess: () => { toast.success('Transaction deleted'); invalidateFinance(qc); },
-    onError: (e) => toast.error(apiError(e)),
-  });
+  // Recorded money is reversed, never deleted (15 Nov 2026): the opposite entry is recorded beside it. Owner only.
+  const isAdmin = useAuth().user?.role === ROLES.ADMIN;
+  const [reversing, setReversing] = useState(null);
   const rows = data?.data || [];
   const sums = data?.meta?.sums;
   const byCategory = data?.meta?.byCategory || [];
@@ -1769,24 +1789,20 @@ function Ledger({ expensesOnly }) {
                       <div className="text-[10px] font-normal text-faint">from your pocket</div>
                     </TD>
                   ) : (
-                    <TD className={`text-right font-semibold tabular-nums ${t.direction === 'IN' ? 'text-emerald-500' : 'text-rose-500'}`}>{t.direction === 'IN' ? '+' : '−'}{formatCurrency(t.amount)}</TD>
+                    // A reversal carries minus the amount, so the sign follows the money, not just the direction.
+                    <TD className={`text-right font-semibold tabular-nums ${signedOf(t) >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                      {signedOf(t) >= 0 ? '+' : '−'}{formatCurrency(Math.abs(Number(t.amount)))}
+                      {t.reversedBy && <span className="block text-[10px] font-normal text-faint">reversed · {t.reversedBy}</span>}
+                      {t.reversalOfId && <span className="block text-[10px] font-normal text-faint">reversal</span>}
+                    </TD>
                   )}
                   <TD>
                     <div className="flex items-center justify-end gap-2">
                       <button title="Correct this transaction" aria-label="Correct this transaction" onClick={() => setEditing(t)} className="flex h-11 w-11 items-center justify-center text-faint hover:text-brand-600 sm:h-auto sm:w-auto"><Pencil className="h-4 w-4" /></button>
-                      {/* Asks first and ignores repeat taps (audit #22): one tap used to delete the row —
-                          both legs of a transfer — with nothing to stop a slip of the finger. */}
-                      <button
-                        title="Delete"
-                        disabled={del.isPending}
-                        onClick={() => {
-                          const what = `${t.txnNumber || 'this entry'} (${formatCurrency(t.amount)})`;
-                          const legs = t.type === 'TRANSFER' ? ' Both sides of the transfer will be removed.' : '';
-                          if (confirm(`Delete ${what}? This cannot be undone.${legs}`)) del.mutate(t.id);
-                        }}
-                        aria-label="Delete"
-                        className="flex h-11 w-11 items-center justify-center text-faint hover:text-rose-500 disabled:opacity-40 sm:h-auto sm:w-auto"
-                      ><Trash2 className="h-4 w-4" /></button>
+                      {isAdmin && canReverse(t, data?.meta?.epochAt) && (
+                        <button title="Reverse — record the opposite entry" aria-label="Reverse this entry" onClick={() => setReversing(t)}
+                          className="flex h-11 w-11 items-center justify-center text-faint hover:text-rose-500 sm:h-auto sm:w-auto"><Undo2 className="h-4 w-4" /></button>
+                      )}
                     </div>
                   </TD>
                 </TR>
@@ -1797,6 +1813,7 @@ function Ledger({ expensesOnly }) {
         </>
       )}
       {editing && <EditTxnModal txn={editing} accounts={accounts} brands={brands} onClose={() => setEditing(null)} />}
+      {reversing && <ReverseTxnModal txn={reversing} onClose={() => setReversing(null)} />}
       </Card>
     </div>
   );
@@ -1805,28 +1822,49 @@ function Ledger({ expensesOnly }) {
 // Correct a mis-recorded transaction: move it to the right account, fix the
 // brand/date/description — with a mandatory reason for the audit trail.
 // Amounts on sale-linked money stay locked (the sale document is the truth).
+// The sign of an entry's effect on its account: + money in, − money out (a reversal flips it).
+const signedOf = (t) => (t.direction === 'IN' ? 1 : -1) * Number(t.amount || 0);
+// Typed-in money only, never reversed yet, not itself a reversal (the server says the same).
+const REVERSIBLE = ['INCOME', 'EXPENSE', 'STOCK_PURCHASE', 'OWNER_CONTRIBUTION', 'OWNER_DRAWING', 'ADJUSTMENT', 'TRANSFER'];
+// A supplier or older order payment can be reversed too (a Confirm purchase payment is undone on the order —
+// the server says so). Never money from before the books started: it is in no balance.
+const canReverse = (t, epochAt) => REVERSIBLE.includes(t.type) && !t.reversedBy && !t.reversalOfId
+  && (!t.refType || t.type === 'TRANSFER' || (t.type === 'STOCK_PURCHASE' && ['Supplier', 'PurchaseOrder'].includes(t.refType)))
+  && !(epochAt && new Date(t.occurredAt) < new Date(epochAt));
+
+function ReverseTxnModal({ txn, onClose }) {
+  const qc = useQueryClient();
+  const [reason, setReason] = useState('');
+  const save = useMutation({
+    mutationFn: () => api.post(`/finance/transactions/${txn.id}/reverse`, { reason: reason.trim() }),
+    onSuccess: () => { toast.success(`${txn.txnNumber} reversed`); invalidateFinance(qc); onClose(); },
+    onError: (e) => { if (wentThrough(e)) { toast.success('Already reversed'); invalidateFinance(qc); onClose(); return; } toast.error(apiError(e), { duration: 9000 }); },
+  });
+  return (
+    <Modal open onClose={onClose} title={`Reverse ${txn.txnNumber || 'entry'}`}
+      footer={<><Button variant="secondary" onClick={onClose}>Keep it</Button><Button variant="danger" loading={save.isPending} disabled={reason.trim().length < 3} onClick={() => save.mutate()}>Reverse</Button></>}>
+      <div className="space-y-4">
+        <p className="text-sm text-muted">
+          Records the opposite entry for {formatCurrency(Math.abs(Number(txn.amount)))} on the same account{txn.type === 'TRANSFER' ? ', on both sides of the transfer' : ''}.
+          Nothing is deleted — both stay in the ledger. If the amount or account was wrong, record it again correctly afterwards.
+        </p>
+        <Field label="Why" required><Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. Typed 40,000 instead of 4,000" autoFocus /></Field>
+      </div>
+    </Modal>
+  );
+}
+
 function EditTxnModal({ txn, accounts, brands, onClose }) {
   const qc = useQueryClient();
-  const saleLinked = txn.refType === 'Sale';
-  const [accountId, setAccountId] = useState(txn.accountId || '');
   const [brandId, setBrandId] = useState(txn.brandId || '');
-  const [amount, setAmount] = useState(String(txn.amount ?? ''));
   const [occurredAt, setOccurredAt] = useState(txn.occurredAt ? eatISODate(txn.occurredAt) : '');
   const [description, setDescription] = useState(txn.description || '');
   const [reason, setReason] = useState('');
 
-  // Brand-reserved accounts only accept their own brand's money.
-  // Wallets only — plus the row's own account, so a commission row still shows
-  // where it is filed instead of an empty box.
-  const accountOptions = accounts
-    .filter((a) => !a.isCommissionRecord || a.id === txn.accountId)
-    .filter((a) => !a.brandId || !brandId || a.brandId === brandId);
-
   const save = useMutation({
+    // The amount and the account are final once recorded (15 Nov 2026): a wrong one is reversed and recorded again.
     mutationFn: () => api.put(`/finance/transactions/${txn.id}`, {
-      accountId,
       brandId: brandId || null,
-      ...(saleLinked ? {} : { amount: Number(amount) }),
       occurredAt,
       description,
       reason,
@@ -1839,24 +1877,13 @@ function EditTxnModal({ txn, accounts, brands, onClose }) {
     <Modal open onClose={onClose} title={`Correct ${txn.txnNumber || 'transaction'}`} footer={
       <>
         <Button variant="secondary" onClick={onClose}>Cancel</Button>
-        <Button loading={save.isPending} disabled={!accountId || !reason.trim() || !(saleLinked || Number(amount) > 0)} onClick={() => save.mutate()}>Save correction</Button>
+        <Button loading={save.isPending} disabled={!reason.trim()} onClick={() => save.mutate()}>Save correction</Button>
       </>
     }>
       <div className="space-y-4">
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Field label="Account" required hint="Where the money actually is">
-            <Select value={accountId} onChange={(e) => setAccountId(e.target.value)}>
-              {/* A row filed against a retired account has no option of its own:
-                  the select would show the FIRST option's name while state
-                  still held the old id, so Save looked like it worked and moved
-                  nothing. Show where it actually sits, and make it unpickable. */}
-              {txn.accountId && !accountOptions.some((a) => a.id === txn.accountId) && (
-                <option value={txn.accountId} disabled>
-                  {(accounts.find((a) => a.id === txn.accountId) || {}).name || 'Retired account'} — closed, pick a new one
-                </option>
-              )}
-              {accountOptions.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-            </Select>
+          <Field label="Account" hint="Final once recorded — reverse the entry to change it">
+            <Input value={(accounts.find((a) => a.id === txn.accountId) || {}).name || '—'} disabled />
           </Field>
           <Field label="Brand">
             <Select value={brandId} onChange={(e) => setBrandId(e.target.value)}>
@@ -1864,8 +1891,8 @@ function EditTxnModal({ txn, accounts, brands, onClose }) {
               {brands.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
             </Select>
           </Field>
-          <Field label="Amount" hint={saleLinked ? 'Locked — comes from the sale. Recall the sale to change it.' : undefined}>
-            <NumberInput min="0" value={amount} disabled={saleLinked} onChange={(e) => setAmount(e.target.value)} />
+          <Field label="Amount" hint="Final once recorded — reverse the entry to change it">
+            <Input value={formatCurrency(Math.abs(Number(txn.amount)))} disabled />
           </Field>
           <Field label="Date">
             <Input type="date" value={occurredAt} onChange={(e) => setOccurredAt(e.target.value)} />
@@ -2187,7 +2214,7 @@ const OUT_HEX = ['#fb7185', '#fbbf24', '#a78bfa', '#38bdf8', '#f472b6'];
 // the index colours above are only for a kind not named here (his own money is never in these lists).
 const TYPE_HEX = {
   SETTLEMENT: '#34d399', WAREHOUSE_SALE: '#38bdf8', INCOME: '#f472b6', ADJUSTMENT: '#a78bfa',
-  EXPENSE: '#fb7185', STOCK_PURCHASE: '#fbbf24', COMMISSION_PAYMENT: '#fb923c', TRANSFER: '#94a3b8',
+  EXPENSE: '#fb7185', STOCK_PURCHASE: '#fbbf24', COMMISSION_PAYMENT: '#fb923c', REP_COMMISSION: '#fb923c', TRANSFER: '#94a3b8',
 };
 // The month table's cells: a little tighter than TH_CLS / TD_NUM on a phone, so four columns of money fit at 390 px.
 const CF_TH = 'w-px whitespace-nowrap px-2 py-2 text-right font-semibold sm:px-3';

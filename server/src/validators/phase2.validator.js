@@ -85,8 +85,10 @@ const poQuery = {
 };
 // Cash-only purchasing (15 Nov 2026).
 const count = z.number().int().min(0).max(1000000);
-const poConfirmPurchase = { body: z.object({ accountId: id.optional(), occurredAt: dateStr, notes: z.string().max(500).optional().nullable() }) };
-const poDispatch = { body: z.object({ dispatchedAt: dateStr, expectedArrival: dateStr }) };
+const poConfirmPurchase = {
+  body: z.object({ accountId: id.optional(), occurredAt: dateStr, expectedArrival: dateStr, notes: z.string().max(500).optional().nullable() }),
+};
+const poUndoPurchase = { body: z.object({ reason: z.string().trim().min(3, 'Say why the purchase is being undone').max(500) }) };
 const poReceiveCargo = {
   body: z.object({
     // One per press of the form (a uuid): a double tap or a retry is recognised and adds nothing.
@@ -193,7 +195,14 @@ const WITHDRAWAL_SOURCES = ['COMMISSION', 'BONUS'];
 const withdrawRequest = {
   body: z.object({ amount: money, notes: z.string().max(500).optional(), source: z.enum(WITHDRAWAL_SOURCES).default('COMMISSION') }),
 };
-const withdrawDecide = { body: z.object({ action: z.enum(['APPROVE', 'REJECT', 'PAY']) }) };
+// PAY names the business account the money leaves (15 Nov 2026); the service refuses a PAY without one.
+const withdrawDecide = {
+  body: z.object({
+    action: z.enum(['APPROVE', 'REJECT', 'PAY']),
+    accountId: id.optional(),
+    occurredAt: z.string().min(4).max(40).optional().nullable(),
+  }),
+};
 const withdrawalQuery = {
   query: z.object({
     ...paginationFields,
@@ -236,7 +245,7 @@ const dailyReportQuery = {
 module.exports = {
   supplierCreate, supplierUpdate, supplierQuery,
   poCreate, poUpdate, poReceive, poQuery,
-  poConfirmPurchase, poDispatch, poReceiveCargo, poLinesQuery, poAddCost,
+  poConfirmPurchase, poUndoPurchase, poReceiveCargo, poLinesQuery, poAddCost,
   stockRequestCreate, stockRequestUpdate, stockRequestApprove, stockRequestReject, stockRequestQuery,
   settlementQuery, settlementSettle, settlementSettleBoxes, settlementSettleMany, settlementExtendDeadline,
   withdrawRequest, withdrawDecide, withdrawalQuery,

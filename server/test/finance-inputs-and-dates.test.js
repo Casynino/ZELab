@@ -23,16 +23,28 @@ const accounts = new Map([
 const created = [];
 const updates = [];
 let existingRow = null;
-stub('../src/config/prisma', {
-  businessAccount: { findUnique: async ({ where }) => accounts.get(where.id) || null },
+// Money out is checked against the account's balance under a row lock (15 Nov 2026): these accounts hold plenty.
+const db = {
+  businessAccount: {
+    findUnique: async ({ where }) => accounts.get(where.id) || null,
+    findMany: async ({ where } = {}) => [...accounts.values()].filter((a) => !where?.id || a.id === where.id).map((a) => ({ ...a, openingBalance: 10_000_000 })),
+    count: async () => accounts.size,
+  },
+  expenseCategory: { count: async () => 1 },
+  brand: { findUnique: async () => ({ settlesWithBrandId: null }) }, // no brand here pays into another's account
+  $queryRaw: async () => [{ id: 'locked' }],
   financeTransaction: {
+    groupBy: async () => [],
+    count: async () => 0, // no reversals
     findMany: async () => [],
     create: async ({ data }) => { created.push(data); return { id: `t${created.length}`, ...data }; },
     findUnique: async () => existingRow,
     findFirst: async () => null,
     update: async ({ data }) => { updates.push(data); return { ...existingRow, ...data }; },
   },
-});
+};
+db.$transaction = async (fn) => fn(db);
+stub('../src/config/prisma', db);
 stub('../src/services/reports.service', { financeEpoch: async () => null });
 const finance = require('../src/services/finance.service');
 const v = require('../src/validators/finance.validator');
@@ -48,7 +60,7 @@ test('a hand-typed entry never keeps a link to a sale, order, supplier or payout
   assert.deepEqual(Object.keys(body).sort(), ['accountId', 'amount', 'category']);
 
   // And the service drops them even when called without the route in front of it.
-  await finance.recordExpense({ accountId: 'acc-bank', amount: 5000, category: 'Fuel', refType: 'PurchaseOrder', refId: 'po-1' }, null);
+  await finance.recordExpense({ accountId: 'acc-bank', amount: 5000, category: 'Fuel', refType: 'PurchaseOrder', refId: 'po-1' , description: 'Fuel for the van' }, null);
   await finance.recordIncome({ accountId: 'acc-bank', amount: 7000, refType: 'Sale', refId: 's-1' }, null);
   await finance.recordOwnerMoney({ direction: 'IN', accountId: 'acc-bank', amount: 9000, refType: 'CommissionWithdrawal', refId: 'w-1' }, null);
   created.forEach((row) => {
@@ -61,15 +73,15 @@ test('a hand-typed entry never keeps a link to a sale, order, supplier or payout
 test('a brand-reserved account takes only its own brand\'s money on a new entry, as it already did on a correction', async () => {
   reset();
   for (const record of [finance.recordExpense, finance.recordIncome]) {
-    await assert.rejects(record({ accountId: 'acc-mpesa', amount: 1000, category: 'Fuel', brandId: CIVLILY }, null),
+    await assert.rejects(record({ accountId: 'acc-mpesa', amount: 1000, category: 'Fuel', brandId: CIVLILY, description: 'Fuel for the van' }, null),
       (e) => e.statusCode === 400 && /M-Pesa is reserved for another brand/.test(e.message));
   }
   await assert.rejects(finance.recordOwnerMoney({ direction: 'OUT', accountId: 'acc-mpesa', amount: 1000, brandId: CIVLILY }, null), /reserved/);
   assert.equal(created.length, 0);
 
   // Its own brand, no brand at all, or a general account: all as before.
-  await finance.recordExpense({ accountId: 'acc-mpesa', amount: 1000, category: 'Fuel', brandId: OHIS }, null);
-  await finance.recordExpense({ accountId: 'acc-mpesa', amount: 1000, category: 'Fuel' }, null);
+  await finance.recordExpense({ accountId: 'acc-mpesa', amount: 1000, category: 'Fuel', brandId: OHIS , description: 'Fuel for the van' }, null);
+  await finance.recordExpense({ accountId: 'acc-mpesa', amount: 1000, category: 'Fuel' , description: 'Fuel for the van' }, null);
   await finance.recordIncome({ accountId: 'acc-bank', amount: 1000, brandId: CIVLILY }, null);
   assert.equal(created.length, 3);
 });
@@ -129,7 +141,7 @@ test('a day picked in a finance form is Tanzania\'s: today at 01:30 EAT is recor
   await finance.recordIncome({ accountId: 'acc-bank', amount: 1000, occurredAt: '2026-11-12' }, null);
   assert.equal(created[0].occurredAt.toISOString(), NOW.toISOString());
   // An earlier day keeps the time of day it is in Tanzania now.
-  await finance.recordExpense({ accountId: 'acc-bank', amount: 1000, category: 'Fuel', occurredAt: '2026-11-10' }, null);
+  await finance.recordExpense({ accountId: 'acc-bank', amount: 1000, category: 'Fuel', occurredAt: '2026-11-10' , description: 'Fuel for the van' }, null);
   assert.equal(created[1].occurredAt.toISOString(), '2026-11-09T22:30:00.000Z'); // 10 Nov, 01:30 EAT
   // No date, or a full timestamp: as before.
   await finance.recordIncome({ accountId: 'acc-bank', amount: 1000 }, null);

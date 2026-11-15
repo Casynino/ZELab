@@ -95,9 +95,9 @@ const confirmPurchase = asyncHandler(async (req, res) => {
   return ok(res, po);
 });
 
-const dispatchPO = asyncHandler(async (req, res) => {
-  const po = await purchase.dispatchOrder(req.params.id, req.body, req.user);
-  await audit.record(req, { action: 'DISPATCHED', entityType: 'PurchaseOrder', entityId: po.id, newValues: { poNumber: po.poNumber, dispatchedAt: po.dispatchedAt, expectedArrival: po.expectedArrival } });
+const undoPurchase = asyncHandler(async (req, res) => {
+  const po = await purchase.undoPurchase(req.params.id, req.body, req.user);
+  await audit.record(req, { action: 'PURCHASE_UNDONE', entityType: 'PurchaseOrder', entityId: po.id, newValues: { poNumber: po.poNumber, reason: req.body.reason } });
   return ok(res, po);
 });
 
@@ -126,5 +126,5 @@ const listLines = asyncHandler(async (req, res) => ok(res, await purchase.listPu
 
 module.exports = {
   listSuppliers, createSupplier, updateSupplier, removeSupplier, listPOs, getPO, deletePO, createPO, updatePO, receivePO,
-  confirmPurchase, dispatchPO, addCost, receiveCargo, listLines,
+  confirmPurchase, undoPurchase, addCost, receiveCargo, listLines,
 };

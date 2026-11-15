@@ -751,7 +751,7 @@ async function listWithdrawals(filters, pagination) {
   return { items, total };
 }
 
-async function decideWithdrawal(id, action, actor) {
+async function decideWithdrawal(id, action, actor, { accountId, occurredAt } = {}) {
   const w = await prisma.commissionWithdrawal.findUnique({ where: { id } });
   if (!w) throw ApiError.notFound('Withdrawal request not found');
 
@@ -777,23 +777,40 @@ async function decideWithdrawal(id, action, actor) {
     throw ApiError.badRequest(`Cannot ${action.toLowerCase()} a ${w.status} request`);
   }
 
-  // Claim the decision (audit #31, 11 Nov 2026): the status moves only if it is still the one read above.
-  // Two taps on "Approve & pay", or a PAY racing a REJECT, used to both pass the check and both write —
-  // and every PAID answer records a payout in finance, so one withdrawal could be booked twice. Now
-  // exactly one caller wins; the other is told it was already decided and nothing else happens.
   const now = new Date();
-  const claimed = await prisma.commissionWithdrawal.updateMany({
-    where: { id, status: w.status },
-    data: {
-      status: t.to,
-      decidedAt: now,
-      decidedById: actor ? actor.id : null,
-      ...(t.to === 'PAID' ? { paidAt: now } : {}),
-    },
-  });
-  if (claimed.count !== 1) {
-    const fresh = await prisma.commissionWithdrawal.findUnique({ where: { id }, select: { status: true } });
-    throw ApiError.conflict(`This withdrawal was already ${String(fresh?.status || 'decided').toLowerCase()} — refresh to see it.`);
+  if (t.to === 'PAID') {
+    // Paid from a business account (15 Nov 2026 — reps used to be paid from the owner's pocket, off the books).
+    // The withdrawal is locked, the account checked and charged, and PAID written, all in one transaction: the
+    // money and the status land together or not at all, and a second press finds it paid and pays nothing.
+    const finance = require('./finance.service'); // lazy: avoids an import cycle
+    const { withDocNumberRetry } = require('../utils/numbering');
+    await withDocNumberRetry(() => prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "commission_withdrawals" WHERE id = ${id} FOR UPDATE`;
+      const fresh = await tx.commissionWithdrawal.findUnique({
+        where: { id },
+        include: { salesRep: { select: { user: { select: { name: true } } } } },
+      });
+      if (!t.from.includes(fresh.status)) {
+        throw ApiError.conflict(`This withdrawal was already ${String(fresh.status).toLowerCase()} — refresh to see it.`);
+      }
+      await finance.recordPayoutFromAccount(tx, fresh, { accountId, occurredAt, who: fresh.salesRep?.user?.name }, actor);
+      await tx.commissionWithdrawal.update({
+        where: { id },
+        data: { status: 'PAID', decidedAt: now, decidedById: actor ? actor.id : null, paidAt: now },
+      });
+    }, { timeout: 20000 }));
+  } else {
+    // Claim the decision (audit #31, 11 Nov 2026): the status moves only if it is still the one read above.
+    // Two taps, or an APPROVE racing a REJECT, used to both pass the check and both write. Now exactly one
+    // caller wins; the other is told it was already decided and nothing else happens.
+    const claimed = await prisma.commissionWithdrawal.updateMany({
+      where: { id, status: w.status },
+      data: { status: t.to, decidedAt: now, decidedById: actor ? actor.id : null },
+    });
+    if (claimed.count !== 1) {
+      const fresh = await prisma.commissionWithdrawal.findUnique({ where: { id }, select: { status: true } });
+      throw ApiError.conflict(`This withdrawal was already ${String(fresh?.status || 'decided').toLowerCase()} — refresh to see it.`);
+    }
   }
   const updated = await prisma.commissionWithdrawal.findUnique({ where: { id }, include: WITHDRAWAL_INCLUDE });
 

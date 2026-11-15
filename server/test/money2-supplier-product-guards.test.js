@@ -58,7 +58,7 @@ test('an expense under the "+ New category…" placeholder is refused, in a new 
     financeTransaction: { findUnique: async () => ({ id: 't1', amount: 1000 }), update: async () => { wrote += 1; } },
   }));
   const finance = fresh('../src/services/finance.service');
-  await assert.rejects(async () => finance.recordExpense({ accountId: 'a1', amount: 1000, category: '__new' }, { id: 'admin' }),
+  await assert.rejects(async () => finance.recordExpense({ accountId: 'a1', amount: 1000, category: '__new', description: 'Fuel' }, { id: 'admin' }),
     (e) => e.statusCode === 400 && /name for the new category/.test(e.message));
   await assert.rejects(async () => finance.recordIncome({ accountId: 'a1', amount: 1000, category: ' __new ' }, { id: 'admin' }),
     (e) => e.statusCode === 400);

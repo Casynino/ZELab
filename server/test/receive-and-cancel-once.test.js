@@ -23,7 +23,9 @@ function loadPurchase() {
     purchaseOrderItem: { update: async () => ({}) },
     purchaseReceipt: { count: async () => 0 }, // an older order with no deliveries recorded yet
     $queryRaw: async () => [{ id: 'po1' }], // the order's row lock
-    product: { update: async () => ({}) },
+    // The cost per box is averaged over what is held before new boxes come in (15 Nov 2026).
+    product: { update: async () => ({}), findUnique: async () => ({ purchasePrice: 1000 }) },
+    inventoryTransaction: { aggregate: async () => ({ _sum: { baseQuantity: 0 } }) },
     warehouse: { findFirst: async () => ({ id: 'w1' }) },
   };
   stub('../src/config/prisma', { $transaction: async (fn) => fn(tx), purchaseOrder: { findUnique: async () => ({ ...po }) } });
@@ -57,7 +59,8 @@ test('two Cancel clicks on one sale: the stock goes back once', async () => {
       updateMany: async ({ where, data }) => { await tick(); if (sale.status === 'CANCELLED') return { count: 0 }; Object.assign(sale, data); return { count: 1 }; },
       update: async ({ data }) => Object.assign(sale, data),
     },
-    financeTransaction: { deleteMany: async () => ({ count: 1 }) },
+    // No income rows in this stand-in, so no money has to be checked before it goes back (15 Nov 2026).
+    financeTransaction: { deleteMany: async () => ({ count: 1 }), findMany: async () => [] },
   };
   stub('../src/config/prisma', { $transaction: async (fn) => fn(tx) });
   stub('../src/services/inventory.service', { increaseStock: async () => { moved.stockBack += 1; }, LOCATION: { WAREHOUSE: 'WAREHOUSE', REP: 'REP' } });

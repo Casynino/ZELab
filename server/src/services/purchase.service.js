@@ -7,6 +7,21 @@ const { nextDocNumber, withDocNumberRetry } = require('../utils/numbering');
 const { toNumber, round2, formatCurrency } = require('../utils/money');
 const env = require('../config/env');
 
+// Average cost (15 Nov 2026): when new boxes come in, a product's cost per box becomes the average of what was paid
+// for every box held — warehouse and reps — so a cheaper batch lowers the cost (more profit on every sale) and a dearer
+// one raises it. Every sale records the cost at that moment, so past profits never move. Called BEFORE the new boxes
+// are added. Selling prices are never touched.
+async function averageCostAfter(tx, productId, addBase, addCost) {
+  const [held, product] = await Promise.all([
+    tx.inventoryTransaction.aggregate({ where: { productId }, _sum: { baseQuantity: true } }),
+    tx.product.findUnique({ where: { id: productId }, select: { purchasePrice: true } }),
+  ]);
+  const onHand = Math.max(0, held._sum.baseQuantity || 0);
+  const current = toNumber(product?.purchasePrice);
+  if (!(onHand > 0) || !(current > 0)) return round2(addCost);
+  return round2((onHand * current + addBase * addCost) / (onHand + addBase));
+}
+
 // Six places: a carton price divided by the boxes in a carton (e.g. 100,000 / 24) must multiply back to exactly
 // what was typed once the line total is rounded to shillings.
 const round6 = (n) => Math.round((Number(n) || 0) * 1e6) / 1e6;
@@ -77,16 +92,18 @@ const PO_INCLUDE = {
 const PO_STATE = {
   DRAFT: 'still a draft',
   ORDERED: 'ordered but not paid',
-  PURCHASED: 'already purchased',
-  IN_TRANSIT: 'already dispatched',
+  PURCHASED: 'already bought',
+  IN_TRANSIT: 'already bought and on its way',
   PARTLY_RECEIVED: 'partly received',
   RECEIVED: 'already received',
   CANCELLED: 'cancelled',
 };
 // Before the money is paid: the lines can still change, the order can be deleted or cancelled.
 const NOT_YET_BOUGHT = ['DRAFT', 'ORDERED'];
-// Cargo on its way (or partly in): it can be received.
-const ARRIVING = ['IN_TRANSIT', 'PARTLY_RECEIVED'];
+// Bought and on its way (or partly in): it can be received. Confirm purchase puts an order straight on its way
+// (Nino, 15 Nov 2026: "once I confirm purchased, no need to press dispatch"); PURCHASED is only an order confirmed
+// in the hours before that, treated the same.
+const ARRIVING = ['PURCHASED', 'IN_TRANSIT', 'PARTLY_RECEIVED'];
 
 // Goods cannot be expected before they were ordered (a PO dated "ordered 20 Nov, arriving 1 Nov" was
 // accepted; audit, 11 Nov 2026). Compared by calendar day, so the same day is fine whatever the time.
@@ -177,7 +194,7 @@ async function listPurchaseOrders(filters, pagination) {
     // Bought and not all in yet. A draft is not bought, so it is not on the way (cash-only, 15 Nov 2026);
     // ORDERED is an older order placed before Confirm purchase existed.
     prisma.purchaseOrder.findMany({
-      where: { status: { in: ['ORDERED', 'PURCHASED', ...ARRIVING] } },
+      where: { status: { in: ['ORDERED', ...ARRIVING] } },
       include: { items: true, supplier: { select: { name: true } } },
       orderBy: { expectedArrival: 'asc' },
     }),
@@ -315,7 +332,7 @@ async function updateLockedOrder(tx, id, payload) {
       throw ApiError.badRequest(`${po.poNumber} is ${PO_STATE[po.status]}: its products, quantities and prices are locked. Only the notes and the expected arrival can change. Add shipping or clearing with Add cost.`);
     }
     if (payload.status === 'CANCELLED' && ARRIVING.includes(po.status)) {
-      throw ApiError.badRequest(`${po.poNumber} has been dispatched — it cannot be cancelled. If cargo never arrives, close the order and mark the rest missing.`);
+      throw ApiError.badRequest(`${po.poNumber} is bought and on its way — it cannot be cancelled. Use Undo purchase if it was confirmed by mistake, or receive it and mark what never came as missing.`);
     }
   }
 
@@ -443,6 +460,11 @@ async function deleteLockedOrder(tx, id) {
       `${formatCurrency(paid)} has been paid against this order. Remove those payments in Finance first, or the money would outlive its reason.`,
     );
   }
+  // Money has moved for it, even if it was reversed since (an undone purchase): the order stays as the reason
+  // for those ledger entries. Cancel it instead.
+  if (await tx.financeTransaction.count({ where: { refType: 'PurchaseOrder', refId: id } })) {
+    throw ApiError.badRequest(`${po.poNumber} has payments in the ledger (reversed or not), so it stays as their record. Cancel it instead.`);
+  }
   // Balance payments are the supplier's, not this order's: deleting it must not leave him overpaid.
   await assertSupplierNotOverpaid(po, 0, { leaving: true, action: `Deleting ${po.poNumber}` });
   await tx.purchaseOrder.delete({ where: { id } });
@@ -502,6 +524,7 @@ async function receivePurchaseOrder(id, actor, { actualArrival, stockAlreadyCoun
       const allocated = extraCost * share;
       const landedUnitCost = round2(toNumber(it.unitCost) + (it.baseQuantity > 0 ? allocated / it.baseQuantity : 0));
 
+      const averaged = stockAlreadyCounted ? null : await averageCostAfter(tx, it.productId, it.baseQuantity, landedUnitCost);
       if (!stockAlreadyCounted) {
         await inventory.increaseStock(tx, {
           productId: it.productId,
@@ -520,8 +543,8 @@ async function receivePurchaseOrder(id, actor, { actualArrival, stockAlreadyCoun
 
       await tx.purchaseOrderItem.update({ where: { id: it.id }, data: { landedUnitCost, receivedBase: it.baseQuantity } });
       if (!stockAlreadyCounted) {
-        // Latest landed cost becomes the product's current cost basis.
-        await tx.product.update({ where: { id: it.productId }, data: { purchasePrice: landedUnitCost } });
+        // The product's cost per box becomes the average over every box held (15 Nov 2026).
+        await tx.product.update({ where: { id: it.productId }, data: { purchasePrice: averaged } });
       }
     }
 
@@ -561,21 +584,16 @@ function brandOfOrder(po) {
 // its live balance read by the formula every screen uses, and a shortfall refused with the numbers.
 async function payForOrder(tx, po, { accountId, amount, occurredAt, notes, category, what }, actor) {
   const finance = require('./finance.service'); // lazy: avoids an import cycle
-  if (!accountId) throw ApiError.badRequest('Choose the account the money was paid from.');
-  const locked = await tx.$queryRaw`SELECT id FROM "business_accounts" WHERE id = ${accountId} FOR UPDATE`;
-  if (!locked.length) throw ApiError.badRequest('Select a valid account');
-  const [acc] = await finance.accountBalances({ client: tx, accountId });
-  if (!acc) throw ApiError.badRequest('Select a valid account');
+  // Locks the account, reads its live balance and refuses a shortfall with the numbers — the same check every
+  // business payment goes through (finance.assertFunds).
+  const acc = await finance.assertFunds(tx, accountId, amount, what);
   // An account reserved for one brand (M-Pesa = OHIS, Airtel = Civlily) pays only for an order whose products are
   // all that brand — a mixed order would otherwise slip past (its brand falls back to the supplier's, often none).
-  if (acc.brandId && (po.items || []).some((i) => i.product?.brandId && i.product.brandId !== acc.brandId)) {
+  // (A brand that pays into another brand's account — Pepa into Civlily's — counts as that brand here.)
+  const productBrands = [...new Set((po.items || []).map((i) => i.product?.brandId).filter(Boolean))];
+  const served = await Promise.all(productBrands.map((b) => finance.accountServesBrand(tx, acc.brandId, b)));
+  if (acc.brandId && served.some((ok) => !ok)) {
     throw ApiError.badRequest(`${acc.name} only pays for its own brand's stock, and ${po.poNumber} has another brand's products. Pay it from an account that is not reserved for one brand, such as Cash.`);
-  }
-  if (acc.balance < amount - 0.001) {
-    throw ApiError.badRequest(
-      `Not enough money in ${acc.name}: it holds ${formatCurrency(acc.balance)} and ${what} needs ${formatCurrency(amount)}, `
-      + `so ${formatCurrency(round2(amount - acc.balance))} is missing. Put money into ${acc.name} or pay from another account.`,
-    );
   }
   return finance.recordTransaction(
     {
@@ -627,7 +645,7 @@ async function stillToPay(client, po) {
 
 // Confirm purchase: the goods were bought with cash. The whole order is paid from one account in the same
 // transaction as the status change, so it is paid exactly once, and a short account is refused.
-async function confirmPurchase(id, { accountId, occurredAt, notes } = {}, actor) {
+async function confirmPurchase(id, { accountId, occurredAt, notes, expectedArrival } = {}, actor) {
   return withDocNumberRetry(() => prisma.$transaction(async (tx) => {
     await lockOrder(tx, id);
     const po = await orderForMoney(tx, id);
@@ -646,35 +664,78 @@ async function confirmPurchase(id, { accountId, occurredAt, notes } = {}, actor)
       txn = await payForOrder(tx, po, { accountId, amount: due, occurredAt, notes, category: 'Stock Purchase', what: po.poNumber }, actor);
     }
     const when = txn ? txn.occurredAt : occurredAt ? new Date(occurredAt) : new Date();
+    if (expectedArrival) assertArrivalNotBeforeOrder(when, expectedArrival);
+    // Bought = on its way: no separate dispatch step.
     await tx.purchaseOrder.update({
       where: { id },
-      data: { status: 'PURCHASED', purchasedAt: when, purchasedById: actor?.id || null, orderedAt: po.orderedAt || when },
+      data: {
+        // dispatchedAt holds the moment of the confirm on the DATABASE's clock — the confirm payment's own createdAt —
+        // so Undo purchase can tell the payments written from then on from older ones by one clock (purchasedAt is
+        // the business day, which can be earlier).
+        status: 'IN_TRANSIT', purchasedAt: when, purchasedById: actor?.id || null, dispatchedAt: txn ? txn.createdAt : new Date(),
+        orderedAt: po.orderedAt || when,
+        ...(expectedArrival ? { expectedArrival: new Date(expectedArrival) } : {}),
+      },
     });
     return tx.purchaseOrder.findUnique({ where: { id }, include: PO_INCLUDE });
   }, { timeout: 20000 }));
 }
 
-// Dispatch: the bought goods left China. From here the order can be checked in at the warehouse.
-async function dispatchOrder(id, { dispatchedAt, expectedArrival } = {}) {
-  return prisma.$transaction(async (tx) => {
+// Undo purchase: a Confirm purchase made by mistake (wrong account, wrong price), before anything has arrived.
+// Recorded money is never deleted, so every payment on the order is reversed — the opposite entry beside it, in
+// the ledger for good — and the order goes back to a draft that can be corrected and confirmed again.
+async function undoPurchase(id, { reason } = {}, actor) {
+  const why = String(reason || '').trim();
+  if (!why) throw ApiError.badRequest('Say why the purchase is being undone — it stays beside the payment in the ledger.');
+  return withDocNumberRetry(() => prisma.$transaction(async (tx) => {
     await lockOrder(tx, id);
-    const po = await tx.purchaseOrder.findUnique({ where: { id } });
-    if (po.status !== 'PURCHASED') {
-      if (ARRIVING.includes(po.status) || po.status === 'RECEIVED') throw ApiError.conflict(`${po.poNumber} is ${PO_STATE[po.status]}.`);
-      throw ApiError.badRequest(`${po.poNumber} is ${PO_STATE[po.status]} — confirm the purchase before dispatching it.`);
+    const po = await tx.purchaseOrder.findUnique({ where: { id }, include: { receipts: { select: { id: true } } } });
+    if (!['PURCHASED', 'IN_TRANSIT'].includes(po.status)) {
+      throw ApiError.badRequest(`${po.poNumber} is ${PO_STATE[po.status]} — only a bought order with nothing received can be undone.`);
     }
-    const when = dispatchedAt ? new Date(dispatchedAt) : new Date();
-    const day = (d) => new Date(d).toISOString().slice(0, 10);
-    if (po.purchasedAt && day(when) < day(po.purchasedAt)) {
-      throw ApiError.badRequest('The dispatch date cannot be before the purchase date.');
+    if (po.receipts.length) throw ApiError.badRequest(`Part of ${po.poNumber} has already been received, so the purchase cannot be undone.`);
+    if (!po.purchasedAt || !po.dispatchedAt) {
+      throw ApiError.badRequest(`${po.poNumber} was not bought with Confirm purchase, so there is nothing to undo — receive it, and mark what never came as missing.`);
     }
-    assertArrivalNotBeforeOrder(when, expectedArrival);
+    // Only what Confirm purchase and Add cost paid (written from the confirm on). Older payments on an order made
+    // before the cash-only flow are real money sent to the supplier and stay.
+    const paid = await tx.financeTransaction.findMany({
+      where: { refType: 'PurchaseOrder', refId: id, reversalOfId: null, createdAt: { gte: po.dispatchedAt } },
+      orderBy: { occurredAt: 'asc' },
+    });
+    const olderPaid = await tx.financeTransaction.count({ where: { refType: 'PurchaseOrder', refId: id, createdAt: { lt: po.dispatchedAt } } });
+    const reversed = await tx.financeTransaction.findMany({ where: { reversalOfId: { in: paid.map((t) => t.id) } }, select: { reversalOfId: true } });
+    const done = new Set(reversed.map((r) => r.reversalOfId));
+    for (const t of paid.filter((x) => !done.has(x.id))) {
+      const txnNumber = await nextDocNumber(tx.financeTransaction, 'txnNumber', 'FTX');
+      await tx.financeTransaction.create({
+        data: {
+          txnNumber,
+          reversalOfId: t.id,
+          accountId: t.accountId,
+          direction: t.direction,
+          type: t.type,
+          amount: round2(-toNumber(t.amount)),
+          brandId: t.brandId,
+          category: t.category,
+          description: `Reversal of ${t.txnNumber} — purchase undone`.slice(0, 500),
+          reference: t.reference,
+          refType: 'PurchaseOrder',
+          refId: id,
+          notes: why.slice(0, 2000),
+          occurredAt: new Date(),
+          createdById: actor?.id || null,
+        },
+      });
+    }
+    // An older order that carried payments goes back to ORDERED (still owed for, those payments still counted);
+    // anything else is a draft again.
     return tx.purchaseOrder.update({
       where: { id },
-      data: { status: 'IN_TRANSIT', dispatchedAt: when, ...(expectedArrival ? { expectedArrival: new Date(expectedArrival) } : {}) },
+      data: { status: olderPaid ? 'ORDERED' : 'DRAFT', purchasedAt: null, purchasedById: null, dispatchedAt: null },
       include: PO_INCLUDE,
     });
-  });
+  }, { timeout: 20000 }));
 }
 
 // Receive cargo (admin, one step — 15 Nov 2026: the admin is also the warehouse, so there is no separate
@@ -697,7 +758,7 @@ async function receiveCargo(id, { items = [], notes, arrivedAt, clientKey } = {}
     if (!ARRIVING.includes(po.status)) {
       throw ApiError.badRequest(
         NOT_YET_BOUGHT.includes(po.status) || po.status === 'PURCHASED'
-          ? `${po.poNumber} has not been dispatched yet — only cargo on its way can be received.`
+          ? `${po.poNumber} has not been bought yet — confirm the purchase first.`
           : `${po.poNumber} is ${PO_STATE[po.status]}.`,
       );
     }
@@ -771,6 +832,7 @@ async function receiveCargo(id, { items = [], notes, arrivedAt, clientKey } = {}
       if (ln.acceptedBase > 0) {
         const unitId = baseUnitOf.get(it.productId);
         if (!unitId) throw ApiError.badRequest(`${it.product?.name || 'A product'} has no box unit set up.`);
+        const averaged = await averageCostAfter(tx, it.productId, ln.acceptedBase, landedUnitCost);
         await inventory.increaseStock(tx, {
           productId: it.productId,
           packagingUnitId: unitId,
@@ -784,9 +846,8 @@ async function receiveCargo(id, { items = [], notes, arrivedAt, clientKey } = {}
           userId: actor ? actor.id : null,
           notes: `Received PO ${po.poNumber}${ln.damagedBase ? ` (${ln.damagedBase} damaged or rejected not added)` : ''}`,
         });
-        // Latest landed cost becomes the product's cost basis (as receiving always did). Selling prices are
-        // never touched.
-        await tx.product.update({ where: { id: it.productId }, data: { purchasePrice: landedUnitCost } });
+        // The product's cost per box becomes the average over every box held. Selling prices are never touched.
+        await tx.product.update({ where: { id: it.productId }, data: { purchasePrice: averaged } });
       }
       it.receivedBase += ln.receivedBase;
       it.damagedBase += ln.damagedBase;
@@ -870,7 +931,7 @@ async function addOrderCost(id, { kind, amount, accountId, occurredAt, notes } =
   return withDocNumberRetry(() => prisma.$transaction(async (tx) => {
     await lockOrder(tx, id);
     const po = await orderForMoney(tx, id);
-    if (!['PURCHASED', ...ARRIVING].includes(po.status)) {
+    if (!ARRIVING.includes(po.status)) {
       throw ApiError.badRequest(
         NOT_YET_BOUGHT.includes(po.status)
           ? `${po.poNumber} is ${PO_STATE[po.status]} — put the cost on the order itself (Edit).`
@@ -898,7 +959,7 @@ module.exports = {
   deletePurchaseOrder,
   receivePurchaseOrder,
   confirmPurchase,
-  dispatchOrder,
+  undoPurchase,
   receiveCargo,
   listPurchaseLines,
   addOrderCost,

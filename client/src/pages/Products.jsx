@@ -83,7 +83,8 @@ const BAD = 'border-rose-500/60';
   Editing shows the same window with every field open and filled; nothing is copied over an edit.
   The body sent is the same as before: same fields, a blank SKU left out.
 */
-function ProductModal({ open, onClose, editing, brands, categories, units }) {
+// Exported so a purchase order can add a product that is not in the list yet, with this same complete form.
+export function ProductModal({ open, onClose, editing, brands, categories, units }) {
   const qc = useQueryClient();
   const isEdit = !!editing;
   const formId = useId();

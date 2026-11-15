@@ -110,7 +110,8 @@ const recordAdjustment = asyncHandler(async (req, res) => {
     return created(res, txn);
   }
   const direction = req.body.direction === 'IN' ? 'IN' : 'OUT';
-  const txn = await finance.recordTransaction(
+  // A brand-reserved account only takes its own brand's money (#79); money out only if it is there (15 Nov 2026).
+  const txn = await finance.recordPlainAdjustment(
     {
       accountId: req.body.accountId,
       direction,
@@ -123,8 +124,6 @@ const recordAdjustment = asyncHandler(async (req, res) => {
       occurredAt: req.body.occurredAt,
     },
     req.user,
-    undefined,
-    { checkBrand: true }, // a brand-reserved account only takes its own brand's money (#79)
   );
   await audit.record(req, {
     action: 'CREATE',
@@ -157,6 +156,19 @@ const deleteTransaction = asyncHandler(async (req, res) => {
     newValues: { reason: req.body.reason || null },
   });
   return ok(res, { deleted: true, id: req.params.id });
+});
+
+// Reverse an entry (15 Nov 2026): the opposite entry is recorded beside it; nothing is deleted.
+const reverseTransaction = asyncHandler(async (req, res) => {
+  const { original, reversals } = await finance.reverseTransaction(req.params.id, req.body || {}, req.user);
+  await audit.record(req, {
+    action: 'REVERSE',
+    entityType: 'FinanceTransaction',
+    entityId: req.params.id,
+    oldValues: { txnNumber: original.txnNumber, amount: original.amount, direction: original.direction, type: original.type, accountId: original.accountId },
+    newValues: { reason: req.body.reason, reversals: reversals.map((r) => r.txnNumber) },
+  });
+  return ok(res, { original, reversals });
 });
 
 // Cash-flow statement for a period or custom { from, to } range.
@@ -242,7 +254,7 @@ const reportArchivePdf = asyncHandler(async (req, res) => {
 
 module.exports = {
   overview, sync, accounts, createAccount, updateAccount, categories, createCategory,
-  transactions, recordExpense, recordIncome, recordOwnerMoney, recordAdjustment, updateTransaction, deleteTransaction,
+  transactions, recordExpense, recordIncome, recordOwnerMoney, recordAdjustment, updateTransaction, deleteTransaction, reverseTransaction,
   cashflow, report, suppliers, supplierDetail, paySupplier, paySupplierBalance, creditSupplier,
   reportArchive, reportArchivePdf, transferBetween,
 };

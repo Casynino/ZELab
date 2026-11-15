@@ -31,6 +31,8 @@ const moneyFields = {
   notes: text(2000),
   receiptUrl: text(1000),
   occurredAt: when,
+  // One per press of the form: a double tap or a retry records nothing more (15 Nov 2026).
+  clientKey: z.string().trim().min(8).max(80).optional(),
 };
 
 // POST /finance/income and /finance/expenses
@@ -65,7 +67,13 @@ const financeTransfer = {
     notes: text(2000),
     occurredAt: when,
     reason: text(500),
+    clientKey: z.string().trim().min(8).max(80).optional(),
   }),
+};
+// POST /finance/transactions/:id/reverse
+const financeReverse = {
+  params: z.object({ id }),
+  body: z.object({ reason: z.string().trim().min(3, 'Say why this entry is being reversed').max(500) }),
 };
 // PUT /finance/transactions/:id
 const financeTxnUpdate = {
@@ -144,6 +152,7 @@ module.exports = {
   financeAdjustment,
   financeTransfer,
   financeTxnUpdate,
+  financeReverse,
   financeSupplierPayment,
   financeSupplierBalancePayment,
   financeSupplierCredit,

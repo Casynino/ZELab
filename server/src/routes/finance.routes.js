@@ -34,7 +34,8 @@ router.post('/owner-money', validate(v.financeOwnerMoney), ctrl.recordOwnerMoney
 router.post('/adjustments', requireRoles(ROLES.ADMIN), validate(v.financeAdjustment), ctrl.recordAdjustment); // balance corrections (admin only)
 router.post('/transfers', requireRoles(ROLES.ADMIN), validate(v.financeTransfer), ctrl.transferBetween); // move money between accounts (admin only)
 router.put('/transactions/:id', validate(v.financeTxnUpdate), ctrl.updateTransaction);
-router.delete('/transactions/:id', ctrl.deleteTransaction);
+router.delete('/transactions/:id', ctrl.deleteTransaction); // refuses: money is never deleted, it is reversed
+router.post('/transactions/:id/reverse', requireRoles(ROLES.ADMIN), validate(v.financeReverse), ctrl.reverseTransaction); // admin only
 router.get('/report-archive', ctrl.reportArchive); // generated weekly/monthly PDFs
 router.get('/report-archive/:id/pdf', ctrl.reportArchivePdf);
 

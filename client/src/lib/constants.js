@@ -134,12 +134,12 @@ export const SEVERITY_META = {
   CRITICAL: { cls: 'bg-rose-500/15 text-rose-300' },
 };
 
-// Cash-only purchasing (15 Nov 2026): Draft → Purchased (paid) → In transit → Part received → Completed.
+// Cash-only purchasing (15 Nov 2026): Draft → Confirm purchase (paid, straight to In transit) → Part received → Completed.
 // RECEIVED is "Completed": every box bought was received or marked missing. ORDERED is an older order.
 export const PO_STATUS_META = {
   DRAFT: { label: 'Draft', cls: 'bg-elevated text-muted' },
   ORDERED: { label: 'Ordered', cls: 'bg-sky-500/15 text-sky-300' },
-  PURCHASED: { label: 'Purchased', cls: 'bg-sky-500/15 text-sky-300' },
+  PURCHASED: { label: 'In transit', cls: 'bg-amber-500/15 text-amber-300' }, // bought = on its way
   IN_TRANSIT: { label: 'In transit', cls: 'bg-amber-500/15 text-amber-300' },
   PARTLY_RECEIVED: { label: 'Part received', cls: 'bg-teal-500/15 text-teal-300' },
   RECEIVED: { label: 'Completed', cls: 'bg-emerald-500/15 text-emerald-300' },

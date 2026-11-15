@@ -6,7 +6,8 @@ import { Plus, Ship, PackageCheck, Pencil, Trash2, Eye, Wallet } from 'lucide-re
 import api, { unwrap, apiError } from '@/lib/api';
 import { keepOnPageTurn, pageQueries } from '@/lib/pageQueries';
 import { useAuth } from '@/context/AuthContext';
-import { useProducts, useWarehouses, useBrands } from '@/lib/hooks';
+import { useProducts, useWarehouses, useBrands, useCategories, usePackagingUnits } from '@/lib/hooks';
+import { ProductModal } from '@/pages/Products';
 import { wentThrough } from '@/lib/once';
 import { refreshAfter } from '@/lib/afterWrite';
 import { PO_STATUS_META, ROLES } from '@/lib/constants';
@@ -39,7 +40,6 @@ function POModal({ onClose, editing }) {
   const { active } = useHomeWarehouse(warehouses);
   const primary = primaryWarehouse(active);
 
-  const day = (d) => (d ? String(d).slice(0, 10) : '');
   const [lastSupplier] = useState(readLastSupplier);
   const [supplierPick, setSupplierPick] = useState(editing?.supplierId || '');
   const [editSupplier, setEditSupplier] = useState(false);
@@ -59,11 +59,12 @@ function POModal({ onClose, editing }) {
     otherCost: Number(editing?.otherCost) || 0,
   });
   const [extras, setExtras] = useState(!!(Number(editing?.shippingCost) || Number(editing?.clearingCost) || Number(editing?.otherCost)));
-  const [showDates, setShowDates] = useState(false);
-  const [expectedArrival, setExpectedArrival] = useState(day(editing?.expectedArrival));
-  // No date by default, as before: a new PO starts as a DRAFT. A date makes it ORDERED, and whether an ordered
-  // PO already counts as money owed to the supplier is the owner's open decision (D8) — not changed here.
-  const [orderedAt, setOrderedAt] = useState(day(editing?.orderedAt));
+  // No dates on the form (Nino, 15 Nov 2026): the order is dated the day Confirm purchase pays it, and cargo
+  // arrives when it arrives (about 35 days) — it is received then.
+  const [newProduct, setNewProduct] = useState(false);
+  const { data: brands = [] } = useBrands();
+  const { data: categories = [] } = useCategories();
+  const { data: units = [] } = usePackagingUnits();
   const [notes, setNotes] = useState(editing?.notes || '');
   const [touched, setTouched] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
@@ -120,8 +121,6 @@ function POModal({ onClose, editing }) {
     clearingCost: Number(costs.clearingCost) || 0,
     otherCost: Number(costs.otherCost) || 0,
     warehouseId: warehouseId || undefined,
-    orderedAt: orderedAt || undefined,
-    expectedArrival: expectedArrival || undefined,
     notes: notes || undefined,
   });
 
@@ -172,11 +171,9 @@ function POModal({ onClose, editing }) {
   // the primary must name it, or the server would keep the old warehouse while the window says the primary.
   const primaryValue = (id) => (primary && id === primary.id && !editing?.warehouseId ? '' : id);
 
-  const today = eatISODate();
-  const datesLabel = `${orderedAt ? (orderedAt === today ? 'Ordered today' : `Ordered ${formatDate(orderedAt)}`) : 'No order date (draft)'}`
-    + `${expectedArrival ? ` · arriving ${formatDate(expectedArrival)}` : ''}`;
 
   return (
+    <>
     <Modal open onClose={requestClose} size="lg" title={editing ? `Edit ${editing.poNumber}` : 'New purchase order (import)'}
       footer={confirmDiscard ? (
         <DiscardFooter what={editing ? 'change' : 'order'} detail={editing ? 'What you changed on this order will be lost.' : `${formatNumber(boxes)} ${boxWord(boxes)} picked will be lost.`}
@@ -255,19 +252,65 @@ function POModal({ onClose, editing }) {
 
         <ProductPicker rows={rows} value={qty} onChange={pick} cost={cost} onCost={setRowCost} inUnits={inCartons}
           loading={productsLoading || (!!editing && !seeded.current)} emptyText="No products yet." />
+        {/* What this order will make: each product's selling price (set on the product — the order never changes it)
+            against the buying price typed here, and against what a box costs now, so a discount shows as more profit. */}
+        {picked.length > 0 && (() => {
+          const productOf = new Map(products.map((p) => [p.id, p]));
+          const rowsP = picked.map((r) => {
+            const p = productOf.get(r.id);
+            // One unit is a carton when buying by the carton, else a box (costs are typed per that unit).
+            const byCarton = inCartons && !!r.unitName;
+            const boxesPerUnit = byCarton ? (r.size || 1) : 1;
+            const units = (Number(qty[r.key]) || 0) * (byCarton ? 1 : (r.size || 1));
+            const buy = Number(lineCost(cost, r)) || 0;
+            const sell = (Number(p?.sellingPrice) || 0) * boxesPerUnit;
+            const now = Number(r.buyingPrice) || 0; // what one unit costs today (the average cost of the boxes held)
+            return { r, q: units, buy, sell, now, profit: sell - buy, unit: byCarton ? r.unitName.toLowerCase() : 'box' };
+          });
+          const revenue = rowsP.reduce((n, x) => n + x.sell * x.q, 0);
+          const spend = goods + extraSum;
+          const total = revenue - spend;
+          if (!(revenue > 0)) return null;
+          return (
+            <div className="rounded-xl bg-white/[0.03] p-3 ring-1 ring-white/[0.08]">
+              <div className="mb-2 text-xs font-semibold text-foreground">Profit on this order</div>
+              <ul className="space-y-1.5">
+                {rowsP.map((x) => (
+                  <li key={x.r.key} className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 text-xs">
+                    <span className="min-w-0 truncate text-muted">{x.r.name}</span>
+                    <span className="tabular-nums text-muted">
+                      buy {formatNumber(x.buy)} · sells {formatNumber(x.sell)} ·{' '}
+                      <span className={x.profit >= 0 ? 'font-semibold text-emerald-300' : 'font-semibold text-rose-300'}>
+                        {x.profit >= 0 ? '' : '−'}{formatNumber(Math.abs(x.profit))} a {x.unit}
+                        {x.sell > 0 && ` (${Math.round((x.profit / x.sell) * 100)}%)`}
+                      </span>
+                      {x.now > 0 && x.buy > 0 && x.buy !== x.now && (
+                        <span className={x.buy < x.now ? 'text-emerald-300' : 'text-rose-300'}>
+                          {' · '}{x.buy < x.now ? '+' : '−'}{formatNumber(Math.abs(x.now - x.buy))} vs cost now
+                        </span>
+                      )}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              <div className="mt-2 flex flex-wrap items-baseline justify-between gap-2 border-t border-white/[0.08] pt-2 text-xs">
+                <span className="text-muted">Sells for {formatCurrency(revenue)} · costs {formatCurrency(spend)}{extraSum > 0 ? ' with shipping' : ''}</span>
+                <span className={total >= 0 ? 'text-sm font-bold tabular-nums text-emerald-300' : 'text-sm font-bold tabular-nums text-rose-300'}>
+                  Profit {total >= 0 ? '' : '−'}{formatCurrency(Math.abs(total))}{revenue > 0 && ` (${Math.round((total / revenue) * 100)}%)`}
+                </span>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* Not in the list? Add it here with the complete product form; it appears above once saved. */}
+        <div className="flex justify-end px-1">
+          <button type="button" onClick={() => setNewProduct(true)} className={clsx(changeBtn, 'inline-flex min-h-[40px] items-center gap-1.5 px-2')}>
+            <Plus className="h-3.5 w-3.5" /> New product
+          </button>
+        </div>
 
         <div className="flex flex-col gap-1 [&>div]:mb-2">
-          <MoreToggle open={showDates} onToggle={() => setShowDates((x) => !x)}>{datesLabel}</MoreToggle>
-          {showDates && (
-            <div className="grid grid-cols-2 gap-3">
-              <label className="block text-xs text-muted">Ordered
-                <Input type="date" value={orderedAt} onChange={(e) => { setOrderedAt(e.target.value); touch(); }} className="mt-1" />
-              </label>
-              <label className="block text-xs text-muted">Expected arrival <span className="text-faint">(optional)</span>
-                <Input type="date" min={orderedAt || undefined} value={expectedArrival} onChange={(e) => { setExpectedArrival(e.target.value); touch(); }} className="mt-1" />
-              </label>
-            </div>
-          )}
           <MoreToggle open={extras} onToggle={toggleExtras}>
             Extra costs{!extras && extraSum > 0 ? ` · ${formatCurrency(extraSum)}` : ''}
           </MoreToggle>
@@ -286,6 +329,10 @@ function POModal({ onClose, editing }) {
         <Field label="Notes"><Textarea rows={2} value={notes} onChange={(e) => { setNotes(e.target.value); touch(); }} placeholder="Optional" /></Field>
       </div>
     </Modal>
+    {newProduct && (
+      <ProductModal open onClose={() => setNewProduct(false)} brands={brands} categories={categories} units={units} />
+    )}
+    </>
   );
 }
 
@@ -339,12 +386,13 @@ function SupplierModal({ editing, onClose }) {
 }
 
 // ── Cash-only purchasing (15 Nov 2026) ─────────────────────────────────────────────────────────────────
-// Draft → Confirm purchase (paid from an account) → Dispatch → Receive (as many times as the cargo comes in
+// Draft → Confirm purchase (paid from an account; straight to In transit) → Receive (as many times as the cargo comes in
 // parts) → Completed. The admin does every step; other staff can look, without prices. Receiving follows the
 // SuperDrive pattern: per product what arrived (with "Arrived fine" to fill what is still to come), what of it is
 // damaged or rejected (with a reason), what is missing, and "Nothing more is coming" to close the rest.
 const NOT_YET_BOUGHT = ['DRAFT', 'ORDERED'];
-const ARRIVING = ['IN_TRANSIT', 'PARTLY_RECEIVED'];
+// Confirm purchase sends an order straight to In transit (no Dispatch step); PURCHASED is the same thing.
+const ARRIVING = ['PURCHASED', 'IN_TRANSIT', 'PARTLY_RECEIVED'];
 const sizeOf = (it) => (it.quantity ? Math.max(1, Math.round(it.baseQuantity / it.quantity)) : 1);
 const unitWord = (it, n) => {
   const u = String(it.packagingUnit?.name || 'box').toLowerCase();
@@ -393,7 +441,10 @@ function MoneyAccountSelect({ value, onChange, accounts }) {
 // server refuses it too. The order's brand is its products' brand when they are all one brand.
 function useMoneyAccounts(po) {
   const q = useQuery(pageQueries.financeAccounts());
-  const brands = [...new Set((po?.items || []).map((i) => i.product?.brandId).filter(Boolean))];
+  const { data: brandList = [] } = useBrands();
+  // A brand that pays into another brand's account counts as that brand (Pepa pays into Civlily's Airtel Money).
+  const paysInto = new Map(brandList.map((b) => [b.id, b.settlesWithBrandId || b.id]));
+  const brands = [...new Set((po?.items || []).map((i) => i.product?.brandId).filter(Boolean).map((b) => paysInto.get(b) || b))];
   // A brand's own account only when every product is that brand; a mixed order is paid from a shared account.
   return { ...q, accounts: (q.data || []).filter((a) => !a.isCommissionRecord && (!a.brandId || (brands.length === 1 && a.brandId === brands[0]))) };
 }
@@ -427,7 +478,7 @@ function ConfirmPurchaseModal({ poId, onClose }) {
       </>}>
       {!po || isLoading ? <PageSpinner /> : (
         <div className="space-y-4">
-          <p className="text-sm text-muted">You bought these in China with cash. The money leaves the account you choose, once, and the order is locked.</p>
+          <p className="text-sm text-muted">You bought these in China with cash. The money leaves the account you choose, once, the order is locked, and the goods show as <b className="text-foreground">In transit</b> until you receive them.</p>
           <div className="divide-y divide-white/[0.06] rounded-xl ring-1 ring-white/[0.08]">
             {po.items.map((i) => (
               <div key={i.id} className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
@@ -455,25 +506,22 @@ function ConfirmPurchaseModal({ poId, onClose }) {
   );
 }
 
-function DispatchModal({ po, onClose }) {
-  const [date, setDate] = useState(eatISODate());
-  const [expected, setExpected] = useState(po.expectedArrival ? String(po.expectedArrival).slice(0, 10) : '');
+// Undo purchase: a Confirm purchase made by mistake, before anything arrived. Every payment on the order is
+// reversed — the opposite entry beside it, kept in the ledger — and the order is a draft again to fix and confirm.
+function UndoPurchaseModal({ po, onClose }) {
+  const [reason, setReason] = useState('');
   const after = useAfterStep();
-  const done = () => { after(); onClose(); };
   const save = useMutation({
-    mutationFn: () => api.post(`/purchase-orders/${po.id}/dispatch`, { dispatchedAt: date, expectedArrival: expected || undefined }),
-    onSuccess: () => { toast.success(`${po.poNumber} is on its way`); done(); },
-    onError: (e) => { if (wentThrough(e)) { toast.success(`${po.poNumber} is already on its way`); done(); return; } toast.error(apiError(e)); },
+    mutationFn: () => api.post(`/purchase-orders/${po.id}/undo-purchase`, { reason: reason.trim() }),
+    onSuccess: () => { toast.success(`${po.poNumber} is a draft again — the payment was reversed`); after(); onClose(); },
+    onError: (e) => toast.error(apiError(e), { duration: 9000 }),
   });
   return (
-    <Modal open onClose={onClose} title={`Dispatch · ${po.poNumber}`}
-      footer={<><Button variant="secondary" onClick={onClose}>Cancel</Button><Button loading={save.isPending} onClick={() => save.mutate()}><Ship className="h-4 w-4" /> Mark as in transit</Button></>}>
+    <Modal open onClose={onClose} title={`Undo purchase · ${po.poNumber}`}
+      footer={<><Button variant="secondary" onClick={onClose}>Keep it</Button><Button variant="danger" loading={save.isPending} disabled={reason.trim().length < 3} onClick={() => save.mutate()}>Undo purchase</Button></>}>
       <div className="space-y-4">
-        <p className="text-sm text-muted">The goods left China. Nothing enters stock until you receive them here.</p>
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Dispatched"><Input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field>
-          <Field label="Expected arrival"><Input type="date" min={date} value={expected} onChange={(e) => setExpected(e.target.value)} /></Field>
-        </div>
+        <p className="text-sm text-muted">The payment goes back into its account and the order becomes a draft you can correct. Nothing is deleted: the payment and its reversal both stay in the ledger.</p>
+        <Field label="Why"><Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. Paid from the wrong account" autoFocus /></Field>
       </div>
     </Modal>
   );
@@ -517,45 +565,61 @@ function AddCostModal({ po, onClose }) {
 }
 
 // Receive cargo — one step: what arrived goes into stock as you confirm (damaged and missing never do).
+// Most cargo comes in fine (Nino, 15 Nov 2026), so every product starts as fully arrived: tap − on what is not
+// here, like Stock adjustment, and say whether those are missing or still coming. The money is worked out as you
+// go — what each carton cost, the value going into stock and the value of what is missing — so it stays accurate.
+const stepBtnCls = 'flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-white/[0.06] text-foreground ring-1 ring-white/[0.12] '
+  + 'transition hover:bg-white/[0.1] active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/40 '
+  + 'disabled:pointer-events-none disabled:opacity-30 sm:h-9 sm:w-9';
+
 function ReceiveModal({ poId, onClose }) {
   const { data: po } = usePO(poId);
   const after = useAfterStep();
   const key = useRef(newKey());
-  const [rows, setRows] = useState({}); // itemId → { received, damaged, missing, note, open }
+  // itemId → { arrived, damaged, note, open, missing (true = what is not here will not come) }
+  const [rows, setRows] = useState({});
   const [noMore, setNoMore] = useState(false);
   const [arrivedAt, setArrivedAt] = useState(eatISODate());
   const [notes, setNotes] = useState('');
   const open = (po?.items || []).filter((i) => leftOf(i) > 0);
-  const get = (id) => rows[id] || {};
-  const setRow = (id, patch) => setRows((r) => ({ ...r, [id]: { ...r[id], ...patch } }));
   const leftUnits = (i) => Math.floor(leftOf(i) / sizeOf(i));
   const num = (v) => Math.max(0, Math.floor(Number(v) || 0));
+  const get = (i) => rows[i.id] || {};
+  const setRow = (id, patch) => setRows((r) => ({ ...r, [id]: { ...r[id], ...patch } }));
+  // Arrived starts at everything still to come; only what is changed is remembered.
+  const arrivedOf = (i) => (get(i).arrived === undefined ? leftUnits(i) : Math.min(leftUnits(i), num(get(i).arrived)));
+  const priceOf = (i) => Number(i.unitCost || 0) * sizeOf(i); // per carton (or box); 0 when prices are hidden
   const line = (i) => {
-    const r = get(i.id);
-    const received = num(r.received);
-    const damaged = num(r.damaged);
-    const missing = noMore ? Math.max(0, leftUnits(i) - received) : num(r.missing);
+    const r = get(i);
+    const left = leftUnits(i);
+    const arrived = arrivedOf(i);
+    const notHere = left - arrived;
+    const damaged = Math.min(num(r.damaged), arrived);
+    const missing = notHere > 0 && (noMore || r.missing) ? notHere : 0;
     let error = '';
-    if (received + missing > leftUnits(i)) error = `Only ${formatNumber(leftUnits(i))} ${unitWord(i, leftUnits(i))} still to come`;
-    else if (damaged > received) error = 'More damaged than arrived';
+    if (num(r.damaged) > arrived) error = 'More damaged than arrived';
     else if (damaged > 0 && !String(r.note || '').trim()) error = 'Say what is wrong with the damaged';
-    return { i, received, damaged, missing, note: String(r.note || '').trim(), error };
+    return { i, left, arrived, notHere, damaged, missing, coming: notHere - missing, note: String(r.note || '').trim(), error, price: priceOf(i) };
   };
   const lines = open.map(line);
-  const entered = lines.filter((l) => l.received || l.damaged || l.missing);
+  const entered = lines.filter((l) => l.arrived || l.missing);
   const errors = lines.filter((l) => l.error);
-  const sum = (f) => lines.reduce((n, l) => n + f(l) * sizeOf(l.i), 0);
-  const intoStock = sum((l) => l.received - l.damaged);
-  const damagedBoxes = sum((l) => l.damaged);
-  const missingBoxes = sum((l) => l.missing);
-  const stillToCome = lines.reduce((n, l) => n + Math.max(0, leftOf(l.i) - (l.received + l.missing) * sizeOf(l.i)), 0);
+  const boxes = (f) => lines.reduce((n, l) => n + f(l) * sizeOf(l.i), 0);
+  const money = (f) => lines.reduce((n, l) => n + f(l) * l.price, 0);
+  const intoStock = boxes((l) => l.arrived - l.damaged);
+  const stockValue = money((l) => l.arrived - l.damaged);
+  const lostValue = money((l) => l.missing + l.damaged);
+  const missingBoxes = boxes((l) => l.missing);
+  const damagedBoxes = boxes((l) => l.damaged);
+  const stillToCome = boxes((l) => l.coming);
+  const showMoney = lines.some((l) => l.price > 0);
   const done = () => { after(true); onClose(); };
   const save = useMutation({
     mutationFn: () => api.post(`/purchase-orders/${poId}/receive-cargo`, {
       clientKey: key.current,
       arrivedAt,
       notes: notes.trim() || undefined,
-      items: entered.map((l) => ({ itemId: l.i.id, received: l.received, damaged: l.damaged, missing: l.missing, note: l.note || undefined })),
+      items: entered.map((l) => ({ itemId: l.i.id, received: l.arrived, damaged: l.damaged, missing: l.missing, note: l.note || undefined })),
     }),
     onSuccess: (r) => {
       const now = r.data?.data;
@@ -564,17 +628,17 @@ function ReceiveModal({ poId, onClose }) {
     },
     onError: (e) => { if (wentThrough(e)) { toast.success('Already received — the boxes are in stock'); done(); return; } toast.error(apiError(e), { duration: 9000 }); },
   });
-  const allFine = () => setRows((r) => Object.fromEntries(open.map((i) => [i.id, { ...r[i.id], received: String(leftUnits(i)) }])));
 
   return (
     <Modal open onClose={onClose} size="xl" title={po ? `Receive · ${po.poNumber}` : 'Receive'}
       footer={po && (
         <>
-          <div className="mr-auto hidden text-xs text-muted sm:block">
-            <span className="font-semibold text-foreground">{formatNumber(intoStock)}</span> into stock
-            {damagedBoxes > 0 && <> · <span className="text-amber-300">{formatNumber(damagedBoxes)} damaged</span></>}
+          <div className="mr-auto hidden min-w-0 text-xs text-muted sm:block">
+            <span className="font-semibold text-foreground">{formatNumber(intoStock)}</span> boxes into stock{showMoney && <> · {formatCurrency(stockValue)}</>}
             {missingBoxes > 0 && <> · <span className="text-rose-300">{formatNumber(missingBoxes)} missing</span></>}
-            {' · '}{formatNumber(stillToCome)} still to come <span className="text-faint">(boxes)</span>
+            {damagedBoxes > 0 && <> · <span className="text-amber-300">{formatNumber(damagedBoxes)} damaged</span></>}
+            {showMoney && lostValue > 0 && <> · <span className="text-rose-300">{formatCurrency(lostValue)} lost</span></>}
+            {stillToCome > 0 && <> · {formatNumber(stillToCome)} still coming</>}
           </div>
           <Button variant="secondary" onClick={onClose}>Cancel</Button>
           <Button loading={save.isPending} disabled={!entered.length || errors.length > 0} onClick={() => save.mutate()}>
@@ -584,47 +648,63 @@ function ReceiveModal({ poId, onClose }) {
       )}>
       {!po ? <PageSpinner /> : (
         <div className="space-y-4">
-          <div className="flex flex-wrap items-end justify-between gap-3">
-            <p className="max-w-md text-sm text-muted">Count what arrived. Only good boxes go into stock; anything not yet here stays open for the next delivery.</p>
-            <Button variant="secondary" className="px-3 py-1.5 text-xs" onClick={allFine}>Everything arrived fine</Button>
-          </div>
+          <p className="text-sm text-muted">Everything sent is marked as arrived. Tap <b className="text-foreground">−</b> on what is not here, then say whether it is missing or still coming.</p>
           <ul className="divide-y divide-white/[0.06] rounded-xl ring-1 ring-white/[0.08]">
             {lines.map((l) => {
               const { i } = l;
-              const r = get(i.id);
+              const r = get(i);
               const before = (i.receivedBase || 0) + (i.missingBase || 0);
-              const left = leftUnits(i);
+              const u = (n) => unitWord(i, n);
               return (
-                <li key={i.id} className="space-y-2 px-3 py-3">
-                  <div className="flex flex-wrap items-start justify-between gap-2">
-                    <div className="min-w-0">
+                <li key={i.id} className="space-y-2.5 px-3 py-3">
+                  <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
+                    <div className="min-w-0 flex-1">
                       <div className="truncate text-sm font-medium text-foreground">{i.product?.name}</div>
                       <div className="text-xs text-faint">
-                        {i.product?.sku && <>{i.product.sku} · </>}Bought {formatNumber(i.quantity)} {unitWord(i, i.quantity)}
-                        {sizeOf(i) > 1 && <> ({formatNumber(i.baseQuantity)} boxes)</>}
+                        Sent {formatNumber(l.left)} {u(l.left)}{sizeOf(i) > 1 && <> ({formatNumber(l.left * sizeOf(i))} boxes)</>}
+                        {l.price > 0 && <> · {formatCurrency(l.price)} a {u(1)}</>}
                         {before > 0 && <> · {inUnit(i, before)} done before</>}
                       </div>
                     </div>
-                    <Badge className="bg-amber-500/15 text-amber-300">{formatNumber(left)} {unitWord(i, left)} to come</Badge>
+                    {/* Arrived, like Stock adjustment: − / + from everything sent. */}
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-muted">Arrived</span>
+                      <button type="button" className={stepBtnCls} disabled={l.arrived <= 0} onClick={() => setRow(i.id, { arrived: l.arrived - 1 })} aria-label={`One ${u(1)} fewer of ${i.product?.name}`}>−</button>
+                      <NumberInput min="0" value={String(l.arrived)} onChange={(e) => setRow(i.id, { arrived: e.target.value })}
+                        className="h-11 w-16 text-center tabular-nums sm:h-9" aria-label={`${u(2)} of ${i.product?.name} that arrived`} />
+                      <button type="button" className={stepBtnCls} disabled={l.arrived >= l.left} onClick={() => setRow(i.id, { arrived: l.arrived + 1 })} aria-label={`One ${u(1)} more of ${i.product?.name}`}>+</button>
+                    </div>
                   </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <label className="flex items-center gap-2 text-xs text-muted">
-                      Arrived
-                      <NumberInput min="0" value={r.received ?? ''} onChange={(e) => setRow(i.id, { received: e.target.value })} className="h-10 w-24 text-right tabular-nums" aria-label={`${unitWord(i, 2)} of ${i.product?.name} that arrived`} />
-                      <span>{unitWord(i, 2)}</span>
-                    </label>
-                    <button type="button" onClick={() => setRow(i.id, { received: String(left) })} className={clsx(changeBtn, 'min-h-[40px] px-2')}>Arrived fine</button>
-                    <button type="button" onClick={() => setRow(i.id, { open: !r.open })} className={clsx(changeBtn, 'min-h-[40px] px-2')}>{r.open ? 'Hide' : 'Damaged, missing or note'}</button>
-                  </div>
-                  {r.open && (
-                    <div className="grid grid-cols-1 gap-2 rounded-lg bg-white/[0.03] p-2 sm:grid-cols-3">
-                      <Field label={`Of these, damaged or rejected (${unitWord(i, 2)})`}><NumberInput min="0" value={r.damaged ?? ''} onChange={(e) => setRow(i.id, { damaged: e.target.value })} /></Field>
-                      <Field label={`Missing — will not come (${unitWord(i, 2)})`}><NumberInput min="0" disabled={noMore} value={noMore ? String(l.missing) : (r.missing ?? '')} onChange={(e) => setRow(i.id, { missing: e.target.value })} /></Field>
-                      <Field label="Note"><Input value={r.note ?? ''} onChange={(e) => setRow(i.id, { note: e.target.value })} placeholder="What is wrong, and why" /></Field>
+                  {l.notHere > 0 && (
+                    <div className="flex flex-wrap items-center gap-2 rounded-lg bg-white/[0.03] px-2.5 py-2 text-xs">
+                      <span className="text-foreground">{formatNumber(l.notHere)} {u(l.notHere)} not here</span>
+                      <div className="ml-auto inline-flex rounded-lg bg-white/[0.04] p-0.5 ring-1 ring-white/[0.08]" role="radiogroup" aria-label="What happened to them">
+                        {[[false, 'Still coming'], [true, 'Missing']].map(([v, label]) => {
+                          const on = (noMore || r.missing ? true : false) === v;
+                          return (
+                            <button key={label} type="button" role="radio" aria-checked={on} disabled={noMore}
+                              onClick={() => setRow(i.id, { missing: v })}
+                              className={clsx('min-h-[36px] rounded-md px-3 font-semibold transition disabled:cursor-not-allowed',
+                                on ? (v ? 'bg-rose-500/20 text-rose-200' : 'bg-white/[0.12] text-foreground') : 'text-muted hover:text-foreground')}>
+                              {label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {l.missing > 0 && l.price > 0 && <span className="w-full text-rose-300">{formatCurrency(l.missing * l.price)} paid for goods that will not come</span>}
                     </div>
                   )}
-                  {(l.damaged > 0 || l.missing > 0) && !r.open && (
-                    <p className="text-xs text-muted">{l.damaged > 0 && <span className="text-amber-300">{l.damaged} damaged </span>}{l.missing > 0 && <span className="text-rose-300">{l.missing} missing</span>}</p>
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    {l.price > 0 && l.arrived > 0 && <span className="text-muted">{formatCurrency((l.arrived - l.damaged) * l.price)} into stock</span>}
+                    <button type="button" onClick={() => setRow(i.id, { open: !r.open })} className={clsx(changeBtn, 'ml-auto min-h-[36px] px-2')}>
+                      {r.open ? 'Hide' : 'Damaged or note'}
+                    </button>
+                  </div>
+                  {r.open && (
+                    <div className="grid grid-cols-1 gap-2 rounded-lg bg-white/[0.03] p-2 sm:grid-cols-2">
+                      <Field label={`Of these, damaged or rejected (${u(2)})`}><NumberInput min="0" value={r.damaged ?? ''} onChange={(e) => setRow(i.id, { damaged: e.target.value })} /></Field>
+                      <Field label="Note"><Input value={r.note ?? ''} onChange={(e) => setRow(i.id, { note: e.target.value })} placeholder="What is wrong, and why" /></Field>
+                    </div>
                   )}
                   {l.error && <p className="text-xs font-medium text-rose-300">{l.error}</p>}
                 </li>
@@ -633,14 +713,16 @@ function ReceiveModal({ poId, onClose }) {
           </ul>
           <label className="flex cursor-pointer items-start gap-2 rounded-lg bg-white/[0.03] p-3 text-sm text-foreground ring-1 ring-white/[0.08]">
             <input type="checkbox" checked={noMore} onChange={(e) => setNoMore(e.target.checked)} className="mt-0.5 h-4 w-4 rounded accent-zinc-300" />
-            <span><b>Nothing more is coming.</b> <span className="text-muted">Anything still not here is recorded as missing and the order is completed.</span></span>
+            <span><b>Nothing more is coming.</b> <span className="text-muted">Everything not here is recorded as missing and the order is completed.</span></span>
           </label>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <Field label="Arrived on"><Input type="date" max={eatISODate()} value={arrivedAt} onChange={(e) => setArrivedAt(e.target.value)} /></Field>
             <div className="sm:col-span-2"><Field label="Notes about this delivery"><Input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional" /></Field></div>
           </div>
           <p className="text-xs text-muted sm:hidden">
-            {formatNumber(intoStock)} into stock · {formatNumber(damagedBoxes)} damaged · {formatNumber(missingBoxes)} missing · {formatNumber(stillToCome)} still to come (boxes)
+            {formatNumber(intoStock)} boxes into stock{showMoney && ` · ${formatCurrency(stockValue)}`}
+            {missingBoxes > 0 && ` · ${formatNumber(missingBoxes)} missing`}{showMoney && lostValue > 0 && ` · ${formatCurrency(lostValue)} lost`}
+            {stillToCome > 0 && ` · ${formatNumber(stillToCome)} still coming`}
           </p>
         </div>
       )}
@@ -658,8 +740,6 @@ function PODetailModal({ poId, isAdmin, onClose, onEdit, onDelete, onStep }) {
   const when = po && [
     po.createdAt && `Created ${formatDate(po.createdAt)}`,
     po.purchasedAt && `Purchased ${formatDate(po.purchasedAt)}${po.purchasedBy ? ` by ${po.purchasedBy}` : ''}`,
-    po.dispatchedAt && `Dispatched ${formatDate(po.dispatchedAt)}`,
-    po.expectedArrival && !po.receivedAt && `Expected ${formatDate(po.expectedArrival)}`,
     po.receivedAt && `Completed ${formatDate(po.receivedAt)}`,
   ].filter(Boolean).join(' · ');
   const go = (kind) => { onClose(); onStep(kind, po); };
@@ -676,14 +756,11 @@ function PODetailModal({ poId, isAdmin, onClose, onEdit, onDelete, onStep }) {
               <Button onClick={() => go('purchase')}><Wallet className="h-4 w-4" /> Confirm purchase</Button>
             </>
           )}
-          {po && isAdmin && po.status === 'PURCHASED' && (
-            <>
-              <Button variant="secondary" onClick={() => go('cost')}>Add cost</Button>
-              <Button onClick={() => go('dispatch')}><Ship className="h-4 w-4" /> Dispatch</Button>
-            </>
-          )}
           {po && isAdmin && ARRIVING.includes(po.status) && (
             <>
+              {/* A Confirm purchase made by mistake, before anything arrived: the payment is reversed (kept in
+                  the ledger beside it) and the order is a draft again. */}
+              {po.purchasedAt && !po.receipts?.length && <Button variant="secondary" onClick={() => go('undo')}>Undo purchase</Button>}
               <Button variant="secondary" onClick={() => go('cost')}>Add cost</Button>
               <Button onClick={() => go('receive')}><PackageCheck className="h-4 w-4" /> Receive</Button>
             </>
@@ -805,9 +882,7 @@ function PODetailModal({ poId, isAdmin, onClose, onEdit, onDelete, onStep }) {
           <p className="text-[11px] leading-relaxed text-faint">
             {NOT_YET_BOUGHT.includes(po.status)
               ? 'A draft: no money has moved and nothing is in stock. Confirm the purchase once you have paid for it.'
-              : po.status === 'PURCHASED'
-                ? 'Paid for and locked. Dispatch it when the goods leave China.'
-                : ARRIVING.includes(po.status)
+              : ARRIVING.includes(po.status)
                   ? 'On its way. Receive it when it arrives — in parts if it comes in parts. Only good boxes go into stock.'
                   : po.status === 'RECEIVED'
                     ? 'Completed: every box bought was received or recorded missing.'
@@ -820,7 +895,7 @@ function PODetailModal({ poId, isAdmin, onClose, onEdit, onDelete, onStep }) {
 }
 
 const PO_TABS = [
-  ['', 'All'], ['DRAFT', 'Drafts'], ['PURCHASED', 'Purchased'], ['IN_TRANSIT', 'In transit'],
+  ['', 'All'], ['DRAFT', 'Drafts'], ['IN_TRANSIT', 'In transit'],
   ['PARTLY_RECEIVED', 'Part received'], ['RECEIVED', 'Completed'],
 ];
 
@@ -886,11 +961,6 @@ function PurchaseOrders({ isAdmin }) {
                     <p className="text-[11px] text-faint">what is still to come</p>
                   </div>
                 )}
-                <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-wider text-muted">Next arrival</p>
-                  <p className="mt-1.5 text-xl font-bold tabular-nums text-foreground">{otw.nextArrival ? formatDate(otw.nextArrival) : '—'}</p>
-                  <p className="text-[11px] text-faint">{otw.nextArrival ? 'expected' : 'no date set'}</p>
-                </div>
               </>
             )}
             <p className="ml-auto max-w-xs text-[11px] leading-relaxed text-faint">
@@ -959,9 +1029,6 @@ function PurchaseOrders({ isAdmin }) {
                             <Button variant="secondary" className="px-3 py-1 text-xs" onClick={(e) => { e.stopPropagation(); onStep('purchase', po); }}><Wallet className="h-4 w-4" /> Confirm purchase</Button>
                           </>
                         )}
-                        {isAdmin && po.status === 'PURCHASED' && (
-                          <Button variant="secondary" className="px-3 py-1 text-xs" onClick={(e) => { e.stopPropagation(); onStep('dispatch', po); }}><Ship className="h-4 w-4" /> Dispatch</Button>
-                        )}
                         {isAdmin && ARRIVING.includes(po.status) && (
                           <Button variant="secondary" className="px-3 py-1 text-xs" onClick={(e) => { e.stopPropagation(); onStep('receive', po); }}><PackageCheck className="h-4 w-4" /> Receive</Button>
                         )}
@@ -979,7 +1046,7 @@ function PurchaseOrders({ isAdmin }) {
       {editing && <POModal editing={editing} onClose={() => setEditing(null)} />}
       {viewing && <PODetailModal poId={viewing} isAdmin={isAdmin} onClose={() => setViewing(null)} onEdit={setEditing} onDelete={askDelete} onStep={onStep} />}
       {step?.kind === 'purchase' && <ConfirmPurchaseModal poId={step.po.id} onClose={() => setStep(null)} />}
-      {step?.kind === 'dispatch' && <DispatchModal po={step.po} onClose={() => setStep(null)} />}
+      {step?.kind === 'undo' && <UndoPurchaseModal po={step.po} onClose={() => setStep(null)} />}
       {step?.kind === 'cost' && <AddCostModal po={step.po} onClose={() => setStep(null)} />}
       {step?.kind === 'receive' && <ReceiveModal poId={step.po.id} onClose={() => setStep(null)} />}
     </Card>

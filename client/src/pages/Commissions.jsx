@@ -21,6 +21,7 @@ import { pickParam, withParams } from '@/lib/urlParams';
 import { useAuth } from '@/context/AuthContext';
 import { ROLES, WITHDRAWAL_STATUS_META } from '@/lib/constants';
 import { formatCurrency, formatNumber, formatDate, formatDateTime, sharePercents, initials } from '@/lib/format';
+import PayWithdrawalModal from '@/components/PayWithdrawalModal';
 import { PayoutHistory, earnedOn } from '@/components/WithdrawalNote';
 import {
   PageHeader, Card, CardHeader, PageSpinner, EmptyState, LoadError, Badge, Button, Modal, Field, Input, NumberInput, Textarea,
@@ -308,15 +309,13 @@ function RejectWithdrawalModal({ w, busy, onConfirm, onClose }) {
 // whole picture — who asked, how much, where they want it sent, what it leaves
 // them with, and who decided it if someone already has.
 function WithdrawalDetail({ w, balance, isAdmin, onClose, refresh }) {
-  // Approving and then marking paid were two presses for one decision. There
-  // was never a case where he approved and did not pay — the money leaves his
-  // own pocket either way, and the balance already treated APPROVED and PAID
-  // the same. So the one button goes straight to PAID, which is also the only
+  // Approving and then marking paid were two presses for one decision, so Approve & pay goes straight to PAID —
+  // through the Pay window, which takes the money from a chosen business account (15 Nov 2026). PAID is the only
   // status that records the payment in the ledger.
   const decide = useMutation({
-    mutationFn: (action) => api.post(`/commissions/withdrawals/${w.id}/decide`, { action, fromOwnPocket: action === 'PAY' }),
-    onSuccess: (_r, action) => {
-      toast.success(action === 'PAY' ? 'Paid — and recorded on the Commission account' : 'Request rejected');
+    mutationFn: (action) => api.post(`/commissions/withdrawals/${w.id}/decide`, { action }),
+    onSuccess: () => {
+      toast.success('Request rejected');
       refresh();
       onClose();
     },
@@ -326,6 +325,8 @@ function WithdrawalDetail({ w, balance, isAdmin, onClose, refresh }) {
 
   // Reject asks once more before it goes: the rep is told at once that it was not approved.
   const [confirmReject, setConfirmReject] = useState(false);
+  // Paying asks which business account the money leaves (15 Nov 2026).
+  const [paying, setPaying] = useState(false);
 
   const meta = WITHDRAWAL_STATUS_META[w.status] || {};
   const pending = w.status === 'PENDING';
@@ -380,7 +381,7 @@ function WithdrawalDetail({ w, balance, isAdmin, onClose, refresh }) {
         {pending && !confirmReject && (
           <div className={clsx('grid gap-2', payable ? 'grid-cols-2' : 'grid-cols-1')}>
             {payable && (
-              <Button className="justify-center py-2.5" loading={decide.isPending} onClick={() => decide.mutate('PAY')}>
+              <Button className="justify-center py-2.5" disabled={decide.isPending} onClick={() => setPaying(true)}>
                 <ShieldCheck className="h-4 w-4" /> Approve &amp; pay
               </Button>
             )}
@@ -404,28 +405,30 @@ function WithdrawalDetail({ w, balance, isAdmin, onClose, refresh }) {
           </div>
         )}
         {approved && payable && (
-          <Button className="w-full justify-center py-2.5" loading={decide.isPending} onClick={() => decide.mutate('PAY')}>
-            <Coins className="h-4 w-4" /> Mark paid — from my pocket
+          <Button className="w-full justify-center py-2.5" disabled={decide.isPending} onClick={() => setPaying(true)}>
+            <Coins className="h-4 w-4" /> Pay
           </Button>
         )}
         {((pending && !confirmReject) || (approved && !payable)) && (
           <p className="text-[11px] leading-snug text-faint">
             {payable
-              ? `One press marks it paid from your own pocket, records it on the Commission account${bonus ? ' as a bonus payment' : ''} and tells the rep it has been paid. Send the money first.`
+              ? `Pay asks which account the money leaves (Cash, Airtel Money or M-Pesa), takes it from there${bonus ? ' as a bonus payment' : ''} and tells the rep it has been paid.`
               : 'Only the owner pays a bonus withdrawal.'}
           </p>
         )}
       </div>
+      {paying && <PayWithdrawalModal w={w} onClose={() => setPaying(false)} onDone={() => { refresh(); onClose(); }} />}
     </Modal>
   );
 }
 
 function PendingWithdrawalsStrip({ items, isAdmin, refresh, onOpen }) {
   const [rejecting, setRejecting] = useState(null);
+  const [paying, setPaying] = useState(null);
   const decide = useMutation({
-    mutationFn: ({ id, action }) => api.post(`/commissions/withdrawals/${id}/decide`, { action, fromOwnPocket: action === 'PAY' }),
-    onSuccess: (_r, v) => {
-      toast.success(v.action === 'PAY' ? 'Paid — and recorded on the Commission account' : 'Request rejected');
+    mutationFn: ({ id, action }) => api.post(`/commissions/withdrawals/${id}/decide`, { action }),
+    onSuccess: () => {
+      toast.success('Request rejected');
       refresh();
     },
     onError: (e) => { toast.error(apiError(e)); refresh(); },
@@ -439,7 +442,7 @@ function PendingWithdrawalsStrip({ items, isAdmin, refresh, onOpen }) {
         <Coins className="h-4 w-4 text-amber-400" />
         <h2 className="text-sm font-bold text-foreground">Withdrawal requests</h2>
         <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] font-bold text-amber-400">{items.length}</span>
-        <span className="ml-auto hidden text-xs text-faint sm:block">One press pays it, from your own pocket</span>
+        <span className="ml-auto hidden text-xs text-faint sm:block">Pay takes it from Cash, Airtel Money or M-Pesa</span>
       </div>
       <div className="divide-y divide-border">
         {items.map((w) => {
@@ -460,8 +463,8 @@ function PendingWithdrawalsStrip({ items, isAdmin, refresh, onOpen }) {
                     withdrawal is paid by the owner only: staff see no Pay on it. */}
                 {w.status === 'APPROVED' ? (
                   canPay(w, isAdmin) ? (
-                    <Button className="max-sm:min-h-11 max-sm:flex-1" loading={busy} onClick={() => decide.mutate({ id: w.id, action: 'PAY' })}>
-                      <Coins className="h-4 w-4" /> Approved · mark paid
+                    <Button className="max-sm:min-h-11 max-sm:flex-1" disabled={busy} onClick={() => setPaying(w)}>
+                      <Coins className="h-4 w-4" /> Approved · pay
                     </Button>
                   ) : <span className="self-center text-[11px] text-faint">The owner pays it</span>
                 ) : (
@@ -469,7 +472,7 @@ function PendingWithdrawalsStrip({ items, isAdmin, refresh, onOpen }) {
                     <Button variant="ghost" className="text-rose-400 max-sm:min-h-11 max-sm:flex-1" disabled={busy}
                       onClick={() => setRejecting(w)}>Reject</Button>
                     {canPay(w, isAdmin) && (
-                      <Button className="max-sm:min-h-11 max-sm:flex-1" loading={busy} onClick={() => decide.mutate({ id: w.id, action: 'PAY' })}>
+                      <Button className="max-sm:min-h-11 max-sm:flex-1" disabled={busy} onClick={() => setPaying(w)}>
                         <ShieldCheck className="h-4 w-4" /> Approve &amp; pay
                       </Button>
                     )}
@@ -488,6 +491,7 @@ function PendingWithdrawalsStrip({ items, isAdmin, refresh, onOpen }) {
           onConfirm={() => decide.mutate({ id: rejecting.id, action: 'REJECT' }, { onSettled: () => setRejecting(null) })}
         />
       )}
+      {paying && <PayWithdrawalModal w={paying} onClose={() => setPaying(null)} onDone={refresh} />}
     </Card>
   );
 }
@@ -2795,6 +2799,7 @@ function AdminView({ embedded = false }) {
   const [tab, setTab] = useTabParam(embedded ? 'section' : 'tab', ADMIN_TABS, 'balances');
   const [openWd, setOpenWd] = useState(null); // a withdrawal being read
   const [rejectingWd, setRejectingWd] = useState(null); // a Reject waiting for its confirmation
+  const [payingWd, setPayingWd] = useState(null); // a Pay choosing its business account
   const { data: summary, isLoading, isError, refetch } = useQuery(pageQueries.commissionsSummary());
   // The payout requests are an approval queue like Settle, Requests and Returns: asked again every minute
   // while the page is open, so a rep's new request shows without a click or a focus (audit freshness-5).
@@ -2831,9 +2836,9 @@ function AdminView({ embedded = false }) {
   });
 
   const decide = useMutation({
-    mutationFn: ({ id, action, fromOwnPocket }) => api.post(`/commissions/withdrawals/${id}/decide`, { action, fromOwnPocket }),
-    onSuccess: (_r, v) => {
-      toast.success(v?.fromOwnPocket ? 'Paid from your own money — the business account is untouched' : 'Updated');
+    mutationFn: ({ id, action }) => api.post(`/commissions/withdrawals/${id}/decide`, { action }),
+    onSuccess: () => {
+      toast.success('Updated');
       refreshAfter(qc, 'payout');
     },
     // A lost answer may still have paid it: reload so the row shows its real state (audit backend-integrity-5).
@@ -2991,7 +2996,7 @@ function AdminView({ embedded = false }) {
                                 {w.status === 'PENDING' && <>
                                   {/* Staff never see Pay on a bonus withdrawal: only the owner pays one. */}
                                   {canPay(w, isAdmin) && (
-                                  <Button className="min-h-11 flex-1 whitespace-nowrap px-3 py-1 text-[13px] sm:min-h-0 sm:flex-none sm:px-2 sm:text-xs" aria-label="Approve & pay" loading={decide.isPending && decide.variables?.id === w.id && decide.variables?.action === 'PAY'} disabled={decide.isPending} onClick={() => decide.mutate({ id: w.id, action: 'PAY', fromOwnPocket: true })}>
+                                  <Button className="min-h-11 flex-1 whitespace-nowrap px-3 py-1 text-[13px] sm:min-h-0 sm:flex-none sm:px-2 sm:text-xs" aria-label="Approve & pay" disabled={decide.isPending} onClick={() => setPayingWd(w)}>
                                     <span className="sm:hidden">Pay</span><span className="hidden sm:inline">Approve &amp; pay</span>
                                   </Button>
                                   )}
@@ -3001,10 +3006,9 @@ function AdminView({ embedded = false }) {
                                   <span className="self-center text-[11px] text-faint">The owner pays it</span>
                                 )}
                                 {w.status === 'APPROVED' && canPay(w, isAdmin) && (
-                                  // One button, because there is only one truth: rep commission comes out of the owner's
-                                  // own pocket, for both brands. The payout's own sheet says "from my pocket" in full.
-                                  <Button className="min-h-11 flex-1 whitespace-nowrap px-3 py-1 text-[13px] sm:min-h-0 sm:flex-none sm:px-2 sm:text-xs" aria-label="Mark paid — from my pocket" loading={decide.isPending && decide.variables?.id === w.id} disabled={decide.isPending} onClick={() => decide.mutate({ id: w.id, action: 'PAY', fromOwnPocket: true })}>
-                                    Mark paid<span className="hidden sm:inline"> — from my pocket</span>
+                                  // Paid from a business account, chosen in the Pay window (15 Nov 2026).
+                                  <Button className="min-h-11 flex-1 whitespace-nowrap px-3 py-1 text-[13px] sm:min-h-0 sm:flex-none sm:px-2 sm:text-xs" aria-label="Pay" disabled={decide.isPending} onClick={() => setPayingWd(w)}>
+                                    Pay
                                   </Button>
                                 )}
                               </div>
@@ -3033,6 +3037,7 @@ function AdminView({ embedded = false }) {
               onConfirm={() => decide.mutate({ id: rejectingWd.id, action: 'REJECT' }, { onSettled: () => setRejectingWd(null) })}
             />
           )}
+          {payingWd && <PayWithdrawalModal w={payingWd} onClose={() => setPayingWd(null)} onDone={refreshPayouts} />}
         </div>
       )}
 

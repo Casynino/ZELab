@@ -32,6 +32,7 @@ import toast from 'react-hot-toast';
 import api, { apiError } from '@/lib/api';
 import { pageQueries } from '@/lib/pageQueries';
 import { refreshAfter } from '@/lib/afterWrite';
+import PayWithdrawalModal from '@/components/PayWithdrawalModal';
 import { useAuth } from '@/context/AuthContext';
 import { formatCurrency, formatNumber, formatPercent, formatDateTime } from '@/lib/format';
 import { TrendChart, BarChartCard, DonutChart, MonthBars } from '@/components/chartsLazy';
@@ -128,15 +129,14 @@ function ReviewWithdrawals({ items, onClose }) {
   const [busy, setBusy] = useState(null);
   // Reject asks once more, as it does on Commissions (audit money-flows-5): the rep is told at once.
   const [rejecting, setRejecting] = useState(null);
+  // Pay asks which business account the money leaves, as on Commissions (15 Nov 2026).
+  const [paying, setPaying] = useState(null);
 
-  // One press, not two. Approving and then marking paid were separate steps for
-  // a single decision, and there was never a case where he approved and did not
-  // pay — so this goes straight to PAID, which is also the only status that
-  // records the payment against the Commission account.
+  // Reject is one press here; paying goes through the Pay window (choose the account).
   const decide = useMutation({
-    mutationFn: ({ id, action }) => api.post(`/commissions/withdrawals/${id}/decide`, { action, fromOwnPocket: action === 'PAY' }),
-    onSuccess: (_r, v) => {
-      toast.success(v.action === 'PAY' ? 'Paid' : 'Rejected');
+    mutationFn: ({ id, action }) => api.post(`/commissions/withdrawals/${id}/decide`, { action }),
+    onSuccess: () => {
+      toast.success('Rejected');
       refreshAfter(qc, 'payout'); // Finance's Commission paid and Sales reps too (audit freshness-2/3)
       onClose();
     },
@@ -208,19 +208,19 @@ function ReviewWithdrawals({ items, onClose }) {
             ) : w.status === 'APPROVED' ? (
               // Approved earlier through the API but not yet paid: it still waits for the money (audit money-flows-7).
               <button type="button" disabled={!!busy}
-                onClick={() => run(w.id, 'PAY')}
+                onClick={() => setPaying(w)}
                 className="mt-3 flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-brand-500 text-[13px] font-bold text-white ring-1 ring-brand-500 transition active:scale-[0.97] disabled:opacity-60">
                 <Coins className="h-4 w-4" />
-                {busy === `${w.id}:PAY` ? 'Paying…' : 'Approved · mark paid'}
+                Approved · pay
               </button>
             ) : (
               <div className={clsx('mt-3 grid gap-2', payable(w) ? 'grid-cols-2' : 'grid-cols-1')}>
                 {payable(w) && (
                   <button type="button" disabled={!!busy}
-                    onClick={() => run(w.id, 'PAY')}
+                    onClick={() => setPaying(w)}
                     className="flex h-11 items-center justify-center gap-2 rounded-xl bg-brand-500 text-[13px] font-bold text-white ring-1 ring-brand-500 transition active:scale-[0.97] disabled:opacity-60">
                     <ShieldCheck className="h-4 w-4" />
-                    {busy === `${w.id}:PAY` ? 'Paying…' : 'Approve & pay'}
+                    Approve &amp; pay
                   </button>
                 )}
                 <button type="button" disabled={!!busy}
@@ -234,13 +234,14 @@ function ReviewWithdrawals({ items, onClose }) {
           </div>
         ))}
 
-        {/* The same words as the Commissions window (audit money-flows-5): this button marks it PAID. */}
+        {/* The same words as the Commissions window (audit money-flows-5). */}
         <p className="text-[11px] leading-snug text-faint">
-          One press marks it paid from your own pocket, records it on the Commission account and tells the rep it
+          Pay asks which account the money leaves (Cash, Airtel Money or M-Pesa), takes it from there and tells the rep it
           has been paid. Send the money first.
           {!isAdmin && items.some(isBonus) && ' Only the owner pays a bonus withdrawal.'}
         </p>
       </div>
+      {paying && <PayWithdrawalModal w={paying} onClose={() => setPaying(null)} onDone={() => { refreshAfter(qc, 'payout'); onClose(); }} />}
     </Modal>
   );
 }

@@ -6,7 +6,6 @@ const { ok, created, paginated } = require('../utils/response');
 const { parsePagination } = require('../utils/pagination');
 const commission = require('../services/commission.service');
 const bonus = require('../services/bonus.service');
-const finance = require('../services/finance.service');
 const audit = require('../services/audit.service');
 const { ROLES } = require('../middleware/authorize');
 
@@ -56,21 +55,17 @@ const requestWithdrawal = asyncHandler(async (req, res) => {
 });
 
 const decideWithdrawal = asyncHandler(async (req, res) => {
-  const w = await commission.decideWithdrawal(req.params.id, req.body.action, req.user);
-  // Paying a withdrawal moves real money. `fromOwnPocket` says the owner
-  // funded it personally, which also records his contribution so the
-  // business account is not drained for money it never held.
-  if (w.status === 'PAID') {
-    finance.recordCommissionPayment({
-      amount: w.amount,
-      who: w.salesRep?.user?.name,
-      refId: w.id,
-      occurredAt: w.paidAt || new Date(),
-      fromOwnPocket: req.body.fromOwnPocket === true,
-      source: w.source,
-    }, req.user).catch(() => {});
-  }
-  await audit.record(req, { action: req.body.action, entityType: 'CommissionWithdrawal', entityId: req.params.id, newValues: { source: w.source } });
+  // Paying records the money from the chosen business account in the same transaction as PAID (15 Nov 2026).
+  const w = await commission.decideWithdrawal(req.params.id, req.body.action, req.user, {
+    accountId: req.body.accountId,
+    occurredAt: req.body.occurredAt,
+  });
+  await audit.record(req, {
+    action: req.body.action,
+    entityType: 'CommissionWithdrawal',
+    entityId: req.params.id,
+    newValues: { source: w.source, ...(req.body.action === 'PAY' ? { accountId: req.body.accountId, amount: w.amount } : {}) },
+  });
   return ok(res, w);
 });
 
