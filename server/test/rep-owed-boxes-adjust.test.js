@@ -15,6 +15,7 @@ const install = (path, exports) => {
 
 const state = { held: 10, owedOn: { o1: 6 }, moved: [] };
 const tx = {
+  inventoryTransaction: { findFirst: async () => null },
   settlement: {
     findMany: async ({ where }) => (where.salesRepId === 'rep1'
       ? [{ id: 'o1', settlementNumber: 'STL-1', salesRepId: 'rep1', status: 'OPEN' }]
@@ -42,7 +43,7 @@ const ctrl = require('../src/controllers/inventory.controller');
 function call(handler, body) {
   return new Promise((resolve) => {
     const res = { status() { return this; }, json: (payload) => resolve({ ok: payload }) };
-    handler({ body, user: { id: 'admin' } }, res, (err) => resolve({ err }));
+    handler({ body, user: { id: 'admin', role: 'ADMIN' } }, res, (err) => resolve({ err }));
   });
 }
 const repPlace = { type: 'SALES_REP', salesRepId: 'rep1' };
@@ -86,7 +87,7 @@ test('when every box he holds is owed, the message does not offer any', async ()
 
 test('an increase at a rep\'s place, and any warehouse entry, are not affected', async () => {
   state.moved.length = 0;
-  const up = await call(ctrl.adjust, { ...base, location: repPlace, quantity: 50, direction: 'INCREASE' });
+  const up = await call(ctrl.adjust, { ...base, location: repPlace, quantity: 50, direction: 'INCREASE', clientKey: 'press-rep-up-1' });
   assert.ok(up.ok);
   const wh = await call(ctrl.damage, { ...base, location: { type: 'WAREHOUSE', warehouseId: 'w1' }, quantity: 50 });
   assert.ok(wh.ok);

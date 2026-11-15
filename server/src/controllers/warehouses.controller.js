@@ -57,6 +57,11 @@ const get = asyncHandler(async (req, res) => {
     })
     .sort((a, b) => b.value - a.value);
 
+  // Stock at its buying price is the owner's (audit ui-ad00, 15 Nov 2026): anyone else gets the boxes only — a line's
+  // value divided by its boxes was the buying price, and this route is open to every signed-in user.
+  if (req.user?.role !== 'ADMIN') {
+    return ok(res, { ...warehouse, stock: stock.map(({ value: _v, ...line }) => line).sort((a, b) => b.baseQuantity - a.baseQuantity) }); // eslint-disable-line no-unused-vars
+  }
   return ok(res, { ...warehouse, stockValue: round2(value), stock });
 });
 

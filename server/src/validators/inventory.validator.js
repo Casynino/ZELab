@@ -69,20 +69,24 @@ const oneOrMany = (schema) => schema
     message: 'Each product can only be in the list once', path: ['items'],
   });
 
+// `clientKey`: one per press of the form (audit reps-02, 15 Nov 2026). Kept on the ledger rows, so a double tap or a
+// retry after a lost answer moves the stock once. Adding boxes needs it (and the admin); taking off may send it.
 const adjustment = {
   body: oneOrMany(z.object({
     location: locationSchema,
     direction: z.enum(['INCREASE', 'DECREASE']),
-    reason: z.string().min(1, 'A reason is required for adjustments').max(500),
+    reason: z.string().trim().min(1, 'A reason is required for adjustments').max(500),
     occurredAt: z.string().datetime().optional(),
+    clientKey: z.string().trim().min(8).max(80).optional(),
   })),
 };
 
 const damage = {
   body: oneOrMany(z.object({
     location: locationSchema,
-    reason: z.string().min(1, 'A reason is required').max(500),
+    reason: z.string().trim().min(1, 'A reason is required').max(500),
     occurredAt: z.string().datetime().optional(),
+    clientKey: z.string().trim().min(8).max(80).optional(),
   })),
 };
 

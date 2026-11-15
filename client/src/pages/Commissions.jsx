@@ -654,10 +654,11 @@ function FinesHistory({ admin, canForgive = admin }) {
     : formatDateTime(p.appliedAt));
   // On a phone Type and Order move under the rep with Forgive on its own line there, Status and Date under
   // the amount, so a 375 px screen shows the whole fine and its Forgive without scrolling sideways (it was
-  // clipped by 19 px). Below lg Status stays under the amount, so a tablet held upright keeps the table
-  // inside its card; below xl the order sits under the type, so a 1024 px screen does too.
+  // clipped by 19 px). Below xl Status and Date stay under the amount and the order sits under the type, so a
+  // tablet held upright and a 1024 px screen with the sidebar open keep the table and its Forgive inside the card
+  // (audit ui-ad08: with Status and Date in their own columns it was 754-860 px in a 728 px card there).
   const head = (
-    <THead><TR>{admin && <TH>Rep</TH>}<TH className="hidden sm:table-cell">Type</TH><TH className="hidden xl:table-cell">Order</TH><TH className="text-right">Amount</TH><TH className="hidden lg:table-cell">Status</TH><TH className="hidden sm:table-cell">Date</TH>{admin && <TH className="hidden sm:table-cell" />}</TR></THead>
+    <THead><TR>{admin && <TH>Rep</TH>}<TH className="hidden sm:table-cell">Type</TH><TH className="hidden xl:table-cell">Order</TH><TH className="text-right">Amount</TH><TH className="hidden xl:table-cell">Status</TH><TH className="hidden xl:table-cell">Date</TH>{admin && <TH className="hidden sm:table-cell" />}</TR></THead>
   );
   const forgiveButton = (p) => (
     <button
@@ -692,14 +693,14 @@ function FinesHistory({ admin, canForgive = admin }) {
         <TD className="hidden text-faint xl:table-cell" title={p.notes || undefined}>{p.settlement?.settlementNumber || '—'}</TD>
         <TD className="text-right">
           <span className={`font-semibold tabular-nums ${waived ? 'text-faint line-through' : 'text-rose-300'}`}>−{formatCurrency(p.amount)}</span>
-          <div className="mt-1 flex flex-col items-end gap-0.5 text-[11px] text-faint lg:hidden">
+          <div className="mt-1 flex flex-col items-end gap-0.5 text-[11px] text-faint xl:hidden">
             {statusBadge(p)}
-            <span className="mt-0.5 whitespace-nowrap sm:hidden">{formatDateTime(p.appliedAt)}</span>
-            {waived && p.waivedAt && <span className="whitespace-nowrap sm:hidden">forgiven {formatDateTime(p.waivedAt)}</span>}
+            <span className="mt-0.5 whitespace-nowrap">{formatDateTime(p.appliedAt)}</span>
+            {waived && p.waivedAt && <span className="whitespace-nowrap">forgiven {formatDateTime(p.waivedAt)}</span>}
           </div>
         </TD>
-        <TD className="hidden lg:table-cell">{statusBadge(p)}</TD>
-        <TD className="hidden text-faint sm:table-cell">{dateLine(p)}</TD>
+        <TD className="hidden xl:table-cell">{statusBadge(p)}</TD>
+        <TD className="hidden text-faint xl:table-cell">{dateLine(p)}</TD>
         {admin && (
           <TD className="hidden sm:table-cell">
             {!waived && canForgive && forgiveButton(p)}

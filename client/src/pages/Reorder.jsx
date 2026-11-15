@@ -1,8 +1,10 @@
 import { useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'motion/react';
-import { AlertTriangle, Clock, Wallet, Gauge, ChevronDown, PackageSearch, CheckCircle2 } from 'lucide-react';
+import { AlertTriangle, Clock, Wallet, Gauge, ChevronDown, PackageSearch, CheckCircle2, Boxes } from 'lucide-react';
 import api, { unwrap } from '@/lib/api';
+import { useAuth } from '@/context/AuthContext';
+import { ROLES } from '@/lib/constants';
 import { formatCurrency, formatNumber, pluralizeUnit } from '@/lib/format';
 import {
   PageHeader, Card, CardHeader, PageSpinner, EmptyState, Badge, LoadError,
@@ -55,6 +57,9 @@ export default function Reorder({ tabs } = {}) {
   });
   const [band, setBand] = useState('');
   const [showAll, setShowAll] = useState(false);
+  // What the order costs is at the buying price, so the owner's (audit ui-ad01): staff get the boxes to order and
+  // no money — the server sends them none.
+  const isAdmin = useAuth().user?.role === ROLES.ADMIN;
 
   // Labels quote the thresholds and the window, so they need a floor to read
   // sensibly if the request ever comes back empty.
@@ -71,6 +76,9 @@ export default function Reorder({ tabs } = {}) {
 
   const pace = `the last ${s.lookbackDays} days`;
   const urgent = (s.criticalCount || 0) + (s.highCount || 0);
+  const boxesOf = (rows) => rows.reduce((n, r) => n + (Number(r.recommendedQty) || 0), 0);
+  const orderBoxes = boxesOf(recs);
+  const urgentBoxes = boxesOf(recs.filter((r) => r.urgency === 'CRITICAL' || r.urgency === 'HIGH'));
 
   const chips = [
     { key: '', label: 'Everything to reorder', count: s.reorderCount || 0, tone: 'slate' },
@@ -94,13 +102,20 @@ export default function Reorder({ tabs } = {}) {
       quiet: !(s.highCount > 0),
       ring: 'ring-amber-500/30', glow: 'from-amber-500/[0.14]', chip: 'bg-amber-500/15 text-amber-300', num: 'text-amber-300',
     },
-    {
+    isAdmin ? {
       label: 'Cost of this order', value: formatCurrency(s.estimatedReorderValue || 0), icon: Wallet,
       sub: urgent > 0
         ? `${formatCurrency(s.urgentValue || 0)} of it cannot wait`
         : `${formatNumber(s.reorderCount || 0)} product${s.reorderCount === 1 ? '' : 's'}, none urgent`,
       quiet: !(s.estimatedReorderValue > 0),
       ring: 'ring-brand-500/25', glow: 'from-brand-500/[0.12]', chip: 'bg-brand-500/15 text-brand-600', num: 'text-brand-600',
+    } : {
+      label: 'Boxes to order', value: formatNumber(orderBoxes), icon: Boxes,
+      sub: urgent > 0
+        ? `${formatNumber(urgentBoxes)} of them cannot wait`
+        : `${formatNumber(s.reorderCount || 0)} product${s.reorderCount === 1 ? '' : 's'}, none urgent`,
+      quiet: !(orderBoxes > 0),
+      ring: 'ring-white/[0.08]', glow: 'from-white/[0.03]', chip: 'bg-white/10 text-foreground', num: 'text-foreground',
     },
     {
       label: 'Below minimum, still covered', value: formatNumber(s.lowCount || 0), icon: Gauge,
@@ -145,9 +160,13 @@ export default function Reorder({ tabs } = {}) {
             : <> Nothing runs out within {s.criticalDays} days</>}
           {s.highCount > 0 && <>, <b className="text-amber-400">{formatNumber(s.highCount)}</b> inside {s.highDays}</>}
           {' '}at the pace of {pace}.
-          {s.estimatedReorderValue > 0 && (
+          {isAdmin && s.estimatedReorderValue > 0 && (
             <> The whole order comes to <b className="text-foreground">{formatCurrency(s.estimatedReorderValue)}</b>
               {urgent > 0 ? <>, of which <b className="text-rose-400">{formatCurrency(s.urgentValue || 0)}</b> cannot wait</> : ' — none of it urgent'}.</>
+          )}
+          {!isAdmin && orderBoxes > 0 && (
+            <> The whole order comes to <b className="text-foreground">{formatNumber(orderBoxes)}</b> boxes
+              {urgent > 0 ? <>, of which <b className="text-rose-400">{formatNumber(urgentBoxes)}</b> cannot wait</> : ' — none of them urgent'}.</>
           )}
           {s.belowMinCount > 0 && (
             <> <b className="text-foreground">{formatNumber(s.belowMinCount)}</b> product{s.belowMinCount === 1 ? ' sits' : 's sit'} at or below the
@@ -205,7 +224,7 @@ export default function Reorder({ tabs } = {}) {
                     title={r.name}
                     figure={r.daysRemaining === null ? '—' : <>{formatNumber(r.daysRemaining)} <span className="text-[12px] font-medium text-muted">day{r.daysRemaining === 1 ? '' : 's'}</span></>}
                     figureClass={r.daysRemaining === null ? 'text-faint' : meta.num}
-                    sub={`${formatNumber(r.onHand)} on hand${r.onTheWay > 0 ? ` · ${formatNumber(r.onTheWay)} on the way` : ''} · ${r.recommendedQty > 0 ? `order ${formatNumber(r.recommendedQty)} ${unit} · ${formatCurrency(r.recommendedValue)}` : 'nothing to order yet'}`}
+                    sub={`${formatNumber(r.onHand)} on hand${r.onTheWay > 0 ? ` · ${formatNumber(r.onTheWay)} on the way` : ''} · ${r.recommendedQty > 0 ? `order ${formatNumber(r.recommendedQty)} ${unit}${isAdmin ? ` · ${formatCurrency(r.recommendedValue)}` : ''}` : 'nothing to order yet'}`}
                     badge={<Badge className={meta.badge}>{meta.label}</Badge>}
                     extra={<span className="mt-1 block text-[11px] leading-snug text-faint">{r.brand ? `${r.brand} · ` : ''}{r.reason}</span>}
                   />
@@ -240,7 +259,7 @@ export default function Reorder({ tabs } = {}) {
                           <>
                             <span className="font-semibold tabular-nums text-foreground">{formatNumber(r.recommendedQty)}</span>
                             <span className="text-xs text-faint"> {pluralizeUnit(r.baseUnitName)}</span>
-                            <div className="text-[11px] text-faint">{formatCurrency(r.recommendedValue)}</div>
+                            {isAdmin && <div className="text-[11px] text-faint">{formatCurrency(r.recommendedValue)}</div>}
                           </>
                         ) : (
                           <span className="text-xs text-faint">nothing yet</span>

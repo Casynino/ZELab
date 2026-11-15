@@ -467,8 +467,11 @@ export default function SalesReps() {
   })();
   const rateTone = (p) => (p >= 90 ? 'text-emerald-300' : p >= 70 ? 'text-amber-300' : 'text-rose-300');
 
+  // The held stock's value is at its buying price, so the owner's: staff see how many reps hold boxes (the server
+  // sends them no value).
+  const holding = reps.filter((r) => Number(r.heldUnits || 0) > 0).length;
   const strip = [
-    { label: 'Boxes out with reps', value: formatNumber(t.boxes), sub: `${formatCurrency(t.value)} of stock`, num: 'text-violet-300', dot: 'bg-violet-400' },
+    { label: 'Boxes out with reps', value: formatNumber(t.boxes), sub: isAdmin ? `${formatCurrency(t.value)} of stock` : `with ${formatNumber(holding)} rep${holding === 1 ? '' : 's'}`, num: 'text-violet-300', dot: 'bg-violet-400' },
     { label: 'Running late', value: formatNumber(t.late), sub: t.late > 0 ? `${formatNumber(t.lateReps)} rep${t.lateReps === 1 ? '' : 's'} past deadline` : 'everyone inside the window', num: t.late > 0 ? 'text-rose-300' : 'text-foreground', dot: t.late > 0 ? 'bg-rose-400' : 'bg-white/25' },
     { label: 'Commission owed', value: formatCurrency(t.owed), sub: 'earned, not yet withdrawn', num: t.owed > 0 ? 'text-amber-300' : 'text-foreground', dot: 'bg-amber-400' },
     { label: 'Settled on time', value: teamRate == null ? '—' : `${teamRate}%`, sub: teamRate == null ? 'no orders closed yet' : `of ${formatNumber(t.settled)} orders closed`, num: teamRate == null ? 'text-foreground' : rateTone(teamRate), dot: 'bg-emerald-400', bar: teamRate },

@@ -48,30 +48,36 @@ const median = (xs) => {
   return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
 };
 
-async function repStockList(salesRepId) {
+// What a rep holds. `value` is the stock at its buying price, which is the owner's figure: warehouse staff get the
+// boxes only (audit ui-ad00 / reps-01, 15 Nov 2026 — a product's value divided by its boxes was its buying price,
+// and no key-name strip catches a plain `value`). Without the cost the list is ordered by boxes held.
+const seesCost = (req) => req.user?.role === 'ADMIN';
+
+async function repStockList(salesRepId, { withCost = false } = {}) {
   const balances = (await inventory.repBalances(prisma, salesRepId)).filter((b) => b.baseQuantity !== 0);
   const products = await prisma.product.findMany({
     where: { id: { in: balances.map((b) => b.productId) } },
-    select: { id: true, name: true, sku: true, baseUnitName: true, purchasePrice: true, sellingPrice: true },
+    select: { id: true, name: true, sku: true, baseUnitName: true, purchasePrice: withCost },
   });
   const pMap = new Map(products.map((p) => [p.id, p]));
   let value = 0;
   const stock = balances
     .map((b) => {
       const p = pMap.get(b.productId);
-      const v = round2(b.baseQuantity * toNumber(p?.purchasePrice));
-      value += v;
-      return {
+      const line = {
         productId: b.productId,
         name: p?.name,
         sku: p?.sku,
         baseUnitName: p?.baseUnitName,
         baseQuantity: b.baseQuantity,
-        value: v,
       };
+      if (!withCost) return line;
+      const v = round2(b.baseQuantity * toNumber(p?.purchasePrice));
+      value += v;
+      return { ...line, value: v };
     })
-    .sort((a, b) => b.value - a.value);
-  return { stock, value: round2(value) };
+    .sort((a, b) => (withCost ? b.value - a.value : b.baseQuantity - a.baseQuantity));
+  return withCost ? { stock, value: round2(value) } : { stock };
 }
 
 const list = asyncHandler(async (req, res) => {
@@ -121,8 +127,10 @@ const list = asyncHandler(async (req, res) => {
       },
     }),
   ]);
-  const prodIds = [...new Set(heldRows.map((r) => r.productId))];
-  const prods = await prisma.product.findMany({ where: { id: { in: prodIds } }, select: { id: true, purchasePrice: true } });
+  // Held stock at its buying price: the owner's only (audit reps-01).
+  const withCost = seesCost(req);
+  const prodIds = withCost ? [...new Set(heldRows.map((r) => r.productId))] : [];
+  const prods = prodIds.length ? await prisma.product.findMany({ where: { id: { in: prodIds } }, select: { id: true, purchasePrice: true } }) : [];
   const costMap = new Map(prods.map((p) => [p.id, toNumber(p.purchasePrice)]));
   const heldValue = new Map();
   const heldUnits = new Map();
@@ -187,7 +195,7 @@ const list = asyncHandler(async (req, res) => {
       onTimeRate: rec ? round2((rec.onTime / rec.settled) * 100) : null,
       medianHoursToClose: rec ? round2(median(rec.hours)) : null,
       salesShare: teamSales > 0 ? round2((repSales / teamSales) * 100) : 0,
-      heldStockValue: round2(heldValue.get(r.id) || 0),
+      ...(withCost ? { heldStockValue: round2(heldValue.get(r.id) || 0) } : {}),
       heldUnits: heldUnits.get(r.id) || 0,
       commissionOwed: round2(commMap.get(r.id) || 0),
       totalSales: round2(repSales),
@@ -212,15 +220,16 @@ const get = asyncHandler(async (req, res) => {
   });
   if (!rep) throw ApiError.notFound('Sales representative not found');
 
+  const withCost = seesCost(req);
   const [{ stock, value }, commissionData, salesAgg] = await Promise.all([
-    repStockList(rep.id),
+    repStockList(rep.id, { withCost }),
     require('../services/commission.service').computeForRep(rep.id).catch(() => null),
     prisma.sale.aggregate({ where: { salesRepId: rep.id, status: { not: 'CANCELLED' } }, _sum: { total: true }, _count: true }),
   ]);
 
   return ok(res, {
     ...rep,
-    heldStockValue: value,
+    ...(withCost ? { heldStockValue: value } : {}),
     heldStock: stock,
     commissionOwed: round2(toNumber(commissionData?.available)),
     totalSales: round2(toNumber(salesAgg._sum.total)),
@@ -506,8 +515,9 @@ const getProfile = asyncHandler(async (req, res) => {
   });
   if (!rep) throw ApiError.notFound('Sales representative not found');
 
+  const withCost = seesCost(req);
   const [{ stock, value }, comm, settlementsRes] = await Promise.all([
-    repStockList(rep.id),
+    repStockList(rep.id, { withCost }),
     commission.computeForRep(rep.id),
     settlement.list({ salesRepId: rep.id }, { skip: 0, take: 200, orderBy: { deadlineAt: 'asc' } }),
   ]);
@@ -572,7 +582,7 @@ const getProfile = asyncHandler(async (req, res) => {
       whatsappApiKey: rep.whatsappApiKey || null,
       customers: rep._count?.customers ?? 0,
     },
-    stock: { items: stock, value },
+    stock: withCost ? { items: stock, value } : { items: stock },
     commission: {
       earned: comm.earned,
       paid: comm.paid,
@@ -614,7 +624,7 @@ const getProfile = asyncHandler(async (req, res) => {
 const getStock = asyncHandler(async (req, res) => {
   const rep = await prisma.salesRepresentative.findUnique({ where: { id: req.params.id } });
   if (!rep) throw ApiError.notFound('Sales representative not found');
-  const result = await repStockList(rep.id);
+  const result = await repStockList(rep.id, { withCost: seesCost(req) });
   return ok(res, result);
 });
 
@@ -622,7 +632,9 @@ const getReconciliation = asyncHandler(async (req, res) => {
   const rep = await prisma.salesRepresentative.findUnique({ where: { id: req.params.id } });
   if (!rep) throw ApiError.notFound('Sales representative not found');
   const items = await stockCount.repReconciliation(rep.id);
-  return ok(res, { salesRepId: rep.id, items });
+  // missingValue is the missing boxes at their buying price: the owner's figure, as above.
+  const shown = seesCost(req) ? items : items.map(({ missingValue, ...rest }) => rest); // eslint-disable-line no-unused-vars
+  return ok(res, { salesRepId: rep.id, items: shown });
 });
 
 const create = asyncHandler(async (req, res) => {
@@ -709,6 +721,20 @@ async function wipeRepActivity(repId, userId) {
     // Checked inside the wipe as well as on the delete screen, so "reset data" cannot do it either.
     const inBooks = await repMoneyInBooks(tx, repId);
     if (inBooks > 0) throw ApiError.badRequest(moneyInBooksReason('This rep', inBooks));
+    // Boxes the rep still holds are goods the business is owed (audit reps-03, 15 Nov 2026): "Reset data" deleted his
+    // ledger rows while the warehouse's TRANSFER_OUT stayed, so they left stock with no record. Reset, purge and the
+    // user purge all come through here and refuse until every box is back. The ledger is locked first, as the cache
+    // rebuild does, so no box can be issued to him between this check and the delete below.
+    if (typeof tx.$executeRawUnsafe === 'function') await tx.$executeRawUnsafe('LOCK TABLE "inventory_transactions" IN EXCLUSIVE MODE');
+    const held = (await inventory.repBalances(tx, repId)).filter((b) => b.baseQuantity !== 0);
+    if (held.length) {
+      const rep = await tx.salesRepresentative.findUnique({ where: { id: repId }, select: { code: true, user: { select: { name: true } } } });
+      const name = rep?.user?.name || rep?.code || 'This rep';
+      const boxes = held.reduce((a, b) => a + Math.max(0, b.baseQuantity), 0);
+      throw ApiError.badRequest(boxes > 0
+        ? `${name} is still holding ${boxes} box${boxes === 1 ? '' : 'es'}. Take the boxes back first — settle them or record a return — then try again.`
+        : `${name}'s stock does not come to zero. Put it right with a stock adjustment first, then try again.`);
+    }
     const settlements = await tx.settlement.findMany({ where: { salesRepId: repId }, select: { id: true } });
     const settlementIds = settlements.map((s) => s.id);
     const transfers = await tx.stockTransfer.findMany({ where: { OR: [{ toRepId: repId }, { fromRepId: repId }] }, select: { id: true } });
@@ -872,6 +898,8 @@ const remove = asyncHandler(async (req, res) => {
 // stock requests, transfers, withdrawals, penalties, stock counts, the rep's
 // inventory ledger entries, and notifications — then rebuilds caches. Warehouse-
 // side ledger entries are left untouched, so warehouse stock does NOT change.
+// Refused while the rep still holds boxes (the check is inside the wipe): they
+// are taken back first, so stock never disappears without a record.
 const resetData = asyncHandler(async (req, res) => {
   const repId = req.params.id;
   const rep = await prisma.salesRepresentative.findUnique({

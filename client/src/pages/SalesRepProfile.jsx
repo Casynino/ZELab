@@ -811,8 +811,10 @@ export default function SalesRepProfile() {
       {/* ── Top stats ── */}
       <div className="mb-6 grid grid-cols-2 gap-4 xl:grid-cols-4">
         {/* What he holds right now, the same boxes as the table below — not the Performance window's
-            flow (which is blank for Today / This week, and was -1 for a rep holding 1 box). */}
-        <StatCard label="Stock in hand" value={formatNumber(stock.items.reduce((s, i) => s + (Number(i.baseQuantity) || 0), 0))} icon={Boxes} tone="violet" hint={`${formatCurrency(stock.value)} cost`} />
+            flow (which is blank for Today / This week, and was -1 for a rep holding 1 box). What it cost is the
+            owner's: staff see how many products instead (the server sends them no value). */}
+        <StatCard label="Stock in hand" value={formatNumber(stock.items.reduce((s, i) => s + (Number(i.baseQuantity) || 0), 0))} icon={Boxes} tone="violet"
+          hint={isAdmin ? `${formatCurrency(stock.value)} cost` : `${formatNumber(stock.items.length)} product${stock.items.length === 1 ? '' : 's'}`} />
         <StatCard
           label="Available balance"
           value={formatCurrency(c.available)}
@@ -1016,13 +1018,13 @@ export default function SalesRepProfile() {
               <p className="py-2 text-sm text-faint">Holding no stock.</p>
             ) : (
               <Table stack>
-                <THead><TR><TH>Product</TH><TH>Boxes held</TH><TH>Value (cost)</TH></TR></THead>
+                <THead><TR><TH>Product</TH><TH>Boxes held</TH>{isAdmin && <TH>Value (cost)</TH>}</TR></THead>
                 <TBody>
                   {stock.items.map((s) => (
                     <TR key={s.productId}>
                       <TD className="stack-full font-medium text-foreground">{s.name}</TD>
                       <TD>{formatNumber(s.baseQuantity)} {unitWord(s.baseQuantity, s.baseUnitName || 'Box')}</TD>
-                      <TD>{formatCurrency(s.value)}</TD>
+                      {isAdmin && <TD>{formatCurrency(s.value)}</TD>}
                     </TR>
                   ))}
                 </TBody>
