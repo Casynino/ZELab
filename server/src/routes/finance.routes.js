@@ -9,8 +9,10 @@ const v = require('../validators/finance.validator');
 
 const router = express.Router();
 
-// Finance is staff/admin only (The Doctor's money) — reps have no access.
-router.use(authenticate, requireRoles(ROLES.WAREHOUSE_STAFF));
+// Finance is the owner's (The Doctor's money): only the admin sees it or moves money through it (audit fina03 /
+// perm05 / ui-r03, 15 Nov 2026). Warehouse staff could open accounts with any opening balance, pay suppliers,
+// take "owner drawings" and read every purchase price here. Reps never had access.
+router.use(authenticate, requireRoles(ROLES.ADMIN));
 
 router.get('/overview', ctrl.overview);
 router.post('/sync', ctrl.sync); // rebuild ledger from existing records (idempotent)
@@ -27,7 +29,7 @@ router.post('/accounts', validate(v.financeAccountCreate), ctrl.createAccount);
 router.put('/accounts/:id', validate(v.financeAccountUpdate), ctrl.updateAccount);
 router.get('/categories', ctrl.categories);
 router.post('/categories', validate(v.financeCategoryCreate), ctrl.createCategory);
-router.get('/transactions', ctrl.transactions);
+router.get('/transactions', validate(v.financeTxnQuery), ctrl.transactions);
 router.post('/income', validate(v.financeMoney), ctrl.recordIncome);
 router.post('/expenses', validate(v.financeMoney), ctrl.recordExpense);
 router.post('/owner-money', validate(v.financeOwnerMoney), ctrl.recordOwnerMoney); // owner's own cash in / profit taken out

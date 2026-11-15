@@ -9,7 +9,8 @@ const { ROLES } = require('../middleware/authorize');
 
 // The warehouse counts cargo; what it cost is the owner's (cash-only, 15 Nov 2026). Prices, totals and the
 // payments are taken off every order a non-owner is sent.
-const MONEY_KEYS = ['goodsCost', 'shippingCost', 'clearingCost', 'otherCost', 'totalCost', 'payments'];
+// `toPay` is the order's price still to pay (audit purc07): it carried the full total to staff.
+const MONEY_KEYS = ['goodsCost', 'shippingCost', 'clearingCost', 'otherCost', 'totalCost', 'payments', 'toPay'];
 function forViewer(po, user) {
   if (!po || user?.role === ROLES.ADMIN) return po;
   const out = { ...po };

@@ -101,8 +101,8 @@ export function warmList(role) {
   }
   const list = ['Dashboard', 'charts', 'StockRequests', 'Settlements', 'Finance', 'Sales', 'Returns', 'Products', 'Inventory',
     'SalesReps', 'SalesRepProfile', 'Customers', 'Commissions', 'Profile', 'Notifications'];
-  // The owner reaches these inside his profile; staff open them as pages.
-  if (role !== ADMIN) list.push('DailyReports', 'Activity');
+  // The owner reaches these inside his profile; staff open them as pages. Finance is the owner's only.
+  if (role !== ADMIN) return list.filter((p) => p !== 'Finance').concat('DailyReports', 'Activity');
   return list;
 }
 

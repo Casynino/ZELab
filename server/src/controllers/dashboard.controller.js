@@ -61,14 +61,9 @@ const myOverview = asyncHandler(async (req, res) => {
     prisma.stockRequest.count({ where: { salesRepId, status: 'PENDING' } }),
   ]);
 
-  // Value held stock at cost.
+  // What the rep holds, in boxes. Its value at ZELab's buying price used to go out here too (audit reps05): the
+  // rep could divide it by the boxes and read the purchase cost. The rep app never showed it.
   const positive = balances.filter((b) => b.baseQuantity > 0);
-  const products = await prisma.product.findMany({
-    where: { id: { in: positive.map((b) => b.productId) } },
-    select: { id: true, purchasePrice: true },
-  });
-  const costMap = new Map(products.map((p) => [p.id, toNumber(p.purchasePrice)]));
-  const heldValue = round2(positive.reduce((s, b) => s + b.baseQuantity * (costMap.get(b.productId) || 0), 0));
   const heldUnits = positive.reduce((s, b) => s + b.baseQuantity, 0);
 
   // What each open order is MADE OF, not just what it is worth. Same three
@@ -98,8 +93,10 @@ const myOverview = asyncHandler(async (req, res) => {
   const openSettlementBoxes = orders.reduce((s, o) => s + (o.boxes?.remaining || 0), 0);
 
   return ok(res, {
-    heldStock: { value: heldValue, units: heldUnits, lines: positive.length },
-    commission: commissionData,
+    heldStock: { units: heldUnits, lines: positive.length },
+    // The rep is told the withdrawal window is open and until when; why it was opened, and by whom, is the
+    // owner's note (the same strip as GET /commissions/me — audit reps05).
+    commission: { ...commissionData, emergency: { open: commissionData?.emergency?.open, until: commissionData?.emergency?.until } },
     openSettlements: orders.length,
     openSettlementsValue,
     openSettlementBoxes,
@@ -151,8 +148,26 @@ const pendingActions = asyncHandler(async (_req, res) => {
   return ok(res, { stockRequests, settlements: pendingSubs + overdue, returns });
 });
 
+// What warehouse staff are sent of the command center (15 Nov 2026, audit ui-r03 / fina03): the work waiting, the
+// sales and the boxes. The money is the owner's — what the accounts hold, money in and out, expenses, what is owed
+// to suppliers and stock valued at cost. (Profit and cost keys at any depth are also taken off every answer a
+// non-owner gets, by utils/repView.forRole.)
+function commandForViewer(data, user) {
+  if (!data || user?.role === 'ADMIN') return data;
+  const { accounts: _a, totalFunds: _f, ...rest } = data; // eslint-disable-line no-unused-vars
+  const { supplierDue: _s, ...attention } = data.attention || {}; // eslint-disable-line no-unused-vars
+  const { costValue: _c, ...inventory } = data.inventory || {}; // eslint-disable-line no-unused-vars
+  return {
+    ...rest,
+    accounts: [],
+    today: { revenue: data.today?.revenue, boxesSold: data.today?.boxesSold },
+    attention,
+    inventory,
+  };
+}
+
 // The composed command-center payload for the admin dashboard.
-const command = asyncHandler(async (_req, res) => ok(res, await dashboard.command()));
+const command = asyncHandler(async (req, res) => ok(res, commandForViewer(await dashboard.command(), req.user)));
 
 module.exports = { overview, activity, brands, myOverview, myStats, pendingActions, command,
   analysis,

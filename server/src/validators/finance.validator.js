@@ -12,7 +12,11 @@ const { id } = require('./common.validator');
 // in it, no more than is owed — stay in the services, which say them in plain words, so a missing
 // amount or account is still answered the way it always was.
 
-const amount = z.coerce.number().finite().optional().nullable();
+// Shillings have no cents in this business (audit fina12): 100.555 was kept as 100.56 while every screen showed
+// 101, so the page and the books disagreed. A typed amount is a whole number of shillings.
+const WHOLE = 'Use whole shillings — amounts here have no cents.';
+const whole = (v) => v == null || Number.isInteger(v);
+const amount = z.coerce.number().finite().refine(whole, WHOLE).optional().nullable();
 // For a value that REPLACES a stored figure: null is refused rather than read as 0.
 const figure = z.union([z.number(), z.string()]).pipe(z.coerce.number().finite()).optional();
 const text = (max) => z.string().trim().max(max).optional().nullable();
@@ -50,7 +54,7 @@ const financeAdjustment = {
     // "Correct balance" sends what the account really holds and the balance it showed; the server works
     // out the difference from the balance as it is when it writes (audit freshness-1). Both optional:
     // { direction, amount } alone is recorded as before.
-    targetBalance: balance,
+    targetBalance: balance.refine(whole, WHOLE),
     expectedBalance: balance,
     brandId: ref,
     description: text(500),
@@ -99,6 +103,8 @@ const financeSupplierPayment = {
     amount,
     notes: text(2000),
     occurredAt: when,
+    // One per press of the Pay window, like the other money forms (audit fina00): a double tap pays once.
+    clientKey: z.string().trim().min(8).max(80).optional(),
   }),
 };
 // POST /finance/suppliers/:id/pay
@@ -109,6 +115,7 @@ const financeSupplierBalancePayment = {
     amount,
     notes: text(2000),
     occurredAt: when,
+    clientKey: z.string().trim().min(8).max(80).optional(),
   }),
 };
 // POST /finance/suppliers/:id/credits
@@ -138,13 +145,46 @@ const financeAccountUpdate = {
     name: z.string().trim().min(1).max(80).optional(),
     type: accountType.optional(),
     brandId: ref,
-    openingBalance: figure,
+    openingBalance: figure.refine(whole, WHOLE),
     notes: text(1000),
     isActive: z.boolean().optional(),
   }),
 };
 // POST /finance/categories
 const financeCategoryCreate = { body: z.object({ name: text(80) }) };
+
+// GET /finance/transactions (audit fina13): a type, direction or amount the database cannot read answered
+// "Invalid database query", and a day that does not exist (2026-13-45) silently listed nothing. Each filter is
+// checked here and refused in plain words. REP_COMMISSION is the Ledger's "Rep commissions" choice.
+const TXN_TYPES = [
+  'SETTLEMENT', 'WAREHOUSE_SALE', 'INCOME', 'EXPENSE', 'STOCK_PURCHASE', 'COMMISSION_PAYMENT', 'TRANSFER', 'ADJUSTMENT',
+  'OWNER_CONTRIBUTION', 'OWNER_DRAWING', 'REP_COMMISSION',
+];
+const blankToUndefined = (v) => (v === '' || v === null ? undefined : v);
+const filterAmount = z.preprocess(blankToUndefined, z.coerce.number({ invalid_type_error: 'Use a number for the amount' }).finite().min(0).optional());
+const filterDay = z.preprocess(
+  blankToUndefined,
+  z.union([z.string().date(), z.string().datetime({ offset: true })], { errorMap: () => ({ message: 'Use a real date like 2026-11-15' }) }).optional(),
+);
+const financeTxnQuery = {
+  query: z.object({
+    page: z.coerce.number().int().min(1).optional(),
+    // A bigger page is cut to the most a page holds (parsePagination), as it always was.
+    limit: z.coerce.number().int().min(1).optional(),
+    sortBy: z.string().max(40).optional(),
+    sortDir: z.enum(['asc', 'desc']).optional(),
+    search: z.string().trim().max(200).optional(),
+    accountId: z.preprocess(blankToUndefined, z.string().max(64).optional()),
+    brandId: z.preprocess(blankToUndefined, z.string().max(64).optional()),
+    category: z.preprocess(blankToUndefined, z.string().max(120).optional()),
+    type: z.preprocess(blankToUndefined, z.enum(TXN_TYPES, { errorMap: () => ({ message: 'Unknown entry type' }) }).optional()),
+    direction: z.preprocess(blankToUndefined, z.enum(['IN', 'OUT'], { errorMap: () => ({ message: 'Direction is IN or OUT' }) }).optional()),
+    from: filterDay,
+    to: filterDay,
+    minAmount: filterAmount,
+    maxAmount: filterAmount,
+  }),
+};
 
 module.exports = {
   financeMoney,
@@ -159,4 +199,5 @@ module.exports = {
   financeAccountCreate,
   financeAccountUpdate,
   financeCategoryCreate,
+  financeTxnQuery,
 };

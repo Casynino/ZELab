@@ -40,7 +40,7 @@ function load(initial) {
 
 test('two "Approve & pay" taps at once: one pays, the other is told it is already paid', async () => {
   const { svc, row, calls } = load();
-  const results = await Promise.allSettled([svc.decideWithdrawal('w1', 'PAY', { id: 'admin' }, { accountId: 'cash' }), svc.decideWithdrawal('w1', 'PAY', { id: 'admin' }, { accountId: 'cash' })]);
+  const results = await Promise.allSettled([svc.decideWithdrawal('w1', 'PAY', { id: 'admin', role: 'ADMIN' }, { accountId: 'cash' }), svc.decideWithdrawal('w1', 'PAY', { id: 'admin', role: 'ADMIN' }, { accountId: 'cash' })]);
   const ok = results.filter((r) => r.status === 'fulfilled');
   const refused = results.filter((r) => r.status === 'rejected');
   assert.equal(ok.length, 1);
@@ -54,7 +54,7 @@ test('two "Approve & pay" taps at once: one pays, the other is told it is alread
 
 test('PAY racing REJECT: exactly one wins', async () => {
   const { svc, row, calls } = load();
-  const results = await Promise.allSettled([svc.decideWithdrawal('w1', 'PAY', { id: 'a' }, { accountId: 'cash' }), svc.decideWithdrawal('w1', 'REJECT', { id: 'b' })]);
+  const results = await Promise.allSettled([svc.decideWithdrawal('w1', 'PAY', { id: 'a', role: 'ADMIN' }, { accountId: 'cash' }), svc.decideWithdrawal('w1', 'REJECT', { id: 'b' })]);
   assert.equal(results.filter((r) => r.status === 'fulfilled').length, 1);
   assert.ok(['PAID', 'REJECTED'].includes(row.status));
   assert.equal(calls.updates, 1);
@@ -63,7 +63,7 @@ test('PAY racing REJECT: exactly one wins', async () => {
 test('a decided request cannot be decided again', async () => {
   const { svc } = load({ status: 'PAID' });
   // Paying a paid request is a retry of the first press (audit backend-integrity-5): refused, and told so.
-  await assert.rejects(svc.decideWithdrawal('w1', 'PAY', { id: 'a' }, { accountId: 'cash' }), (e) => e.statusCode === 409 && /already paid/.test(e.message) && /went through/.test(e.message));
+  await assert.rejects(svc.decideWithdrawal('w1', 'PAY', { id: 'a', role: 'ADMIN' }, { accountId: 'cash' }), (e) => e.statusCode === 409 && /already paid/.test(e.message) && /went through/.test(e.message));
   await assert.rejects(svc.decideWithdrawal('w1', 'REJECT', { id: 'a' }), (e) => e.statusCode === 400);
 });
 
@@ -71,7 +71,7 @@ test('APPROVE then PAY is still allowed, once each', async () => {
   const { svc, row } = load();
   await svc.decideWithdrawal('w1', 'APPROVE', { id: 'a' });
   assert.equal(row.status, 'APPROVED');
-  await svc.decideWithdrawal('w1', 'PAY', { id: 'a' }, { accountId: 'cash' });
+  await svc.decideWithdrawal('w1', 'PAY', { id: 'a', role: 'ADMIN' }, { accountId: 'cash' });
   assert.equal(row.status, 'PAID');
   assert.ok(row.paidAt instanceof Date);
 });

@@ -45,7 +45,22 @@ async function createSupplier(data) {
 async function updateSupplier(id, data) {
   const s = await prisma.supplier.findUnique({ where: { id } });
   if (!s) throw ApiError.notFound('Supplier not found');
+  if (data.isActive === false && s.isActive) await assertSupplierSettled(s);
   return prisma.supplier.update({ where: { id }, data });
+}
+
+// A supplier with money still open — owed to him, or paid beyond his bills — is not switched off or deleted
+// (audit perm03): he would drop out of the new-order picker and the Suppliers tab with the balance unexplained.
+// The rule the Suppliers tab already showed ("only once nothing is owed") now holds on the server.
+async function assertSupplierSettled(s) {
+  const finance = require('./finance.service'); // lazy: avoids an import cycle
+  const { totals } = await finance.supplierDetail(s.id);
+  if (Math.abs(totals.outstanding) >= 0.5) {
+    const tzs = (n) => `TZS ${Math.abs(n).toLocaleString('en-US')}`;
+    throw ApiError.badRequest(totals.outstanding > 0
+      ? `${s.name} is still owed ${tzs(totals.outstanding)}. Pay the balance first, then switch the supplier off.`
+      : `${s.name} has been paid ${tzs(totals.outstanding)} more than the bills. Settle that first, then switch the supplier off.`);
+  }
 }
 // Remove a supplier. One with history — purchase orders, goods sent back, or balance payments — is
 // switched off instead, so the money stays explained, and the answer says which happened (audit
@@ -54,6 +69,7 @@ async function updateSupplier(id, data) {
 async function removeSupplier(id) {
   const s = await prisma.supplier.findUnique({ where: { id } });
   if (!s) throw ApiError.notFound('Supplier not found');
+  await assertSupplierSettled(s);
   const [orders, credits, payments] = await Promise.all([
     prisma.purchaseOrder.count({ where: { supplierId: id } }),
     prisma.supplierCredit.count({ where: { supplierId: id } }),

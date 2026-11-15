@@ -404,7 +404,9 @@ test('a bonus has no minimum and needs no window; a rep off commission still get
   assert.equal((await ask(500000)).amount, 500000);
 });
 
-test('only the owner pays a bonus withdrawal; staff may still pay commission', async () => {
+// Paying takes the money out of a business account, and only the owner moves business money (15 Nov 2026, audit
+// fina03): staff may approve or reject a withdrawal, commission or bonus, but never pay one.
+test('only the owner pays a withdrawal, bonus or commission; staff may still approve', async () => {
   const { t, bonus, commission, sell, ask, admin, staff } = world();
   sell(10000000);
   await bonus.creditMilestones('r1');
@@ -414,7 +416,9 @@ test('only the owner pays a bonus withdrawal; staff may still pay commission', a
   await commission.decideWithdrawal(bw.id, 'APPROVE', staff); // approving moves no money
   assert.equal((await commission.decideWithdrawal(bw.id, 'PAY', admin, { accountId: 'cash' })).status, 'PAID');
   const cw = await ask(300000, 'COMMISSION');
-  assert.equal((await commission.decideWithdrawal(cw.id, 'PAY', staff, { accountId: 'cash' })).status, 'PAID');
+  await assert.rejects(commission.decideWithdrawal(cw.id, 'PAY', staff, { accountId: 'cash' }), (e) => e.statusCode === 403);
+  assert.equal(t.withdrawals.find((w) => w.id === cw.id).status, 'PENDING', 'nothing changed');
+  assert.equal((await commission.decideWithdrawal(cw.id, 'PAY', admin, { accountId: 'cash' })).status, 'PAID');
 });
 
 test('a bonus paid by hand before the wallet starts the cycle and is never withdrawable', async () => {

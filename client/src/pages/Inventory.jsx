@@ -308,8 +308,9 @@ function Balances() {
             // Four tinted cards. A flat grey row of numbers reads as a footnote;
             // a tint and an icon per card gives each figure its own identity and
             // lets the eye go straight to the one that is a problem.
+            // Stock valued at cost is the owner's (15 Nov 2026): the server sends staff no value, and the card goes.
             const cards = [
-              { label: 'Stock value', value: formatCurrency(sm.totalValue), sub: `${formatNumber(sm.productCount)} products`,
+              sm.totalValue != null && { label: 'Stock value', value: formatCurrency(sm.totalValue), sub: `${formatNumber(sm.productCount)} products`,
                 icon: Boxes, ring: 'ring-brand-500/25', glow: 'from-brand-500/[0.14]', chip: 'bg-brand-500/15 text-brand-600', num: 'text-foreground' },
               { label: 'Boxes on hand', value: formatNumber(sm.totalBoxes), sub: 'everywhere in the business',
                 icon: Warehouse, ring: 'ring-sky-500/25', glow: 'from-sky-500/[0.14]', chip: 'bg-sky-500/15 text-sky-400', num: 'text-foreground' },
@@ -319,11 +320,11 @@ function Balances() {
               { label: 'Out of stock', value: formatNumber(sm.outCount), sub: sm.outCount ? 'nothing left to sell' : 'every line in stock',
                 icon: PackageX, ring: sm.outCount ? 'ring-rose-500/30' : 'ring-white/[0.07]', glow: sm.outCount ? 'from-rose-500/[0.16]' : 'from-white/[0.02]',
                 chip: 'bg-rose-500/15 text-rose-400', num: sm.outCount ? 'text-rose-400' : 'text-muted', tone: sm.outCount ? 'late' : undefined },
-            ];
+            ].filter(Boolean);
 
             return (
               <>
-                <div className="mb-4 grid grid-cols-2 gap-3 xl:grid-cols-4">
+                <div className={`mb-4 grid grid-cols-2 gap-3 ${cards.length === 4 ? 'xl:grid-cols-4' : 'xl:grid-cols-3'}`}>
                   {cards.map((c) => (
                     <div key={c.label} className="stat-glass p-4" data-tone={c.tone}>
                       <div className="relative flex items-start justify-between gap-2">
@@ -459,8 +460,18 @@ function Balances() {
                     <div className="text-right">
                       {/* The value is at COST (boxes x purchase price); the line under it is the selling
                           price, so it says so instead of "each" (63 x 30,000 is not 882,000). */}
-                      <div className="text-sm font-bold tabular-nums text-foreground" title="Value at cost">{formatCurrency(r.value)}</div>
-                      <div className="text-[11px] text-faint">at cost · sells at {formatCurrency(r.sellingPrice)}</div>
+                      {r.value != null ? (
+                        <>
+                          <div className="text-sm font-bold tabular-nums text-foreground" title="Value at cost">{formatCurrency(r.value)}</div>
+                          <div className="text-[11px] text-faint">at cost · sells at {formatCurrency(r.sellingPrice)}</div>
+                        </>
+                      ) : (
+                        // Staff (no cost sent): the selling price alone.
+                        <>
+                          <div className="text-sm font-bold tabular-nums text-foreground">{formatCurrency(r.sellingPrice)}</div>
+                          <div className="text-[11px] text-faint">selling price per {String(r.baseUnitName || 'box').toLowerCase()}</div>
+                        </>
+                      )}
                     </div>
                   </div>
 

@@ -267,6 +267,8 @@ async function settlementAccountFor(brandId) {
   return brandId ? null : defaultAccount();
 }
 
+const NO_NEGATIVE_OPENING = 'An account cannot hold less than zero. Type what it really holds today.';
+
 async function createAccount(data) {
   const name = (data.name || '').trim();
   if (!name) throw ApiError.badRequest('Account name is required');
@@ -277,6 +279,9 @@ async function createAccount(data) {
   if (data.type === 'CASH') {
     throw ApiError.badRequest('The business does not hold money in cash. Add the bank or mobile-money account the money actually sits in.');
   }
+  // No account holds less than nothing (audit fina04), the rule Correct balance keeps.
+  const opening = round2(toNumber(data.openingBalance));
+  if (opening < 0) throw ApiError.badRequest(NO_NEGATIVE_OPENING);
   if (data.brandId) {
     const taken = await prisma.businessAccount.findFirst({ where: { brandId: data.brandId, isActive: true } });
     if (taken) throw ApiError.badRequest(`${taken.name} is already this brand's settlement account. A brand settles to one account, so reps see one option.`);
@@ -287,7 +292,7 @@ async function createAccount(data) {
       name,
       type: data.type || 'OTHER',
       brandId: data.brandId || null,
-      openingBalance: round2(toNumber(data.openingBalance)),
+      openingBalance: opening,
       notes: data.notes || null,
       sortOrder: (max._max.sortOrder || 0) + 1,
     },
@@ -297,6 +302,7 @@ async function createAccount(data) {
 async function updateAccount(id, data) {
   const existing = await prisma.businessAccount.findUnique({ where: { id } });
   if (!existing) throw ApiError.notFound('Account not found');
+  if (data.openingBalance !== undefined && round2(toNumber(data.openingBalance)) < 0) throw ApiError.badRequest(NO_NEGATIVE_OPENING);
   // Changing the opening of an account that has moved money rewrites its whole history without a trace
   // (15 Nov 2026). A real difference is recorded with Correct balance, which says why and who.
   if (data.openingBalance !== undefined && round2(toNumber(data.openingBalance)) !== round2(toNumber(existing.openingBalance))
@@ -326,6 +332,21 @@ async function updateAccount(id, data) {
   if (data.brandId !== undefined) patch.brandId = data.brandId || null;
   if (data.openingBalance !== undefined) patch.openingBalance = round2(toNumber(data.openingBalance));
   if (data.isActive !== undefined) patch.isActive = data.isActive;
+  // Switching off an account that still holds money took that money out of every total with no ledger row
+  // (audit fina05 / perm04). It is switched off only once it holds nothing: the account row is locked, so a
+  // payment out of it cannot land between the check and the switch.
+  if (data.isActive === false && existing.isActive) {
+    return prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "business_accounts" WHERE id = ${id} FOR UPDATE`;
+      const [acc] = await accountBalances({ client: tx, accountId: id });
+      if (acc && Math.abs(acc.balance) >= 0.01) {
+        throw ApiError.badRequest(
+          `${existing.name} still holds ${formatCurrency(acc.balance)}. Move the money out with a transfer first (or Correct balance if the figure is wrong), then switch it off.`,
+        );
+      }
+      return { updated: await tx.businessAccount.update({ where: { id }, data: patch }), previous: existing };
+    });
+  }
   return { updated: await prisma.businessAccount.update({ where: { id }, data: patch }), previous: existing };
 }
 
@@ -571,16 +592,44 @@ function resolveOccurredAt(v) {
   return new Date(v);
 }
 
+// The last moment of today in Dar es Salaam.
+const endOfTodayEat = () => eatDayAt(eatDateOf(Date.now()), DAY_MS - 1);
+
+// The date a person gives money is kept between the day the books started and the end of today in Dar es Salaam
+// (audit perm00 / fina01, 15 Nov 2026). Before go-live a row is in no balance and can never be reversed, so an
+// account could pay out more than it held and a supplier's bill could fall with no money leaving; a day after
+// today comes off the balance now but lands in a later month's cash flow. A day picked on go-live day itself
+// counts from the moment the books started.
+async function bookDate(v) {
+  const when = resolveOccurredAt(v);
+  if (Number.isNaN(when.getTime())) throw ApiError.badRequest('That date cannot be read. Pick a day like 2026-11-15.');
+  if (when > endOfTodayEat()) {
+    throw ApiError.badRequest(`Money cannot be dated after today (${eatDateOf(Date.now())}). Record it on the day it really moves.`);
+  }
+  const epoch = await reports.financeEpoch();
+  if (epoch && when < epoch) {
+    if (String(v) === eatDateOf(epoch)) return new Date(epoch);
+    throw ApiError.badRequest(
+      `The books start on ${eatDateOf(epoch)}. Money from before that day is already in the opening balances, so pick a date from ${eatDateOf(epoch)} to today.`,
+    );
+  }
+  return when;
+}
+
 // `client` lets a caller record the money INSIDE its own transaction — a stock
 // purchase paid in cash at the counter is one event, and a purchase that saved
 // while its payment did not is the bug this prevents.
 // `checkBrand` is for the hand-typed entries, where a person picks the account
 // and the brand separately (#79).
-async function recordTransaction(data, actor, client = prisma, { checkBrand = false } = {}) {
+// `anyDate` is only for money the app records by itself from another record (a sale's money in, an old pocket
+// payout record): that row takes the date of what it mirrors, and refusing it would lose the money's record.
+// Every date a person gives is kept inside the books (bookDate).
+async function recordTransaction(data, actor, client = prisma, { checkBrand = false, anyDate = false } = {}) {
   const amount = round2(toNumber(data.amount));
   if (!(amount > 0)) throw ApiError.badRequest('Amount must be greater than zero');
   // Bigger than the money column holds: a clean refusal, not a 500 with the database's error text.
   if (amount > DB_MAX_AMOUNT) throw ApiError.badRequest('That amount is too large — check the number of zeros');
+  const occurredAt = anyDate ? resolveOccurredAt(data.occurredAt) : await bookDate(data.occurredAt);
   // Said plainly: without it Prisma answered "Invalid database query".
   if (!data.accountId) throw ApiError.badRequest('Choose the account the money moved through');
   const account = await client.businessAccount.findUnique({ where: { id: data.accountId } });
@@ -620,7 +669,7 @@ async function recordTransaction(data, actor, client = prisma, { checkBrand = fa
       refId: data.refId || null,
       receiptUrl: data.receiptUrl || null,
       notes: data.notes || null,
-      occurredAt: resolveOccurredAt(data.occurredAt),
+      occurredAt,
       createdById: actor ? actor.id : null,
     },
   });
@@ -639,7 +688,7 @@ async function assertFunds(tx, accountId, amount, what = 'this payment') {
   const [acc] = await accountBalances({ client: tx, accountId });
   if (!acc) throw ApiError.badRequest('Select a valid account');
   if (acc.isCommissionRecord) {
-    throw ApiError.badRequest(`${acc.name} is a record of past payouts, not a wallet — pay from Cash, Airtel Money or M-Pesa.`);
+    throw ApiError.badRequest(`${acc.name} is a record of past payouts, not a wallet — pay from one of the business accounts that holds money.`);
   }
   const amt = round2(toNumber(amount));
   if (acc.balance < amt - 0.001) {
@@ -828,6 +877,8 @@ async function recordSaleIncome({ saleId, saleNumber, amount, fromSettlement, wh
         occurredAt,
       },
       actor,
+      prisma,
+      { anyDate: true }, // dated as the sale it mirrors
     );
   } catch (e) {
     return null;
@@ -908,6 +959,7 @@ async function recordCommissionPayment({ amount, who, reference, refId, occurred
       },
       actor,
       client,
+      { anyDate: true }, // a record of a payout already made, dated as the withdrawal
     );
     // Tied to a withdrawal: written under that withdrawal's lock, so a rebuild running at the same
     // moment cannot write it a second time.
@@ -922,7 +974,9 @@ async function listTransactions(filters, pagination) {
   const where = {};
   if (filters.accountId) where.accountId = filters.accountId;
   if (filters.direction) where.direction = filters.direction;
-  if (filters.type) where.type = filters.type;
+  // "Rep commissions" on the Ledger's type list: commission and bonus paid from an account (EXPENSE rows tied to
+  // a withdrawal, 15 Nov 2026). It is not a stored type, so it used to answer "Invalid database query".
+  if (filters.type === 'REP_COMMISSION') { where.type = 'EXPENSE'; where.refType = 'CommissionWithdrawal'; } else if (filters.type) where.type = filters.type;
   if (filters.category) where.category = filters.category;
   // Free-text search across everything a person might remember about a
   // movement — what it was, its reference, its note.
@@ -1082,6 +1136,13 @@ async function updateTransaction(id, data) {
   }
   const patch = {};
   ['category', 'description', 'notes', 'accountId', 'reference', 'brandId'].forEach((k) => { if (data[k] !== undefined) patch[k] = data[k]; });
+  // A typed-in expense counts as an expense or as stock bought by its category (recordExpense). A new category
+  // moves it with it (audit fina06): left alone, "Fuel" filed as stock was missing from expenses, and "Stock
+  // Purchase" filed as an expense was counted twice, once here and again as cost of goods. Only rows a person
+  // typed (no link to a supplier, order or payout); a reversal pair already keeps its category.
+  if (data.category !== undefined && !existing.refType && !inPair && ['EXPENSE', 'STOCK_PURCHASE'].includes(existing.type)) {
+    patch.type = isStockPurchaseCategory(data.category) ? 'STOCK_PURCHASE' : 'EXPENSE';
+  }
   if (data.amount !== undefined) {
     // Sale-linked money mirrors the sale document — correcting the amount here
     // would silently desync revenue. The sale itself must be cancelled/redone.
@@ -1106,6 +1167,11 @@ async function updateTransaction(id, data) {
   }
   if (patch.occurredAt) {
     if (inPair) throw ApiError.badRequest('A reversed entry and its reversal keep their dates.');
+    if (Number.isNaN(patch.occurredAt.getTime())) throw ApiError.badRequest('That date cannot be read. Pick a day like 2026-11-15.');
+    // After today it would come off the balance now and land in a later month's cash flow (audit fina01).
+    if (patch.occurredAt > endOfTodayEat()) {
+      throw ApiError.badRequest(`Money cannot be dated after today (${eatDateOf(Date.now())}). Use the day it really moved.`);
+    }
     // Moving a row across the day the books started would add it to (or drop it from) every balance unseen.
     const epoch = await reports.financeEpoch();
     if (epoch && (new Date(existing.occurredAt) >= epoch) !== (patch.occurredAt >= epoch)) {
@@ -1185,15 +1251,14 @@ async function transferBetweenAccounts({ fromAccountId, toAccountId, amount, not
   if (commission) {
     throw ApiError.badRequest(`${commission.name} is a record of what you paid reps, not a wallet — there is no money in it to move.`);
   }
-  if (from.balance < amt) {
-    throw ApiError.badRequest(`${from.name} only holds ${from.balance.toLocaleString('en-US')} — cannot transfer ${amt.toLocaleString('en-US')}`);
-  }
+  // What the account holds is judged only inside the transaction below, after a repeat press is recognised: judged
+  // here first, the second press of a transfer that emptied the account was told "only holds 0" although the
+  // first one went through (audit fina07).
 
-  const when = resolveOccurredAt(occurredAt);
+  const when = await bookDate(occurredAt);
   const reference = `Transfer ${from.name} → ${to.name}`;
   return withDocNumberRetry(() => prisma.$transaction(async (tx) => {
-    // A repeat press first, then the balance again under the account's lock: a payment made since the check
-    // above may have spent it.
+    // A repeat press first, then the balance under the account's lock.
     await assertNotRecorded(tx, from.id, clientKey);
     await assertFunds(tx, from.id, amt, 'this transfer');
     const outNumber = await nextDocNumber(tx.financeTransaction, 'txnNumber', 'FTX');
@@ -1712,11 +1777,12 @@ function spreadOverOrders(orders, { balancePaid = 0, returned = 0 } = {}) {
 
 // One supplier's full accounts-payable profile: purchases, payments (both
 // PO-level and supplier-level), products supplied, balances and last activity.
-async function supplierDetail(id) {
-  const s = await prisma.supplier.findUnique({ where: { id } });
+// `client` lets a payment read what is owed inside its own transaction, under the supplier's lock.
+async function supplierDetail(id, { client: db = prisma } = {}) {
+  const s = await db.supplier.findUnique({ where: { id } });
   if (!s) throw ApiError.notFound('Supplier not found');
   const [pos, brand] = await Promise.all([
-    prisma.purchaseOrder.findMany({
+    db.purchaseOrder.findMany({
       where: { supplierId: id, ...PAYABLE_PO },
       orderBy: { createdAt: 'desc' },
       select: {
@@ -1724,14 +1790,14 @@ async function supplierDetail(id) {
         items: { select: { quantity: true, baseQuantity: true, product: { select: { name: true } } } },
       },
     }),
-    s.brandId ? prisma.brand.findUnique({ where: { id: s.brandId }, select: { name: true } }) : null,
+    s.brandId ? db.brand.findUnique({ where: { id: s.brandId }, select: { name: true } }) : null,
   ]);
   const poIds = pos.map((p) => p.id);
-  const credits = await prisma.supplierCredit.findMany({
+  const credits = await db.supplierCredit.findMany({
     where: { supplierId: id },
     orderBy: { occurredAt: 'desc' },
   });
-  const txns = await prisma.financeTransaction.findMany({
+  const txns = await db.financeTransaction.findMany({
     where: {
       direction: 'OUT',
       OR: [
@@ -1801,82 +1867,118 @@ async function supplierDetail(id) {
 // mean the supplier owes money back, which is a refund and a different
 // transaction, not a credit against a bill that no longer exists.
 async function recordSupplierCredit(supplierId, { amount, reason, occurredAt }, actor) {
-  const s = await prisma.supplier.findUnique({ where: { id: supplierId } });
-  if (!s) throw ApiError.notFound('Supplier not found');
   const amt = round2(toNumber(amount));
   if (!(amt > 0)) throw ApiError.badRequest('Enter the value of the goods going back');
   if (!String(reason || '').trim()) {
     throw ApiError.badRequest('Say what went back — a credit against a bill with no reason cannot be checked later');
   }
-  const detail = await supplierDetail(supplierId);
-  if (amt > detail.totals.outstanding + 0.001) {
-    throw ApiError.badRequest(
-      `You only owe ${s.name} TZS ${detail.totals.outstanding.toLocaleString()}. A return bigger than the bill means they owe you money back, which is a refund rather than a credit.`,
-    );
-  }
-  return prisma.supplierCredit.create({
-    data: {
-      supplierId,
-      amount: amt,
-      reason: String(reason).trim().slice(0, 300),
-      occurredAt: occurredAt ? new Date(occurredAt) : new Date(),
-      createdById: actor?.id || null,
-    },
+  const when = await bookDate(occurredAt);
+  // Under the supplier's lock, like a payment: a credit and a payment at the same moment could each take the
+  // same shillings off the bill.
+  return prisma.$transaction(async (tx) => {
+    await lockSupplier(tx, supplierId);
+    const detail = await supplierDetail(supplierId, { client: tx });
+    if (amt > detail.totals.outstanding + 0.001) {
+      throw ApiError.badRequest(
+        `You only owe ${detail.supplier.name} TZS ${detail.totals.outstanding.toLocaleString()}. A return bigger than the bill means they owe you money back, which is a refund rather than a credit.`,
+      );
+    }
+    return tx.supplierCredit.create({
+      data: {
+        supplierId,
+        amount: amt,
+        reason: String(reason).trim().slice(0, 300),
+        occurredAt: when,
+        createdById: actor?.id || null,
+      },
+    });
   });
+}
+
+// Every write that changes what a supplier is owed takes this lock first, then reads the bill inside the same
+// transaction (audit fina00 / perm01): two payments sent at the same moment both read "7,000 owed" outside any
+// lock and both went through, so the supplier was paid 14,000 more than his bills. Locks are always taken
+// supplier, then order, then account, so two writers never wait on each other in a circle.
+async function lockSupplier(tx, supplierId) {
+  // $queryRaw, not $executeRaw: it returns the locked row, which also says whether the supplier exists.
+  const rows = await tx.$queryRaw`SELECT id FROM "suppliers" WHERE id = ${supplierId} FOR UPDATE`;
+  if (!rows.length) throw ApiError.notFound('Supplier not found');
 }
 
 // Pay down a supplier's overall balance (installments welcome): one OUT
 // transaction from the chosen account, keyed to the supplier, brand-tagged.
 // Not an expense — it settles the liability created when stock was received;
 // the P&L cost is recognised as COGS when boxes sell.
-async function paySupplierBalance(supplierId, { accountId, amount, notes, occurredAt }, actor) {
-  const s = await prisma.supplier.findUnique({ where: { id: supplierId } });
-  if (!s) throw ApiError.notFound('Supplier not found');
-  const detail = await supplierDetail(supplierId);
-  const outstanding = detail.totals.outstanding;
-  const amt = amount != null ? round2(toNumber(amount)) : outstanding;
-  if (!(amt > 0)) throw ApiError.badRequest('Payment amount must be greater than zero');
-  if (amt > outstanding + 0.001) {
-    throw ApiError.badRequest(`You only owe ${s.name} TZS ${outstanding.toLocaleString()}`);
-  }
-  return spend(
-    {
-      accountId,
-      direction: 'OUT',
-      type: 'STOCK_PURCHASE',
-      amount: amt,
-      brandId: s.brandId || null,
-      category: 'Supplier Payment',
-      description: `Supplier payment — ${s.name}`,
-      reference: s.name,
-      refType: 'Supplier',
-      refId: s.id,
-      notes,
-      occurredAt,
-    },
-    actor,
-    { checkBrand: true },
-    `paying ${s.name}`,
-  );
+// One transaction: the supplier locked, a repeat press recognised, what is owed read under the lock, the account
+// checked and charged (audit fina00 / perm01).
+async function paySupplierBalance(supplierId, { accountId, amount, notes, occurredAt, clientKey }, actor) {
+  return withDocNumberRetry(() => prisma.$transaction(async (tx) => {
+    await lockSupplier(tx, supplierId);
+    // Before what is owed is judged: the first press may have paid it all.
+    await assertNotRecorded(tx, accountId, clientKey);
+    const detail = await supplierDetail(supplierId, { client: tx });
+    const s = detail.supplier;
+    const outstanding = detail.totals.outstanding;
+    const amt = amount != null ? round2(toNumber(amount)) : outstanding;
+    if (!(amt > 0)) throw ApiError.badRequest('Payment amount must be greater than zero');
+    if (amt > outstanding + 0.001) {
+      throw ApiError.badRequest(`You only owe ${s.name} TZS ${outstanding.toLocaleString()}`);
+    }
+    await assertFunds(tx, accountId, amt, `paying ${s.name}`);
+    return recordTransaction(
+      {
+        accountId,
+        clientKey,
+        direction: 'OUT',
+        type: 'STOCK_PURCHASE',
+        amount: amt,
+        brandId: s.brandId || null,
+        category: 'Supplier Payment',
+        description: `Supplier payment — ${s.name}`,
+        reference: s.name,
+        refType: 'Supplier',
+        refId: s.id,
+        notes,
+        occurredAt,
+      },
+      actor,
+      tx,
+      { checkBrand: true },
+    );
+  }));
 }
 
 // Pay a supplier against a purchase order: posts a STOCK_PURCHASE OUT
 // transaction from the chosen account (immediately reducing its balance) and
 // tracks against the PO so the supplier's outstanding falls. Over-payment is
 // blocked.
-async function paySupplier({ purchaseOrderId, accountId, amount, notes, occurredAt }, actor) {
-  const po = await prisma.purchaseOrder.findUnique({
+async function paySupplier(body, actor) {
+  const first = await prisma.purchaseOrder.findUnique({ where: { id: body.purchaseOrderId }, select: { supplierId: true } });
+  if (!first) throw ApiError.notFound('Purchase order not found');
+  // Supplier, then the order, then the account (audit fina00 / perm01): the supplier lock queues every payment
+  // that changes his bill, the order lock queues Confirm purchase / Undo purchase / Add cost on this order.
+  return withDocNumberRetry(() => prisma.$transaction(async (tx) => {
+    await lockSupplier(tx, first.supplierId);
+    await tx.$queryRaw`SELECT id FROM "purchase_orders" WHERE id = ${body.purchaseOrderId} FOR UPDATE`;
+    return payOrderLocked(tx, body, actor);
+  }));
+}
+
+async function payOrderLocked(tx, { purchaseOrderId, accountId, amount, notes, occurredAt, clientKey }, actor) {
+  const po = await tx.purchaseOrder.findUnique({
     where: { id: purchaseOrderId },
     include: { supplier: { select: { name: true, brandId: true } } },
   });
   if (!po) throw ApiError.notFound('Purchase order not found');
   if (po.status === 'CANCELLED') throw ApiError.badRequest('This purchase order is cancelled');
+  // Before what is owed is judged: the first press may have paid it all.
+  await assertNotRecorded(tx, accountId, clientKey);
   // What is left on this PO counts the supplier's balance payments and returned goods too (shared over
   // his POs, oldest first), and a PO payment can never take the supplier past what he is owed
   // overall — the same cap as Pay supplier. Before, only this PO's own payments were counted, so a
   // bill already paid as a balance payment could be paid again (audit admin-money-1).
   // Which POs count as owed (ordered vs received) is unchanged here: that is decision D8.
-  const detail = await supplierDetail(po.supplierId);
+  const detail = await supplierDetail(po.supplierId, { client: tx });
   const row = detail.orders.find((o) => o.id === po.id);
   const onOrder = row ? row.outstanding : 0;
   const owedOverall = detail.totals.outstanding;
@@ -1902,9 +2004,11 @@ async function paySupplier({ purchaseOrderId, accountId, amount, notes, occurred
     }
     throw ApiError.badRequest(`Only TZS ${remaining.toLocaleString()} is outstanding on ${po.poNumber}`);
   }
-  return spend(
+  await assertFunds(tx, accountId, amt, `paying ${po.poNumber}`);
+  return recordTransaction(
     {
       accountId,
+      clientKey,
       direction: 'OUT',
       type: 'STOCK_PURCHASE',
       amount: amt,
@@ -1919,8 +2023,8 @@ async function paySupplier({ purchaseOrderId, accountId, amount, notes, occurred
       occurredAt,
     },
     actor,
+    tx,
     { checkBrand: true },
-    `paying ${po.poNumber}`,
   );
 }
 

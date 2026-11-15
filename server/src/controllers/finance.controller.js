@@ -44,7 +44,7 @@ const createCategory = asyncHandler(async (req, res) => {
 });
 
 const transactions = asyncHandler(async (req, res) => {
-  const q = req.query;
+  const q = req.validatedQuery || req.query;
   const pagination = parsePagination(q, { defaultSortBy: 'occurredAt', defaultSortDir: 'desc', allowedSortFields: ['occurredAt', 'amount', 'createdAt'] });
   const filters = {
     accountId: q.accountId,

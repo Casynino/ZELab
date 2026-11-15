@@ -7,13 +7,12 @@ const productsService = require('../services/products.service');
 const audit = require('../services/audit.service');
 const { forRole, productsForRole } = require('../utils/repView');
 
-const isRep = (req) => Boolean(req.user && req.user.role === 'SALES_REP');
-
 const list = asyncHandler(async (req, res) => {
   const q = req.validatedQuery || req.query;
   const pagination = parsePagination(q, {
-    // A rep cannot sort by cost either: the order alone would tell him what each product costs ZELab.
-    allowedSortFields: ['name', 'sku', 'sellingPrice', ...(isRep(req) ? [] : ['purchasePrice']), 'createdAt', 'updatedAt'],
+    // Only the owner sorts by cost: the order alone would tell anyone else what each product costs ZELab (reps;
+    // warehouse staff too since 15 Nov 2026, audit perm05).
+    allowedSortFields: ['name', 'sku', 'sellingPrice', ...(req.user?.role === 'ADMIN' ? ['purchasePrice'] : []), 'createdAt', 'updatedAt'],
     defaultSortBy: 'name',
     defaultSortDir: 'asc',
   });

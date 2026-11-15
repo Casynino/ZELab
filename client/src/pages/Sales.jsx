@@ -284,9 +284,10 @@ function SaleDetail({ id, onClose }) {
             <div><span className="text-muted">Type</span><div className="font-medium">{data.type}</div></div>
             <div><span className="text-muted">Date</span><div className="font-medium">{formatDateTime(data.soldAt)}</div></div>
           </div>
-          {/* Per-item profit trace: sell/box vs cost/box (captured at sale time) */}
+          {/* Per-item profit trace: sell/box vs cost/box (captured at sale time). Cost and profit are the owner's
+              (15 Nov 2026): staff are not sent them and see what each line sold for. */}
           <Table stack>
-            <THead><TR><TH>Item</TH><TH>Qty</TH><TH>Sell / box</TH><TH>Cost / box</TH><TH>Profit / box</TH><TH>Line profit</TH></TR></THead>
+            <THead><TR><TH>Item</TH><TH>Qty</TH><TH>Sell / box</TH>{isAdmin ? <><TH>Cost / box</TH><TH>Profit / box</TH><TH>Line profit</TH></> : <TH>Line total</TH>}</TR></THead>
             <TBody>
               {data.items.map((it) => {
                 const lineProfit = it.lineTotal - it.unitCost * it.baseQuantity;
@@ -295,9 +296,13 @@ function SaleDetail({ id, onClose }) {
                     <TD className="font-medium text-foreground">{it.product.name}</TD>
                     <TD>{it.quantity > 0 ? `${formatNumber(it.quantity)} ${unitWord(it.quantity, it.packagingUnit.name)}` : <span className="text-faint">All returned</span>}</TD>
                     <TD>{formatCurrency(it.unitPrice)}</TD>
-                    <TD className="text-muted">{formatCurrency(it.unitCost)}</TD>
-                    <TD>{formatCurrency(it.unitPrice - it.unitCost)}</TD>
-                    <TD className="font-semibold text-emerald-500">{formatCurrency(lineProfit)}</TD>
+                    {isAdmin ? (
+                      <>
+                        <TD className="text-muted">{formatCurrency(it.unitCost)}</TD>
+                        <TD>{formatCurrency(it.unitPrice - it.unitCost)}</TD>
+                        <TD className="font-semibold text-emerald-500">{formatCurrency(lineProfit)}</TD>
+                      </>
+                    ) : <TD className="font-semibold text-foreground">{formatCurrency(it.lineTotal)}</TD>}
                   </TR>
                 );
               })}
@@ -305,8 +310,12 @@ function SaleDetail({ id, onClose }) {
           </Table>
           <div className="space-y-1.5 border-t border-white/[0.06] pt-3 text-sm">
             <div className="flex justify-between"><span className="text-muted">Revenue</span><span className="font-semibold tabular-nums text-foreground">{formatCurrency(data.total)}</span></div>
-            <div className="flex justify-between"><span className="text-muted">Cost of goods</span><span className="tabular-nums text-muted">−{formatCurrency(data.costTotal)}</span></div>
-            <div className="flex justify-between border-t border-white/[0.06] pt-1.5"><span className="font-semibold text-foreground">Profit on this sale</span><span className="font-bold tabular-nums text-emerald-400">{formatCurrency(data.total - data.costTotal)}</span></div>
+            {isAdmin && (
+              <>
+                <div className="flex justify-between"><span className="text-muted">Cost of goods</span><span className="tabular-nums text-muted">−{formatCurrency(data.costTotal)}</span></div>
+                <div className="flex justify-between border-t border-white/[0.06] pt-1.5"><span className="font-semibold text-foreground">Profit on this sale</span><span className="font-bold tabular-nums text-emerald-400">{formatCurrency(data.total - data.costTotal)}</span></div>
+              </>
+            )}
             <div className="mt-1 flex justify-between"><span className="text-muted">Paid</span><span className="tabular-nums text-foreground">{formatCurrency(data.amountPaid)}</span></div>
             <div className="flex justify-between"><span className="text-muted">Balance</span><span className={`tabular-nums ${data.balanceDue > 0 ? 'font-semibold text-amber-300' : 'text-faint'}`}>{formatCurrency(data.balanceDue)}</span></div>
           </div>
@@ -416,6 +425,8 @@ function SalesList() {
   // Staff record a sale in the quick window (walk-in, Dar es Salaam, every product with  −  qty  +);
   // the older window below stays for the rep path, unchanged.
   const isRep = user?.role === ROLES.SALES_REP;
+  // What the stock cost and what the business kept are the owner's (15 Nov 2026): staff are not sent them.
+  const isAdmin = user?.role === ROLES.ADMIN;
   // Type, status and page are in the address, written with replace: Back from another page comes back to
   // the same chips and page (navigation-6).
   const [params, setParams] = useSearchParams();
@@ -477,7 +488,7 @@ function SalesList() {
       <div className="space-y-4">
         {/* What the business actually sold — a list of sales without a total is a
             receipt spike: readable line by line, silent about the whole. */}
-        <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+        <div className={clsx('grid grid-cols-2 gap-3', isAdmin ? 'xl:grid-cols-4' : 'xl:grid-cols-3')}>
           {[
             {
               label: 'Revenue taken', value: shown(formatCurrency(sum?.revenue ?? 0)), icon: Wallet,
@@ -488,7 +499,7 @@ function SalesList() {
               chip: (sum?.revenue ?? 0) > 0 ? 'bg-sky-500/15 text-sky-300' : 'bg-white/10 text-muted',
               num: (sum?.revenue ?? 0) > 0 ? 'text-sky-300' : 'text-foreground',
             },
-            {
+            isAdmin && {
               label: 'Profit kept', value: shown(formatCurrency(sum?.profit ?? 0)), icon: TrendingUp,
               sub: (sum?.sales ?? 0) > 0
                 ? `${formatPercent(sum.margin)} margin on the same ${formatNumber(sum.sales)} ${saleWord(sum.sales)}`
@@ -516,7 +527,7 @@ function SalesList() {
               chip: (sum?.owed ?? 0) > 0 ? 'bg-amber-500/15 text-amber-300' : 'bg-white/10 text-muted',
               num: (sum?.owed ?? 0) > 0 ? 'text-amber-300' : 'text-foreground',
             },
-          ].map((c) => (
+          ].filter(Boolean).map((c) => (
             <div key={c.label} className="stat-glass p-4">
               <div className="relative flex items-start justify-between gap-2">
                 <p className="text-xs font-medium text-muted">{c.label}</p>
@@ -540,6 +551,8 @@ function SalesList() {
                   {period ? ` · ${period}` : ''}
                 </p>
                 {/* Phone: the sum as three lined-up lines, so a sign never lands alone at the start of a line. */}
+                {isAdmin && (
+                <>
                 <dl className="mt-2 space-y-1 text-[13px] sm:hidden">
                   <div className="flex items-baseline justify-between gap-3">
                     <dt className="text-muted">Brought in</dt>
@@ -573,6 +586,8 @@ function SalesList() {
                     </p>
                   </div>
                 </div>
+                </>
+                )}
               </>
             ) : (
               <p className="text-[12.5px] text-muted">Nothing was earned {period || 'yet'}.</p>
@@ -622,7 +637,7 @@ function SalesList() {
                 <THead>
                   <TR>
                     <TH>Sale</TH><TH>Customer</TH><TH>Rep</TH><TH>Type</TH>
-                    <TH className="text-right">Total</TH><TH className="text-right">Profit</TH><TH className="text-right">Balance</TH>
+                    <TH className="text-right">Total</TH>{isAdmin && <TH className="text-right">Profit</TH>}<TH className="text-right">Balance</TH>
                     <TH>Status</TH><TH>Date</TH><TH />
                   </TR>
                 </THead>
@@ -641,7 +656,7 @@ function SalesList() {
                         <TD>{s.salesRep?.user?.name || '—'}</TD>
                         <TD>{s.type}</TD>
                         <TD className={money('text-foreground')}>{formatCurrency(s.total)}</TD>
-                        <TD className={money('font-semibold text-emerald-400')}>{formatCurrency(profit)}</TD>
+                        {isAdmin && <TD className={money('font-semibold text-emerald-400')}>{formatCurrency(profit)}</TD>}
                         <TD className={money(s.balanceDue > 0 ? 'text-amber-300' : 'text-faint')}>{formatCurrency(s.balanceDue)}</TD>
                         <TD><Badge className={meta.cls}>{meta.label}</Badge></TD>
                         <TD className="text-faint">{formatDate(s.soldAt)}</TD>

@@ -26,6 +26,13 @@ import { wentThrough } from '@/lib/once';
 
 // One key per opened money form (15 Nov 2026): a double tap, or a retry after a lost answer, is recorded once.
 const newKey = () => (globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `k-${Date.now()}-${Math.round(Math.random() * 1e9)}`);
+// The first day a money date may take: the day the books started, read from the Overview this page has already
+// loaded. The server refuses a date before it, or after today, whatever the field allows (audit fina01).
+function useBooksStart() {
+  const qc = useQueryClient();
+  const epochAt = qc.getQueriesData({ queryKey: ['finance', 'overview'] }).map(([, d]) => d?.epochAt).find(Boolean);
+  return epochAt ? eatISODate(epochAt) : undefined;
+}
 import { refreshAfter } from '@/lib/afterWrite';
 import { DonutChart, BarChartCard, TrendChart, BarsWithLine } from '@/components/charts';
 import {
@@ -370,6 +377,7 @@ function MoneyModal({ mode, accounts: all, categories, onClose }) {
   });
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
   const key = useRef(newKey());
+  const booksStart = useBooksStart();
   const paidFrom = accounts.find((a) => a.id === form.accountId);
   const short = isExpense && paidFrom ? Math.max(0, (Number(form.amount) || 0) - Number(paidFrom.balance || 0)) : 0;
   const save = useMutation({
@@ -429,7 +437,7 @@ function MoneyModal({ mode, accounts: all, categories, onClose }) {
             {brands.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
           </Select>
         </Field>
-        <Field label="Date"><Input type="date" value={form.occurredAt} onChange={set('occurredAt')} /></Field>
+        <Field label="Date"><Input type="date" value={form.occurredAt} min={booksStart} max={eatISODate()} onChange={set('occurredAt')} /></Field>
         <Field label="Description" required={isExpense}><Input value={form.description} onChange={set('description')} placeholder="What was this for?" /></Field>
         <Field label="Notes"><Textarea rows={2} value={form.notes} onChange={set('notes')} /></Field>
       </div>
@@ -455,6 +463,7 @@ function OwnerMoneyModal({ mode, accounts: all, onClose }) {
   });
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
   const key = useRef(newKey());
+  const booksStart = useBooksStart();
   const acct = accounts.find((a) => a.id === form.accountId);
   // Taking profit out can only take what the account holds.
   const short = !isIn && acct ? Math.max(0, (Number(form.amount) || 0) - Number(acct.balance || 0)) : 0;
@@ -495,7 +504,7 @@ function OwnerMoneyModal({ mode, accounts: all, onClose }) {
             {accounts.map((a) => <option key={a.id} value={a.id}>{a.name} — {formatCurrency(a.balance)}</option>)}
           </Select>
         </Field>
-        <Field label="Date"><Input type="date" value={form.occurredAt} onChange={set('occurredAt')} /></Field>
+        <Field label="Date"><Input type="date" value={form.occurredAt} min={booksStart} max={eatISODate()} onChange={set('occurredAt')} /></Field>
         <Field label="What was it for"><Input value={form.description} onChange={set('description')} placeholder={isIn ? 'e.g. commissions for August' : 'e.g. personal drawing'} /></Field>
         <Field label="Notes"><Textarea rows={2} value={form.notes} onChange={set('notes')} /></Field>
       </div>
@@ -1186,7 +1195,7 @@ function Overview({ onNavigate, onOwnerMoney }) {
       </div>
 
       <p className="text-[11px] leading-relaxed text-white/50">
-        Earned is sales − cost of goods − expenses. Rep commission is yours to pay, not the business&apos;s. Buying stock is not an expense — it counts as goods the day a box sells.
+        Earned is sales − cost of goods − expenses. Rep commission and bonus paid from an account are expenses. Buying stock is not an expense — it counts as goods the day a box sells.
       </p>
     </div>
   );
@@ -1867,7 +1876,7 @@ function EditTxnModal({ txn, accounts, brands, onClose }) {
             <Input value={formatCurrency(Math.abs(Number(txn.amount)))} disabled />
           </Field>
           <Field label="Date">
-            <Input type="date" value={occurredAt} onChange={(e) => setOccurredAt(e.target.value)} />
+            <Input type="date" value={occurredAt} max={eatISODate()} onChange={(e) => setOccurredAt(e.target.value)} />
           </Field>
         </div>
         <Field label="Description">
@@ -2440,12 +2449,16 @@ function PaySupplierModal({ order, supplierOutstanding, accounts: all, onClose, 
   // cash into October and left both months wrong.
   const [occurredAt, setOccurredAt] = useState(eatISODate());
   const [notes, setNotes] = useState('');
+  // One key per opened window: a double tap or a retry pays once (audit fina00).
+  const key = useRef(newKey());
+  const booksStart = useBooksStart();
   const pay = useMutation({
     mutationFn: () => api.post('/finance/supplier-payments', {
       purchaseOrderId: order.id, accountId, amount: Number(amount), occurredAt, notes: notes.trim() || undefined,
+      clientKey: key.current,
     }),
     onSuccess: () => { toast.success('Supplier payment recorded'); onDone(); onClose(); },
-    onError: (e) => toast.error(apiError(e)),
+    onError: (e) => { if (wentThrough(e)) { toast.success('Already recorded'); onDone(); onClose(); return; } toast.error(apiError(e), { duration: 9000 }); },
   });
   const amt = Number(amount);
   const valid = accountId && amt > 0 && amt <= cap + 0.001;
@@ -2470,7 +2483,7 @@ function PaySupplierModal({ order, supplierOutstanding, accounts: all, onClose, 
             </Select>
           </Field>
           <Field label="Date paid" hint="The day the money actually left">
-            <Input type="date" value={occurredAt} max={eatISODate()}
+            <Input type="date" value={occurredAt} min={booksStart} max={eatISODate()}
               onChange={(e) => setOccurredAt(e.target.value)} />
           </Field>
         </div>
@@ -2487,12 +2500,16 @@ function PayBalanceModal({ supplier, outstanding, accounts: all, onClose, onDone
   const [amount, setAmount] = useState(String(outstanding || ''));
   const [occurredAt, setOccurredAt] = useState(eatISODate());
   const [notes, setNotes] = useState('');
+  // One key per opened window: a double tap or a retry pays once (audit fina00).
+  const key = useRef(newKey());
+  const booksStart = useBooksStart();
   const pay = useMutation({
     mutationFn: () => api.post(`/finance/suppliers/${supplier.id}/pay`, {
       accountId, amount: Number(amount), occurredAt, notes: notes.trim() || undefined,
+      clientKey: key.current,
     }),
     onSuccess: () => { toast.success('Supplier payment recorded'); onDone(); onClose(); },
-    onError: (e) => toast.error(apiError(e)),
+    onError: (e) => { if (wentThrough(e)) { toast.success('Already recorded'); onDone(); onClose(); return; } toast.error(apiError(e), { duration: 9000 }); },
   });
   const amt = Number(amount);
   const valid = accountId && amt > 0 && amt <= outstanding + 0.001;
@@ -2511,7 +2528,7 @@ function PayBalanceModal({ supplier, outstanding, accounts: all, onClose, onDone
             {accounts.map((a) => <option key={a.id} value={a.id}>{a.name} — {formatCurrency(a.balance)}</option>)}
           </Select>
         </Field>
-        <Field label="Date"><Input type="date" value={occurredAt} onChange={(e) => setOccurredAt(e.target.value)} /></Field>
+        <Field label="Date"><Input type="date" value={occurredAt} min={booksStart} max={eatISODate()} onChange={(e) => setOccurredAt(e.target.value)} /></Field>
         <Field label="Notes"><Textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} /></Field>
       </div>
     </Modal>

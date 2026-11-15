@@ -1,7 +1,7 @@
 'use strict';
 
 const { z } = require('zod');
-const { id, paginationFields, dateRangeFields, money } = require('./common.validator');
+const { id, paginationFields, dateRangeFields, money, lineQuantity } = require('./common.validator');
 
 const TX_TYPES = [
   'STOCK_IN',
@@ -21,7 +21,7 @@ const TX_TYPES = [
 const movementItem = z.object({
   productId: id,
   packagingUnitId: id,
-  quantity: z.number().int().positive(),
+  quantity: lineQuantity,
   unitCost: money.optional(),
 });
 
@@ -48,12 +48,12 @@ const stockIn = {
 // Several products in one adjustment or damage entry (Nino, 15 Nov 2026: "I should be able to adjust more than
 // one product"): `items`, all applied or none. The one-product body (productId, packagingUnitId, quantity) is
 // still taken as it was. Each product once, so one line can never hide behind another.
-const stockLine = z.object({ productId: id, packagingUnitId: id, quantity: z.number().int().positive() });
+const stockLine = z.object({ productId: id, packagingUnitId: id, quantity: lineQuantity });
 const oneOrMany = (schema) => schema
   .extend({
     productId: id.optional(),
     packagingUnitId: id.optional(),
-    quantity: z.number().int().positive().optional(),
+    quantity: lineQuantity.optional(),
     items: z.array(stockLine).min(1, 'Pick at least one product').max(40, 'At most 40 products at a time').optional(),
   })
   .refine((b) => (b.items ? !b.productId : !!(b.productId && b.packagingUnitId && b.quantity)), {
@@ -88,7 +88,7 @@ const transferCreate = {
       fromRepId: id.optional(),
       toWarehouseId: id.optional(),
       toRepId: id.optional(),
-      items: z.array(z.object({ productId: id, packagingUnitId: id, quantity: z.number().int().positive() })).min(1),
+      items: z.array(z.object({ productId: id, packagingUnitId: id, quantity: lineQuantity })).min(1),
       notes: z.string().max(500).optional(),
       dispatchedAt: z.string().datetime().optional(),
     }),
@@ -120,7 +120,7 @@ const returnCreate = {
           // Left out, the product's box (base unit) is used: the order screen counts in boxes and cannot
           // look up a switched-off product's packaging, so its return failed "Validation failed" (audit #67).
           packagingUnitId: id.optional().nullable(),
-          quantity: z.number().int().positive(),
+          quantity: lineQuantity,
           condition: z.enum(['GOOD', 'DAMAGED']).optional(),
         }),
       )
