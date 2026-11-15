@@ -56,7 +56,7 @@ const lines = (...l) => l.filter((x) => x !== null && x !== undefined && x !== f
 const doc = (...parts) => parts.filter((p) => p !== null && p !== undefined && p !== false && p !== '').join('\n\n');
 
 // A list of products under their brand (Nino, 12 Nov 2026: "(3) OHIS Ndogo (Brown) Na Filter: 11 Boxes" ran onto
-// two lines on the phone). The brand stands once as a heading — OHIS first, then Civlily, then other brands A-Z —
+// two lines on the phone). The brand stands once as a heading — Pepa first, then OHIS, then Civlily, then other brands A-Z —
 // and each product is ONE short line without it, numbered on through the whole message:
 //   OHIS
 //   (1) Ndogo (Brown) Bila Filter: 1 Box
@@ -181,7 +181,7 @@ const owner = {
   // WhatsApp budget and the daily report did not go). His own format, word for word, with the products
   // numbered (1), (2), (3) (first "only use abc", then 12 Nov: "(1) Name" in every list, no dash): the heading, then
   // per product its name as stored and "20 Boxes Remaining | Restock: 80 Boxes" — nothing else, no brand
-  // headings, no totals. All brands in one list, OHIS first, then Civlily, then any other brand A-Z (the
+  // headings, no totals. All brands in one list, Pepa first, then OHIS, then Civlily, then any other brand A-Z (the
   // brand is in each name), and within a brand the fixed product order. An empty product sits in its place
   // with "0 Boxes Remaining". A list too long for one message (CallMeBot keeps ~700 characters) becomes
   // consecutive messages "*LOW STOCK — RESTOCK (1/2)*", "(2/2)", split between products, the numbers running
