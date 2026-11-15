@@ -26,6 +26,10 @@ stub('../src/services/whatsappNotify.service', {
   flush: async () => ({ sent: 0 }),
   catchUpReports: async () => ({ sent: [] }),
 });
+// The daily Finance ledger self-heal (15 Nov 2026).
+stub('../src/services/finance.service', {
+  backfillFromHistory: async () => { state.ledgerRuns = (state.ledgerRuns || 0) + 1; if (state.ledgerFails) throw new Error('ledger read broke'); return { incomeCreated: 0, paymentsCreated: 0, brandTagged: 0 }; },
+});
 
 delete process.env.CRON_SECRET;
 const router = require('../src/routes/cron.routes');
@@ -69,4 +73,21 @@ test('a best-effort sub-job that fails is logged by name; the sweep still answer
   assert.deepEqual(body.data.overdue, { flagged: 1 });
   assert.equal(alerts.length, 0);
   assert.ok(logged.some((l) => /stock alerts/.test(l) && /alert scan broke/.test(l)), 'the failure left no trace');
+});
+
+test('the morning check runs the full Finance ledger self-heal once; if it fails it is logged and the run answers', async (t) => {
+  const logged = captureErrors(t);
+  Object.assign(state, { overdueFails: false, stockFails: false, ledgerFails: false, ledgerRuns: 0 });
+  const ok = await sweep();
+  assert.equal(ok.code, 200);
+  assert.equal(state.ledgerRuns, 1);
+  assert.deepEqual(ok.body.data.ledger, { incomeCreated: 0, paymentsCreated: 0, brandTagged: 0 });
+
+  Object.assign(state, { ledgerFails: true });
+  alerts.length = 0;
+  const failed = await sweep();
+  assert.equal(failed.code, 200);
+  assert.equal(failed.body.data.ledger, null);
+  assert.equal(alerts.length, 0);
+  assert.ok(logged.some((l) => /finance ledger/.test(l) && /ledger read broke/.test(l)));
 });

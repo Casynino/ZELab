@@ -76,7 +76,11 @@ router.get(
     const whatsappRetries = await wa.flush({ throttleMs: 0 }).catch(logFailure('settlement-sweep: WhatsApp retries'));
     // A daily, weekly or monthly report whose own run failed or never ran is sent late from here.
     const missedReports = await wa.catchUpReports().catch(logFailure('settlement-sweep: missed reports'));
-    return res.json({ success: true, data: { overdue, reminders, penalties, returnExpiry, stockAlerts, whatsappRetries, missedReports, at: new Date().toISOString() } });
+    // The full Finance ledger self-heal, once a day (15 Nov 2026). Finance and Home now run it only when a
+    // one-statement check finds a missing row (finance.healLedgerOnRead); this daily pass is the safety net
+    // behind that check. Idempotent by refId: on a healed ledger it writes nothing.
+    const ledger = await require('../services/finance.service').backfillFromHistory().catch(logFailure('settlement-sweep: finance ledger'));
+    return res.json({ success: true, data: { overdue, reminders, penalties, returnExpiry, stockAlerts, whatsappRetries, missedReports, ledger, at: new Date().toISOString() } });
   }),
 );
 

@@ -9,6 +9,7 @@
 // gross profit − expenses.
 // ===========================================================================
 
+const { Prisma } = require('@prisma/client');
 const prisma = require('../config/prisma');
 const ApiError = require('../utils/ApiError');
 const reports = require('./reports.service');
@@ -488,6 +489,63 @@ function backfillShared() {
     backfillInFlight = backfillFromHistory().finally(() => { backfillInFlight = null; });
   }
   return backfillInFlight;
+}
+
+// Does the self-heal have anything to do? One statement, answered inside the database (15 Nov 2026).
+// The pass above reads the whole sales history into the server (every CASH sale since the epoch, every
+// sale ledger row, those sales' items, every paid withdrawal) before Finance and Home can answer, and on
+// almost every read it finds nothing. This asks the same three questions the pass acts on, with the same
+// conditions, without moving the rows:
+//   missingIncome  — a settled-order or counter sale since the epoch with money in and no ledger row;
+//   untaggedIncome — a sale ledger row with no brand whose sale is all one brand (the pass tags those);
+//   missingPayout  — a PAID withdrawal since the epoch with no ledger row.
+// The epoch is compared as UTC wall time, the way Prisma stores DateTime, whatever the session time zone.
+// `db` lets a test ask inside a transaction it rolls back.
+async function ledgerGaps(db = prisma) {
+  const epoch = await reports.financeEpoch();
+  const at = epoch ? epoch.toISOString() : null;
+  const saleSince = at ? Prisma.sql`AND s."soldAt" >= (${at}::timestamptz AT TIME ZONE 'UTC')` : Prisma.empty;
+  const paidSince = at
+    ? Prisma.sql`AND (w."paidAt" >= (${at}::timestamptz AT TIME ZONE 'UTC') OR (w."paidAt" IS NULL AND w."decidedAt" >= (${at}::timestamptz AT TIME ZONE 'UTC')))`
+    : Prisma.empty;
+  const rows = await db.$queryRaw`
+    SELECT
+      EXISTS (
+        SELECT 1 FROM "sales" s
+        WHERE s."status" <> 'CANCELLED' AND s."type" = 'CASH'
+          AND (s."settlementId" IS NOT NULL OR s."salesRepId" IS NULL) ${saleSince}
+          AND ROUND(CASE WHEN s."settlementId" IS NOT NULL THEN s."total" ELSE s."amountPaid" END, 2) > 0
+          AND NOT EXISTS (SELECT 1 FROM "finance_transactions" f WHERE f."refType" = 'Sale' AND f."refId" = s."id")
+      ) AS "missingIncome",
+      EXISTS (
+        SELECT 1 FROM "finance_transactions" f JOIN "sales" s ON s."id" = f."refId"
+        WHERE f."refType" = 'Sale' AND f."brandId" IS NULL
+          AND s."status" <> 'CANCELLED' AND s."type" = 'CASH'
+          AND (s."settlementId" IS NOT NULL OR s."salesRepId" IS NULL) ${saleSince}
+          AND (SELECT COUNT(DISTINCT p."brandId") FROM "sale_items" si JOIN "products" p ON p."id" = si."productId"
+               WHERE si."saleId" = s."id" AND p."brandId" IS NOT NULL) = 1
+      ) AS "untaggedIncome",
+      EXISTS (
+        SELECT 1 FROM "commission_withdrawals" w
+        WHERE w."status" = 'PAID' ${paidSince}
+          AND NOT EXISTS (SELECT 1 FROM "finance_transactions" f WHERE f."refType" = 'CommissionWithdrawal' AND f."refId" = w."id")
+      ) AS "missingPayout"`;
+  const r = rows && rows[0];
+  return { missingIncome: Boolean(r && r.missingIncome), untaggedIncome: Boolean(r && r.untaggedIncome), missingPayout: Boolean(r && r.missingPayout) };
+}
+
+// What Finance and Home run before they read: the full self-heal only when the check above finds a gap,
+// so a missed ledger row is still picked up on the very next read, exactly as before. If the check
+// itself cannot run, the full pass runs, as it always did.
+async function healLedgerOnRead() {
+  let gaps = null;
+  try {
+    gaps = await ledgerGaps();
+  } catch {
+    gaps = null;
+  }
+  if (gaps && !gaps.missingIncome && !gaps.untaggedIncome && !gaps.missingPayout) return { skipped: true };
+  return backfillShared();
 }
 
 // --- Transactions ----------------------------------------------------------
@@ -1369,7 +1427,7 @@ async function flowBetween(start, end) {
 // opening balances as the opening figure.
 async function cashflow(opts = {}) {
   await ensureDefaults();
-  await backfillShared().catch(() => {});
+  await healLedgerOnRead().catch(() => {});
   const range = rangeFor(opts);
   const epoch = await reports.financeEpoch();
   // Every read below depends only on the window and the epoch, never on another read's answer, so they
@@ -2067,7 +2125,7 @@ async function overview(period = 'month', shared = {}) {
   // Self-healing sync: fold any business activity not yet in the ledger
   // (historical or missed) into finance before computing. Idempotent by refId.
   // Every read below starts only after it, as before.
-  await backfillShared().catch(() => {});
+  await healLedgerOnRead().catch(() => {});
   const [accounts, prof, inv, commSummary, epoch, bonusSummary] = await Promise.all([
     accountBalances(),
     reports.profitOverview(period),
@@ -2564,6 +2622,8 @@ module.exports = {
   flowBetween,
   ensureDefaults,
   backfillFromHistory,
+  ledgerGaps,
+  healLedgerOnRead,
   accountBalances,
   defaultAccount,
   commissionAccount,
