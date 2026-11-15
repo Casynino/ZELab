@@ -102,8 +102,9 @@ Rep requests stock  →  Admin approves  →  stock issued, 72-hour order opens
 - Real-time WhatsApp alerts on every important event (stock requests, settlements, returns,
   low stock, out of stock), with per-type toggles, quiet hours, delivery log and auto-retry.
 - Per-rep WhatsApp alerts — approvals, commission earned, deadline reminders, penalties.
-- Automated daily (21:00), weekly (Mon 08:00) and monthly (1st, 08:00) reports on
-  **Africa/Dar_es_Salaam** time. Each is a designed PDF (letterhead, figures against the period before,
+- Automated daily (21:00), weekly (Tue 08:00) and monthly (1st, 08:00) reports on
+  **Africa/Dar_es_Salaam** time. The daily report covers 21:00 the evening before to 21:00, so every
+  sale and payment is in exactly one daily report (its text and PDF say which 24 hours). Each is a designed PDF (letterhead, figures against the period before,
   profit and loss, money in and out, charts, brands, products, best rep, stock, accounts, what needs
   attention) at a signed public link; the WhatsApp message stays a short summary with that link.
 - Dashboards — an admin command centre and a personal rep dashboard.
@@ -236,11 +237,15 @@ Driven by Vercel Cron (`vercel.json`). Times below are UTC; the business runs on
 | Job                        | Schedule (UTC) | Local time     | What it does                                              |
 | -------------------------- | -------------- | -------------- | --------------------------------------------------------- |
 | `/api/cron/settlement-sweep` | `0 6 * * *`  | 09:00 daily    | Overdue flags, deadline reminders, penalties, return expiry |
-| `/api/cron/daily-summary`    | `0 18 * * *` | 21:00 daily    | Daily report + archived PDF to WhatsApp                    |
-| `/api/cron/weekly-report`    | `0 5 * * 1`  | 08:00 Monday   | Weekly report + archived PDF                               |
+| `/api/cron/daily-summary`    | `0 18 * * *` | 21:00 daily    | Daily report (21:00 the day before to 21:00) + archived PDF to WhatsApp |
+| `/api/cron/weekly-report`    | `0 5 * * 2`  | 08:00 Tuesday  | Weekly report (Mon–Sun before) + archived PDF              |
 | `/api/cron/monthly-report`   | `0 5 1 * *`  | 08:00 on the 1st | Previous month's full report + archived PDF              |
+| `/api/cron/deadline-watch`   | `*/5 * * * *` (GitHub Actions) | every 5 min, best effort | Owner's "fine about to start" WhatsApp, up to 60 min before a deadline |
 
 All are idempotent and safe to re-run. Set `CRON_SECRET` to require an auth header.
+GitHub's 5-minute schedule is often hours late, so the API also runs the deadline check and the
+21:00 report fallback itself, at most every 5 minutes, after any signed-in request (`dueChecksSoon`).
+The 09:00 sweep sends a report whose WhatsApp failed once more (`<key>:retry`).
 
 ## Seed accounts
 
