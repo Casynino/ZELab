@@ -384,6 +384,23 @@ const AGE_BUCKETS = [
   { key: 'old', label: 'Over 14 days out', max: Infinity },
 ];
 
+// This calendar year against the one before it, month for month. A month of this year that has not come
+// yet is null, not 0: nothing has been sold in it because it has not happened, and a 0 drew the curve
+// crashing to the floor in December (audit ui-a12). The chart stops the line at the current month.
+function yearAgainstLast(months, year, boxesOf) {
+  const out = [];
+  for (let i = 0; i < 12; i += 1) {
+    const now = months.find((m) => m.year === year && m.monthIndex === i);
+    const before = months.find((m) => m.year === year - 1 && m.monthIndex === i);
+    out.push({
+      period: (now || before).label,
+      thisYear: now ? boxesOf(now) : null,
+      lastYear: before ? boxesOf(before) : 0,
+    });
+  }
+  return out;
+}
+
 async function analysis() {
   const finance = require('./finance.service'); // lazy: avoids import cycles
   const { eatNow, eatToUtc } = require('../utils/dates');
@@ -489,19 +506,7 @@ async function analysis() {
     };
   });
 
-  // This calendar year against the one before it, month for month. December
-  // of a year not yet finished reads zero, which is what it is.
-  const year = thisMonth.year;
-  const boxesByYear = [];
-  for (let i = 0; i < 12; i += 1) {
-    const now = months.find((m) => m.year === year && m.monthIndex === i);
-    const before = months.find((m) => m.year === year - 1 && m.monthIndex === i);
-    boxesByYear.push({
-      period: (now || before).label,
-      thisYear: now ? monthFigures(now).boxes : 0,
-      lastYear: before ? monthFigures(before).boxes : 0,
-    });
-  }
+  const boxesByYear = yearAgainstLast(months, thisMonth.year, (m) => monthFigures(m).boxes);
 
   const m0 = monthFigures(thisMonth);
   const m1 = monthFigures(prevMonth);
@@ -849,4 +854,4 @@ async function command() {
   };
 }
 
-module.exports = { overview, recentActivity, outstandingRepStock, paymentsCollected, brandBreakdown, command, analysis };
+module.exports = { overview, recentActivity, outstandingRepStock, paymentsCollected, brandBreakdown, command, analysis, yearAgainstLast };

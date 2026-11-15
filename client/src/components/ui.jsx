@@ -493,6 +493,70 @@ export const TR = ({ children, className, ...props }) => (
 export const TH = ({ children, className, ...props }) => <th className={clsx('th', className)} {...props}>{children}</th>;
 export const TD = ({ children, className, ...props }) => <td className={clsx('td', className)} {...props}>{children}</td>;
 
+// --- Row list ---------------------------------------------------------------
+// A long list on a phone or a tablet, the way the Settle page has it (Nino, 15 Nov 2026): one short row per
+// record — who or what first, the figure that matters at the right, a muted second line (number, date) with
+// the status badge at its end — and the whole row opens the record. A table stacked into tall label cards
+// made a page of fifteen sales 5,000 px long.
+//
+// It follows the width of its own box, not of the screen (index.css `.rows-or-table`): two rows side by side
+// once the box is 40rem wide (an iPad held upright), a last row left alone on its line taking both columns so
+// a page never ends with a hole beside it, and the page's table instead of the rows once the box is 54rem
+// wide (an iPad held sideways beside the rail, a laptop). A 1024 px screen with the sidebar opened leaves a
+// 728 px box: the rows stay, where a screen-width switch put a table there and cut its money off the edge.
+// Put the RowList and its <Table className="rot-table"> together in a RowsOrTable; `table={false}` for a
+// list that has no table (its rows stay at every width).
+export function RowsOrTable({ children }) {
+  return <div className="rows-or-table">{children}</div>;
+}
+export function RowList({ children, table = true, className }) {
+  return (
+    <ul className={clsx('rot-rows [&>li]:border-border', table && 'rot-swap', className)}>
+      {children}
+    </ul>
+  );
+}
+
+// One row of a RowList. `figure` sits at the right of the title; `sub` and `badge` make the second line;
+// `extra` is a third line inside the button (a progress bar, a reason); `children` come under the row,
+// outside the button (the lines of a transfer that was opened). `action` is a control beside the row
+// (Edit, Forgive), never inside the button that opens it.
+export function RowItem({ title, figure, figureClass, sub, badge, extra, onClick, expanded, action, dim, children }) {
+  const body = (
+    <>
+      <span className="flex items-baseline justify-between gap-3">
+        <span className="min-w-0 truncate text-[15px] font-semibold text-foreground">{title}</span>
+        {figure != null && figure !== false && (
+          <span className={clsx('shrink-0 text-[15px] font-bold tabular-nums', figureClass || 'text-foreground')}>{figure}</span>
+        )}
+      </span>
+      {(sub || badge) && (
+        <span className="mt-1 flex items-center justify-between gap-3">
+          <span className="min-w-0 truncate text-[12px] tabular-nums text-muted">{sub}</span>
+          {badge && <span className="shrink-0">{badge}</span>}
+        </span>
+      )}
+      {extra}
+    </>
+  );
+  return (
+    <li className={dim ? 'opacity-60' : undefined}>
+      <div className="flex items-stretch">
+        {onClick ? (
+          <button type="button" onClick={onClick} aria-expanded={expanded}
+            className="block min-w-0 flex-1 px-4 py-3 text-left transition-colors hover:bg-elevated/60 active:bg-elevated/80">
+            {body}
+          </button>
+        ) : (
+          <div className="min-w-0 flex-1 px-4 py-3">{body}</div>
+        )}
+        {action && <div className="flex shrink-0 items-center gap-1 pr-2">{action}</div>}
+      </div>
+      {children}
+    </li>
+  );
+}
+
 // --- Pagination -------------------------------------------------------------
 export function Pagination({ page, totalPages, total, onChange }) {
   if (!totalPages || totalPages <= 1) {
@@ -590,17 +654,87 @@ export function Modal({ open, onClose, title, children, footer, size = 'md' }) {
 }
 
 // --- Page header ------------------------------------------------------------
-export function PageHeader({ title, subtitle, children }) {
+// `tabs`: the page's own tabs (PageTabs), drawn under the title and the buttons, as Finance has them — every
+// page puts them in the same place (audit ui-a13: some pages had two wrapped rows of pills above the title).
+export function PageHeader({ title, subtitle, children, tabs }) {
   return (
-    <div className="mb-4 flex flex-col gap-2 sm:mb-6 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
-      <div className="min-w-0">
-        <h1 className="truncate text-lg font-bold text-foreground sm:text-2xl">{title}</h1>
-        {/* The subtitle is a sentence explaining the page to somebody seeing it
-            for the first time. On a phone it is three lines of something the
-            owner already knows, above the thing he opened the page for. */}
-        {subtitle && <p className="mt-1 hidden text-sm text-muted sm:block">{subtitle}</p>}
+    <div className="mb-4 sm:mb-6">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+        <div className="min-w-0">
+          <h1 className="truncate text-lg font-bold text-foreground sm:text-2xl">{title}</h1>
+          {/* The subtitle is a sentence explaining the page to somebody seeing it
+              for the first time. On a phone it is three lines of something the
+              owner already knows, above the thing he opened the page for. */}
+          {subtitle && <p className="mt-1 hidden text-sm text-muted sm:block">{subtitle}</p>}
+        </div>
+        {children && <div className="flex flex-wrap items-center gap-2">{children}</div>}
       </div>
-      {children && <div className="flex flex-wrap items-center gap-2">{children}</div>}
+      {tabs && <div className="mt-3 sm:mt-4">{tabs}</div>}
+    </div>
+  );
+}
+
+// --- Page tabs --------------------------------------------------------------
+// The pill tabs a page keeps its inner pages in (Inventory, Sales, Products; Finance draws the same). One
+// line that swipes sideways on a phone and wraps from sm up. Given to PageHeader as `tabs`.
+export function PageTabs({ tabs, value, onChange }) {
+  // On a phone the open tab may sit past the edge of the line (Purchases, Reorder): bring it into the row's
+  // view, sideways only, so the page itself never jumps.
+  const row = useRef(null);
+  useLayoutEffect(() => {
+    const el = row.current;
+    const on = el?.querySelector('[aria-current="page"]');
+    if (!el || !on || el.scrollWidth <= el.clientWidth) return;
+    const left = on.getBoundingClientRect().left - el.getBoundingClientRect().left + el.scrollLeft;
+    if (left + on.offsetWidth > el.scrollLeft + el.clientWidth || left < el.scrollLeft) {
+      el.scrollLeft = Math.max(0, left - 16);
+    }
+  }, [value]);
+  return (
+    <div ref={row} className="tab-row">
+      {tabs.map(([k, label]) => (
+        <button key={k} type="button" onClick={() => onChange(k)} aria-current={value === k ? 'page' : undefined}
+          className={clsx('cursor-pointer rounded-full px-4 py-2 text-sm font-semibold ring-1 transition duration-200', value === k
+            ? 'bg-brand-500 text-white ring-brand-500'
+            : 'bg-transparent text-muted ring-white/10 hover:bg-white/[0.05] hover:text-foreground')}>{label}</button>
+      ))}
+    </div>
+  );
+}
+
+// Plain words on a hairline, the active one underlined in red — no boxed bar, no filled pill (Nino, 10 Nov
+// 2026: no big shapes for small things). For the sections inside a page or a tab (Commissions, Purchases),
+// so they never read as a second row of page tabs.
+export function SectionTabs({ value, onChange, tabs, className = 'mt-4' }) {
+  return (
+    <div
+      role="tablist"
+      className={clsx('flex items-stretch justify-between gap-4 overflow-x-auto border-b border-border px-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden', className)}
+    >
+      {tabs.map((t) => {
+        const on = value === t.key;
+        return (
+          <button
+            key={t.key}
+            type="button"
+            role="tab"
+            aria-selected={on}
+            onClick={() => onChange(t.key)}
+            className={clsx(
+              // 44px tall to hit on a phone, though only the words and the line show.
+              'relative -mb-px flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center whitespace-nowrap text-[13px] font-medium transition-colors sm:text-sm',
+              on
+                ? 'text-foreground after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:rounded-full after:bg-brand-500'
+                : 'text-muted hover:text-foreground',
+            )}
+          >
+            {t.label}
+            {t.count != null && t.count > 0 && (
+              <span className="ml-1.5 text-[11px] font-semibold text-brand-600">{t.count}</span>
+            )}
+          </button>
+        );
+      })}
     </div>
   );
 }

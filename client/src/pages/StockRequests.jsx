@@ -22,7 +22,7 @@ import { ROLES, REQUEST_STATUS_META } from '@/lib/constants';
 import { formatDate, formatDateTime, formatCurrency, formatNumber, unitWord } from '@/lib/format';
 import {
   PageHeader, Card, PageSpinner, EmptyState, Badge, Button, Modal, Field, Input, NumberInput,
-  Pagination, LoadError, Table, THead, TBody, TR, TH, TD,
+  Pagination, LoadError, Table, THead, TBody, TR, TH, TD, RowsOrTable, RowList, RowItem,
 } from '@/components/ui';
 import NumberedLines from '@/components/NumberedLines';
 import CollapsibleList, { ShowOlder } from '@/components/CollapsibleList';
@@ -925,7 +925,8 @@ function StaffRequestTable({ onView }) {
       )}
 
       <Card>
-        <div className="flex flex-wrap items-center gap-2 border-b border-border p-4">
+        {/* One swipeable line of filters on a phone, as on Settle. */}
+        <div className="flex items-center gap-2 overflow-x-auto border-b border-border p-3 [scrollbar-width:none] sm:flex-wrap sm:p-4 [&>*]:shrink-0">
           {chips.map((c) => (
             <button key={c.key || 'all'} type="button" onClick={() => setParams((p) => withParams(p, { status: c.key, page: null }), { replace: true })}
               className={`cursor-pointer rounded-full px-3.5 py-2 text-sm font-medium ring-1 transition duration-200 ${
@@ -939,51 +940,86 @@ function StaffRequestTable({ onView }) {
           <EmptyState title="No stock requests" icon={ClipboardList} />
         ) : (
           <>
-            <Table stack="wide">
-              <THead>
-                <TR>
-                  {/* On a phone the status sits under the order number and Products, Requested and the View
-                      link drop out (the whole row opens it), so the row fits the screen. */}
-                  <TH>Order</TH><TH>Rep</TH><TH>Boxes out</TH><TH className="hidden sm:table-cell">Products</TH><TH>Value</TH><TH className="hidden sm:table-cell">Status</TH><TH className="hidden sm:table-cell">Requested</TH><TH className="hidden sm:table-cell" />
-                </TR>
-              </THead>
-              <TBody>
+            {/* Phones and tablets: one short row per request, as on Settle — the rep and the boxes that left,
+                then the number, the day and the status; the value and the cities under it. The whole row opens it. */}
+            <RowsOrTable>
+              <RowList>
                 {rows.map((r) => {
                   const asked = r.boxesRequested ?? boxCount(r);
                   const given = r.boxesApproved ?? boxCount(r);
                   const shortfall = r.status === 'FULFILLED' && asked > given;
                   const ds = requestDisplayStatus(r);
+                  const cities = requestCities(r);
                   return (
-                    <TR key={r.id} className="group cursor-pointer" onClick={() => onView(r)}>
-                      <TD className="font-medium">
-                        {r.requestNumber}
-                        <div className="mt-1 sm:hidden"><Badge className={ds.cls}>{ds.label}</Badge></div>
-                      </TD>
-                      <TD>{r.salesRep?.user?.name}{requestCities(r).length > 0 && <div className="text-xs text-muted">{requestCities(r).join(' · ')}</div>}</TD>
-                      {/* The number this page exists to record. */}
-                      <TD>
-                        <span className="font-semibold tabular-nums text-foreground">{formatNumber(given)}</span>
-                        {shortfall && (
-                          <span className="ml-1.5 text-[11px] text-amber-400">of {formatNumber(asked)} asked</span>
-                        )}
-                      </TD>
-                      <TD className="hidden text-muted sm:table-cell">{productCount(r)}</TD>
-                      <TD className="font-medium">{formatCurrency(orderDisplayValue(r))}</TD>
-                      <TD className="hidden sm:table-cell"><Badge className={ds.cls}>{ds.label}</Badge></TD>
-                      <TD className="hidden text-faint sm:table-cell">{formatDateTime(r.requestedAt)}</TD>
-                      <TD className="hidden sm:table-cell">
-                        {/* A quiet link on every row, not a red one: red is kept for what needs action. A request
-                            still waiting is amber, like the rep's own waiting card. */}
-                        <span className={clsx('inline-flex items-center gap-1 text-xs font-medium transition-colors',
-                          r.status === 'PENDING' ? 'text-amber-300' : 'text-muted group-hover:text-foreground')}>
-                          {r.status === 'PENDING' ? 'Review' : 'View'} <Eye className="h-3.5 w-3.5" />
+                    <RowItem
+                      key={r.id}
+                      onClick={() => onView(r)}
+                      title={r.salesRep?.user?.name || '—'}
+                      figure={<>{formatNumber(given)} <span className="text-[12px] font-medium text-muted">box{given === 1 ? '' : 'es'}</span></>}
+                      sub={`${r.requestNumber} · ${formatDate(r.requestedAt)}`}
+                      badge={<Badge className={ds.cls}>{ds.label}</Badge>}
+                      extra={(
+                        <span className="mt-1 flex items-baseline justify-between gap-3 text-[11px]">
+                          <span className="min-w-0 truncate text-faint">
+                            {productCount(r)} product{productCount(r) === 1 ? '' : 's'}{cities.length > 0 ? ` · ${cities.join(' · ')}` : ''}
+                            {shortfall && <span className="text-amber-400"> · of {formatNumber(asked)} asked</span>}
+                          </span>
+                          <span className="shrink-0 tabular-nums text-muted">{formatCurrency(orderDisplayValue(r))}</span>
                         </span>
-                      </TD>
-                    </TR>
+                      )}
+                    />
                   );
                 })}
-              </TBody>
-            </Table>
+              </RowList>
+              {/* In a wide box (an iPad held sideways, a laptop): the rep with the number under it, the products under the boxes and the day under the status, so the table and its
+                  View fit an iPad held sideways (882 px beside the rail). */}
+              <Table className="rot-table">
+                <THead>
+                  <TR>
+                    <TH>Rep · order</TH><TH>Boxes out</TH><TH className="text-right">Value</TH><TH>Status · requested</TH><TH><span className="sr-only">Open</span></TH>
+                  </TR>
+                </THead>
+                <TBody>
+                  {rows.map((r) => {
+                    const asked = r.boxesRequested ?? boxCount(r);
+                    const given = r.boxesApproved ?? boxCount(r);
+                    const shortfall = r.status === 'FULFILLED' && asked > given;
+                    const ds = requestDisplayStatus(r);
+                    const cities = requestCities(r);
+                    return (
+                      <TR key={r.id} className="group cursor-pointer" onClick={() => onView(r)}>
+                        <TD>
+                          <div className="font-medium text-foreground">{r.salesRep?.user?.name}</div>
+                          <div className="mt-0.5 text-[11px] tabular-nums text-faint">{r.requestNumber}{cities.length > 0 ? ` · ${cities.join(' · ')}` : ''}</div>
+                        </TD>
+                        {/* The number this page exists to record. */}
+                        <TD>
+                          <span className="font-semibold tabular-nums text-foreground">{formatNumber(given)}</span>
+                          {shortfall && (
+                            <span className="ml-1.5 text-[11px] text-amber-400">of {formatNumber(asked)} asked</span>
+                          )}
+                          <div className="mt-0.5 text-[11px] text-faint">{productCount(r)} product{productCount(r) === 1 ? '' : 's'}</div>
+                        </TD>
+                        <TD className="text-right font-medium tabular-nums">{formatCurrency(orderDisplayValue(r))}</TD>
+                        <TD>
+                          <Badge className={ds.cls}>{ds.label}</Badge>
+                          <div className="mt-1 text-[11px] text-faint">{formatDateTime(r.requestedAt)}</div>
+                        </TD>
+                        <TD className="w-px">
+                          {/* A quiet link on every row, not a red one: red is kept for what needs action. A request
+                              still waiting is amber, like the rep's own waiting card. */}
+                          <button type="button" onClick={(e) => { e.stopPropagation(); onView(r); }} aria-label={`${r.status === 'PENDING' ? 'Review' : 'View'} ${r.requestNumber}`}
+                            className={clsx('inline-flex items-center gap-1 text-xs font-medium transition-colors',
+                              r.status === 'PENDING' ? 'text-amber-300' : 'text-muted group-hover:text-foreground')}>
+                            {r.status === 'PENDING' ? 'Review' : 'View'} <Eye className="h-3.5 w-3.5" />
+                          </button>
+                        </TD>
+                      </TR>
+                    );
+                  })}
+                </TBody>
+              </Table>
+            </RowsOrTable>
             <Pagination page={page} totalPages={data.meta?.totalPages} total={data.meta?.total} onChange={setPage} />
           </>
         )}

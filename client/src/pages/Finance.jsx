@@ -37,7 +37,7 @@ import { refreshAfter } from '@/lib/afterWrite';
 import { DonutChart, BarChartCard, TrendChart, BarsWithLine } from '@/components/charts';
 import {
   PageHeader, Card, PageSpinner, EmptyState, LoadError, Badge, Button,
-  Modal, Field, Input, NumberInput, Select, Textarea, Table, THead, TBody, TR, TH, TD, Pagination,
+  Modal, Field, Input, NumberInput, Select, Textarea, Table, THead, TBody, TR, TH, TD, Pagination, RowsOrTable, RowList, RowItem,
 } from '@/components/ui';
 
 const PERIODS = [['today', 'Today'], ['week', 'Week'], ['month', 'Month'], ['all', 'All time']];
@@ -1780,42 +1780,80 @@ function Ledger({ expensesOnly }) {
         <EmptyState title={expensesOnly ? 'No expenses yet' : 'No transactions yet'} message="Record income or expenses, or approve a settlement." icon={Receipt} />
       ) : (
         <>
-          <Table stack="wide">
-            <THead><TR><TH>Date</TH><TH>Type</TH><TH>Brand</TH><TH>Description</TH><TH>Account</TH><TH className="text-right">Amount</TH><TH /></TR></THead>
-            <TBody>
-              {rows.map((t) => (
-                <TR key={t.id}>
-                  <TD className="whitespace-nowrap text-faint">{formatDate(t.occurredAt)}</TD>
-                  <TD><Badge className={isPayoutRow(t) ? PAYOUT_BADGE : DIR_BADGE[t.direction]}>{TXN_TYPE_LABEL[t.type] || t.type}</Badge></TD>
-                  <TD>{t.brandName ? <Badge className="bg-white/[0.08] text-foreground">{t.brandName}</Badge> : <span className="text-faint">—</span>}</TD>
-                  <TD className="stack-full max-w-[220px] truncate text-foreground">{ledgerLabel(t)}</TD>
-                  <TD className="text-muted">{t.account?.name}</TD>
-                  {isPayoutRow(t) ? (
-                    <TD className="text-right tabular-nums">
-                      <div className="font-semibold text-violet-300">{formatCurrency(t.amount)}</div>
-                      <div className="text-[10px] font-normal text-faint">from your pocket</div>
+          {/* Phones and tablets: one short row per entry, as on Settle — what it was and the amount, then the
+              day, the account and the brand with its type. A tap opens the correction; Reverse sits beside it. */}
+          <RowsOrTable>
+            <RowList>
+              {rows.map((t) => {
+                const payout = isPayoutRow(t);
+                const reversible = isAdmin && canReverse(t, data?.meta?.epochAt);
+                return (
+                  <RowItem
+                    key={t.id}
+                    onClick={() => setEditing(t)}
+                    title={ledgerLabel(t)}
+                    figure={payout ? formatCurrency(t.amount) : `${signedOf(t) >= 0 ? '+' : '−'}${formatCurrency(Math.abs(Number(t.amount)))}`}
+                    figureClass={payout ? 'text-violet-300' : signedOf(t) >= 0 ? 'text-emerald-500' : 'text-rose-500'}
+                    sub={[formatDate(t.occurredAt), t.account?.name, t.brandName].filter(Boolean).join(' · ')}
+                    badge={<Badge className={payout ? PAYOUT_BADGE : DIR_BADGE[t.direction]}>{TXN_TYPE_LABEL[t.type] || t.type}</Badge>}
+                    extra={(payout || t.reversedBy || t.reversalOfId) && (
+                      <span className="mt-1 block truncate text-[11px] text-faint">
+                        {payout ? 'from your pocket' : t.reversedBy ? `reversed · ${t.reversedBy}` : 'reversal'}
+                      </span>
+                    )}
+                    // The owner's rows all keep the same room at the right, so the amounts line up whether or not
+                    // an entry can be reversed.
+                    action={isAdmin && (reversible ? (
+                      <button title="Reverse — record the opposite entry" aria-label="Reverse this entry" onClick={() => setReversing(t)}
+                        className="flex h-11 w-11 items-center justify-center text-faint hover:text-rose-500"><Undo2 className="h-4 w-4" /></button>
+                    ) : <span className="w-11" aria-hidden="true" />)}
+                  />
+                );
+              })}
+            </RowList>
+            {/* In a wide box (an iPad held sideways, a laptop): the account and the brand sit under the description, so the table fits an iPad held
+                sideways (882 px beside the rail) with the amount and its buttons inside the card. */}
+            <Table className="rot-table">
+              <THead><TR><TH>Date</TH><TH>Description</TH><TH>Type</TH><TH className="text-right">Amount</TH><TH><span className="sr-only">Actions</span></TH></TR></THead>
+              <TBody>
+                {rows.map((t) => (
+                  <TR key={t.id}>
+                    <TD className="whitespace-nowrap text-faint">{formatDate(t.occurredAt)}</TD>
+                    <TD className="max-w-[280px]">
+                      <div className="truncate text-foreground">{ledgerLabel(t)}</div>
+                      <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-muted">
+                        <span className="truncate">{t.account?.name}</span>
+                        {t.brandName && <Badge className="shrink-0 bg-white/[0.08] px-2 py-0 text-[10.5px] text-foreground">{t.brandName}</Badge>}
+                      </div>
                     </TD>
-                  ) : (
-                    // A reversal carries minus the amount, so the sign follows the money, not just the direction.
-                    <TD className={`text-right font-semibold tabular-nums ${signedOf(t) >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                      {signedOf(t) >= 0 ? '+' : '−'}{formatCurrency(Math.abs(Number(t.amount)))}
-                      {t.reversedBy && <span className="block text-[10px] font-normal text-faint">reversed · {t.reversedBy}</span>}
-                      {t.reversalOfId && <span className="block text-[10px] font-normal text-faint">reversal</span>}
+                    <TD><Badge className={isPayoutRow(t) ? PAYOUT_BADGE : DIR_BADGE[t.direction]}>{TXN_TYPE_LABEL[t.type] || t.type}</Badge></TD>
+                    {isPayoutRow(t) ? (
+                      <TD className="text-right tabular-nums">
+                        <div className="font-semibold text-violet-300">{formatCurrency(t.amount)}</div>
+                        <div className="text-[10px] font-normal text-faint">from your pocket</div>
+                      </TD>
+                    ) : (
+                      // A reversal carries minus the amount, so the sign follows the money, not just the direction.
+                      <TD className={`text-right font-semibold tabular-nums ${signedOf(t) >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                        {signedOf(t) >= 0 ? '+' : '−'}{formatCurrency(Math.abs(Number(t.amount)))}
+                        {t.reversedBy && <span className="block text-[10px] font-normal text-faint">reversed · {t.reversedBy}</span>}
+                        {t.reversalOfId && <span className="block text-[10px] font-normal text-faint">reversal</span>}
+                      </TD>
+                    )}
+                    <TD className="w-px">
+                      <div className="flex items-center justify-end gap-2">
+                        <button title="Correct this transaction" aria-label="Correct this transaction" onClick={() => setEditing(t)} className="flex items-center justify-center text-faint hover:text-brand-600"><Pencil className="h-4 w-4" /></button>
+                        {isAdmin && canReverse(t, data?.meta?.epochAt) && (
+                          <button title="Reverse — record the opposite entry" aria-label="Reverse this entry" onClick={() => setReversing(t)}
+                            className="flex items-center justify-center text-faint hover:text-rose-500"><Undo2 className="h-4 w-4" /></button>
+                        )}
+                      </div>
                     </TD>
-                  )}
-                  <TD>
-                    <div className="flex items-center justify-end gap-2">
-                      <button title="Correct this transaction" aria-label="Correct this transaction" onClick={() => setEditing(t)} className="flex h-11 w-11 items-center justify-center text-faint hover:text-brand-600 sm:h-auto sm:w-auto"><Pencil className="h-4 w-4" /></button>
-                      {isAdmin && canReverse(t, data?.meta?.epochAt) && (
-                        <button title="Reverse — record the opposite entry" aria-label="Reverse this entry" onClick={() => setReversing(t)}
-                          className="flex h-11 w-11 items-center justify-center text-faint hover:text-rose-500 sm:h-auto sm:w-auto"><Undo2 className="h-4 w-4" /></button>
-                      )}
-                    </div>
-                  </TD>
-                </TR>
-              ))}
-            </TBody>
-          </Table>
+                  </TR>
+                ))}
+              </TBody>
+            </Table>
+          </RowsOrTable>
           <Pagination page={page} totalPages={data.meta?.totalPages} total={data.meta?.total} onChange={setPage} />
         </>
       )}

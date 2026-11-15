@@ -4,7 +4,7 @@ import { lazyPart, warmPart, PageLoadBoundary } from '@/components/LazyPage';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import clsx from 'clsx';
 import toast from 'react-hot-toast';
-import { Plus, ShoppingCart, Eye, Wallet, TrendingUp, Boxes, Timer } from 'lucide-react';
+import { Plus, ShoppingCart, Wallet, TrendingUp, Boxes, Timer, ChevronRight } from 'lucide-react';
 import api, { unwrap, apiError } from '@/lib/api';
 import { pageQueries, keepOnPageTurn } from '@/lib/pageQueries';
 import { refreshAfter } from '@/lib/afterWrite';
@@ -19,7 +19,7 @@ import SaleRefund from '@/components/SaleRefund';
 import { refundable } from '@/lib/saleRefund';
 import {
   PageHeader, Card, PageSpinner, EmptyState, Badge, Button, Modal, Field, Select, Input, NumberInput,
-  Pagination, LoadError, Table, THead, TBody, TR, TH, TD,
+  Pagination, LoadError, Table, THead, TBody, TR, TH, TD, RowsOrTable, RowList, RowItem, PageTabs,
 } from '@/components/ui';
 
 function NewSaleModal({ open, onClose }) {
@@ -482,25 +482,20 @@ export default function Sales() {
   // Fetch the invoice maker's code while the list is open, so the tab opens at once. Only ahead of the
   // click: one that fails on a weak line is dropped, and the tab asks again when opened.
   useEffect(() => { warmPart('InvoiceGenerator'); }, []);
+  // Under the page's title and its button, as on Finance (audit ui-a13): each tab's own header draws them.
+  const tabs = <PageTabs tabs={SALES_TABS} value={tab} onChange={(k) => setParams(k === 'list' ? {} : { tab: k }, { replace: true })} />;
   return (
     <div>
-      <div className="mb-5 flex flex-wrap gap-2">
-        {SALES_TABS.map(([k, label]) => (
-          <button key={k} type="button" onClick={() => setParams(k === 'list' ? {} : { tab: k }, { replace: true })}
-            aria-current={tab === k ? 'page' : undefined}
-            className={`cursor-pointer rounded-full px-4 py-2 text-sm font-semibold ring-1 transition duration-200 ${tab === k ? 'bg-brand-500 text-white ring-brand-500' : 'bg-transparent text-muted ring-white/10 hover:bg-white/[0.05] hover:text-foreground'}`}>{label}</button>
-        ))}
-      </div>
       {tab === 'invoice' ? (
         <PageLoadBoundary what="this tab" resetKey={tab}>
-          <Suspense fallback={<PageSpinner />}><InvoiceGenerator /></Suspense>
+          <Suspense fallback={<><PageHeader title="Generate Invoice" tabs={tabs} /><PageSpinner /></>}><InvoiceGenerator tabs={tabs} /></Suspense>
         </PageLoadBoundary>
-      ) : <SalesList />}
+      ) : <SalesList tabs={tabs} />}
     </div>
   );
 }
 
-function SalesList() {
+function SalesList({ tabs }) {
   const { user } = useAuth();
   // Staff record a sale in the quick window (walk-in, Dar es Salaam, every product with  −  qty  +);
   // the older window below stays for the rep path, unchanged.
@@ -561,7 +556,7 @@ function SalesList() {
 
   return (
     <div>
-      <PageHeader title="Sales" subtitle="Cash sales across the business.">
+      <PageHeader title="Sales" subtitle="Cash sales across the business." tabs={tabs}>
         <Button onClick={() => setModalOpen(true)}><Plus className="h-4 w-4" /> New sale</Button>
       </PageHeader>
 
@@ -694,7 +689,8 @@ function SalesList() {
         )}
 
         <Card>
-          <div className="flex flex-wrap items-center gap-2 border-b border-border p-4">
+          {/* One swipeable line of filters on a phone, as on Settle. */}
+          <div className="flex items-center gap-2 overflow-x-auto border-b border-border p-3 [scrollbar-width:none] sm:flex-wrap sm:p-4 [&>*]:shrink-0">
             {typeChips.map((c) => (
               <Chip key={c.value || 'all-types'} {...c} active={type === c.value} onClick={() => pickChip({ type: c.value })} />
             ))}
@@ -713,39 +709,87 @@ function SalesList() {
             />
           ) : (
             <>
-              <Table stack="wide">
-                <THead>
-                  <TR>
-                    <TH>Sale</TH><TH>Customer</TH><TH>Rep</TH><TH>Type</TH>
-                    <TH className="text-right">Total</TH>{isAdmin && <TH className="text-right">Profit</TH>}<TH className="text-right">Balance</TH>
-                    <TH>Status</TH><TH>Date</TH><TH />
-                  </TR>
-                </THead>
-                <TBody>
+              {/* Phones and tablets: one short row per sale, as on Settle — who bought, the total, then the
+                  number, date and status; the rep, the profit and what is still owed under it. The whole row
+                  opens the sale. The nine-box cards it replaced made fifteen sales a 5,000 px page. */}
+              <RowsOrTable>
+                <RowList>
                   {data.data.map((s) => {
                     const meta = SALE_STATUS_META[s.status] || {};
                     const profit = s.total - (s.costTotal || 0);
-                    // A cancelled sale is struck through and dimmed: it is still
-                    // part of the record, but none of the totals above count it.
                     const dead = s.status === 'CANCELLED';
-                    const money = (extra) => clsx('text-right tabular-nums', dead ? 'text-faint line-through' : extra);
                     return (
-                      <TR key={s.id} className={dead ? 'opacity-60' : undefined}>
-                        <TD className={clsx('font-medium', dead ? 'text-muted line-through' : 'text-foreground')}>{s.saleNumber}</TD>
-                        <TD>{s.customer?.name || 'Walk-in'}</TD>
-                        <TD>{s.salesRep?.user?.name || '—'}</TD>
-                        <TD>{s.type}</TD>
-                        <TD className={money('text-foreground')}>{formatCurrency(s.total)}</TD>
-                        {isAdmin && <TD className={money('font-semibold text-emerald-400')}>{formatCurrency(profit)}</TD>}
-                        <TD className={money(s.balanceDue > 0 ? 'text-amber-300' : 'text-faint')}>{formatCurrency(s.balanceDue)}</TD>
-                        <TD><Badge className={meta.cls}>{meta.label}</Badge></TD>
-                        <TD className="text-faint">{formatDate(s.soldAt)}</TD>
-                        <TD><button className="btn-ghost px-2 py-1" onClick={() => setDetailId(s.id)}><Eye className="h-4 w-4" /></button></TD>
-                      </TR>
+                      <RowItem
+                        key={s.id}
+                        dim={dead}
+                        onClick={() => setDetailId(s.id)}
+                        title={s.customer?.name || 'Walk-in'}
+                        figure={formatCurrency(s.total)}
+                        figureClass={dead ? 'text-faint line-through' : 'text-foreground'}
+                        sub={`${s.saleNumber} · ${formatDate(s.soldAt)}`}
+                        badge={<Badge className={meta.cls}>{meta.label}</Badge>}
+                        extra={(
+                          <span className="mt-1 flex items-baseline justify-between gap-3 text-[11px]">
+                            <span className="min-w-0 truncate text-faint">{s.salesRep?.user?.name || 'No rep'}{s.type && s.type !== 'CASH' ? ` · ${s.type}` : ''}</span>
+                            <span className={clsx('shrink-0 tabular-nums', dead && 'line-through')}>
+                              {/* Profit is the owner's figure (staff never see costs). */}
+                              {isAdmin && <span className={dead ? 'text-faint' : 'text-emerald-400'}>profit {formatCurrency(profit)}</span>}
+                              {s.balanceDue > 0 && <span className={dead ? 'text-faint' : 'text-amber-300'}>{isAdmin ? ' · ' : ''}owes {formatCurrency(s.balanceDue)}</span>}
+                            </span>
+                          </span>
+                        )}
+                      />
                     );
                   })}
-                </TBody>
-              </Table>
+                </RowList>
+                {/* In a wide box (an iPad held sideways, a laptop): the table, narrowed to fit an iPad held sideways (882 px beside the rail) — the
+                    number under the customer, Type folded into it, Profit under the total until xl, the date
+                    under the status — and the whole row opens the sale (the eye column is gone; ui-a01). */}
+                <Table className="rot-table">
+                  <THead>
+                    <TR>
+                      <TH>Customer · sale</TH><TH>Rep</TH>
+                      <TH className="text-right">Total</TH>{isAdmin && <TH className="hidden text-right xl:table-cell">Profit</TH>}<TH className="text-right">Balance</TH>
+                      <TH>Status</TH><TH><span className="sr-only">Open</span></TH>
+                    </TR>
+                  </THead>
+                  <TBody>
+                    {data.data.map((s) => {
+                      const meta = SALE_STATUS_META[s.status] || {};
+                      const profit = s.total - (s.costTotal || 0);
+                      // A cancelled sale is struck through and dimmed: it is still
+                      // part of the record, but none of the totals above count it.
+                      const dead = s.status === 'CANCELLED';
+                      const money = (extra) => clsx('text-right tabular-nums', dead ? 'text-faint line-through' : extra);
+                      return (
+                        <TR key={s.id} className={clsx('group cursor-pointer', dead && 'opacity-60')} onClick={() => setDetailId(s.id)}>
+                          <TD>
+                            <div className={clsx('font-medium', dead ? 'text-muted line-through' : 'text-foreground')}>{s.customer?.name || 'Walk-in'}</div>
+                            <div className="mt-0.5 text-[11px] tabular-nums text-faint">{s.saleNumber}{s.type && s.type !== 'CASH' ? ` · ${s.type}` : ''}</div>
+                          </TD>
+                          <TD>{s.salesRep?.user?.name || '—'}</TD>
+                          <TD className={money('text-foreground')}>
+                            {formatCurrency(s.total)}
+                            {isAdmin && <div className={clsx('mt-0.5 text-[11px] xl:hidden', dead ? 'text-faint' : 'text-emerald-400')}>profit {formatCurrency(profit)}</div>}
+                          </TD>
+                          {isAdmin && <TD className={clsx(money('font-semibold text-emerald-400'), 'hidden xl:table-cell')}>{formatCurrency(profit)}</TD>}
+                          <TD className={money(s.balanceDue > 0 ? 'text-amber-300' : 'text-faint')}>{formatCurrency(s.balanceDue)}</TD>
+                          <TD>
+                            <Badge className={meta.cls}>{meta.label}</Badge>
+                            <div className="mt-1 text-[11px] text-faint">{formatDate(s.soldAt)}</div>
+                          </TD>
+                          <TD className="w-px">
+                            <button type="button" aria-label={`Open ${s.saleNumber}`} onClick={(e) => { e.stopPropagation(); setDetailId(s.id); }}
+                              className="rounded p-1 text-faint transition-colors group-hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30">
+                              <ChevronRight className="h-4 w-4" />
+                            </button>
+                          </TD>
+                        </TR>
+                      );
+                    })}
+                  </TBody>
+                </Table>
+              </RowsOrTable>
               <Pagination page={page} totalPages={data.meta?.totalPages} total={data.meta?.total} onChange={setPage} />
             </>
           )}

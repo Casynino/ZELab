@@ -12,7 +12,7 @@ import { formatCurrency, formatDate } from '@/lib/format';
 import { TZ_REGIONS } from '@/lib/regions';
 import {
   PageHeader, Card, PageSpinner, EmptyState, Badge, Button, Modal, Field, Input, Textarea, Select,
-  SearchInput, Pagination, LoadError, Table, THead, TBody, TR, TH, TD,
+  SearchInput, Pagination, LoadError, Table, THead, TBody, TR, TH, TD, RowsOrTable, RowList, RowItem,
 } from '@/components/ui';
 
 function CustomerModal({ open, onClose, editing, reps, canAssign }) {
@@ -84,23 +84,28 @@ function CustomerDetail({ id, onClose }) {
           <div>
             <div className="mb-1 font-medium text-foreground">Recent sales</div>
             {data.sales.length === 0 ? <p className="text-faint">No sales yet.</p> : (
-              <Table>
-                <THead><TR><TH>Sale</TH><TH>Status</TH><TH>Total</TH><TH>Balance</TH><TH>Date</TH></TR></THead>
-                {/* A cancelled sale is struck through, as on the Sales list: it is not in the totals above (sale13). */}
-                <TBody>{data.sales.map((s) => {
+              // One short row per sale at every width: the five-column table ran past the edge of this window
+              // on a phone ("TSh 36,0C"). A cancelled sale is dimmed and struck through: it is not in the totals above (sale13).
+              <ul className="divide-y divide-border overflow-hidden rounded-lg border border-border">
+                {data.sales.map((s) => {
                   const dead = s.status === 'CANCELLED';
                   const meta = SALE_STATUS_META[s.status] || {};
                   return (
-                    <TR key={s.id}>
-                      <TD className={dead ? 'text-muted line-through' : undefined}>{s.saleNumber}</TD>
-                      <TD><Badge className={meta.cls}>{meta.label || s.status}</Badge></TD>
-                      <TD className={dead ? 'text-faint line-through' : undefined}>{formatCurrency(s.total)}</TD>
-                      <TD className={dead ? 'text-faint line-through' : undefined}>{formatCurrency(s.balanceDue)}</TD>
-                      <TD className="text-faint">{formatDate(s.soldAt)}</TD>
-                    </TR>
+                    <RowItem
+                      key={s.id}
+                      dim={dead}
+                      title={s.saleNumber}
+                      figure={dead ? <span className="line-through">{formatCurrency(s.total)}</span> : formatCurrency(s.total)}
+                      sub={`${formatDate(s.soldAt)}${s.type ? ` · ${s.type}` : ''}`}
+                      badge={dead
+                        ? <Badge className={meta.cls}>{meta.label || s.status}</Badge>
+                        : s.balanceDue > 0
+                          ? <span className="text-[12px] font-semibold tabular-nums text-amber-300">owes {formatCurrency(s.balanceDue)}</span>
+                          : <span className="text-[12px] tabular-nums text-faint">{formatCurrency(s.balanceDue)} owed</span>}
+                    />
                   );
-                })}</TBody>
-              </Table>
+                })}
+              </ul>
             )}
           </div>
           {data.creditSales?.some((c) => c.balance > 0) && (
@@ -149,26 +154,45 @@ export default function Customers() {
           <EmptyState title="No customers" icon={UsersIcon} action={<Button onClick={() => setModal({ open: true, editing: null })}><Plus className="h-4 w-4" /> New customer</Button>} />
         ) : (
           <>
-            <Table>
-              <THead><TR><TH>Name</TH><TH>Phone</TH><TH>Region</TH><TH>Rep</TH><TH>Orders</TH><TH /></TR></THead>
-              <TBody>
+            {/* Phones and tablets: one short row per customer, as on Settle — the name and the orders, then the
+                phone, region and rep. The row opens the customer; Edit sits beside it. */}
+            <RowsOrTable>
+              <RowList>
                 {data.data.map((c) => (
-                  <TR key={c.id}>
-                    <TD className="font-medium text-foreground">{c.name}</TD>
-                    <TD>{c.phone || '—'}</TD>
-                    <TD>{c.region || '—'}</TD>
-                    <TD>{c.salesRep?.user?.name || '—'}</TD>
-                    <TD>{c._count?.sales ?? 0}</TD>
-                    <TD>
-                      <div className="flex justify-end gap-1">
-                        <button className="btn-ghost px-2 py-1" onClick={() => setDetailId(c.id)}><Eye className="h-4 w-4" /></button>
-                        <button className="btn-ghost px-2 py-1" onClick={() => setModal({ open: true, editing: c })}><Pencil className="h-4 w-4" /></button>
-                      </div>
-                    </TD>
-                  </TR>
+                  <RowItem
+                    key={c.id}
+                    onClick={() => setDetailId(c.id)}
+                    title={c.name}
+                    figure={<>{c._count?.sales ?? 0} <span className="text-[12px] font-medium text-muted">order{(c._count?.sales ?? 0) === 1 ? '' : 's'}</span></>}
+                    sub={[c.phone, c.region, c.salesRep?.user?.name].filter(Boolean).join(' · ') || 'No phone or region yet'}
+                    action={(
+                      <button type="button" className="flex h-11 w-11 items-center justify-center text-faint hover:text-foreground" aria-label={`Edit ${c.name}`} title="Edit"
+                        onClick={() => setModal({ open: true, editing: c })}><Pencil className="h-4 w-4" /></button>
+                    )}
+                  />
                 ))}
-              </TBody>
-            </Table>
+              </RowList>
+              <Table className="rot-table">
+                <THead><TR><TH>Name</TH><TH>Phone</TH><TH>Region</TH><TH>Rep</TH><TH>Orders</TH><TH /></TR></THead>
+                <TBody>
+                  {data.data.map((c) => (
+                    <TR key={c.id}>
+                      <TD className="font-medium text-foreground">{c.name}</TD>
+                      <TD>{c.phone || '—'}</TD>
+                      <TD>{c.region || '—'}</TD>
+                      <TD>{c.salesRep?.user?.name || '—'}</TD>
+                      <TD>{c._count?.sales ?? 0}</TD>
+                      <TD>
+                        <div className="flex justify-end gap-1">
+                          <button className="btn-ghost px-2 py-1" aria-label={`Open ${c.name}`} title="Open" onClick={() => setDetailId(c.id)}><Eye className="h-4 w-4" /></button>
+                          <button className="btn-ghost px-2 py-1" aria-label={`Edit ${c.name}`} title="Edit" onClick={() => setModal({ open: true, editing: c })}><Pencil className="h-4 w-4" /></button>
+                        </div>
+                      </TD>
+                    </TR>
+                  ))}
+                </TBody>
+              </Table>
+            </RowsOrTable>
             <Pagination page={page} totalPages={data.meta?.totalPages} total={data.meta?.total} onChange={setPage} />
           </>
         )}

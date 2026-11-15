@@ -6,7 +6,7 @@ import api, { unwrap, apiError } from '@/lib/api';
 import { formatCurrency, formatNumber, formatPercent } from '@/lib/format';
 import {
   PageHeader, Card, CardHeader, CardBody, PageSpinner, EmptyState, LoadError, Select, Button,
-  Table, THead, TBody, TR, TH, TD,
+  Table, THead, TBody, TR, TH, TD, RowsOrTable, RowList, RowItem,
 } from '@/components/ui';
 import { TrendChart, BarChartCard } from '@/components/charts';
 // The rep side's chart colours (components/RepCharts): revenue green, profit sky — red is kept for alerts.
@@ -53,7 +53,9 @@ function NoCostNote({ noCost, className = 'mt-3' }) {
 function SalesReport({ data }) {
   return (
     <>
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+      {/* Two across until lg: four across an iPad held upright left 138 px tiles, and "TSh 19,567,035" (151 px)
+          ran over their edge (ui-a09). */}
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <Metric label="Revenue" value={formatCurrency(data.totals.revenue)} />
         <Metric label="Gross profit" value={formatCurrency(data.totals.grossProfit)} />
         <Metric label="Margin" value={formatPercent(data.totals.margin)} />
@@ -156,21 +158,37 @@ export default function Reports({ embedded = false }) {
             <Card>
               <CardHeader title="Top selling products" subtitle="By revenue" />
               <CardBody>{data.topSelling?.length ? <BarChartCard data={data.topSelling.map((p) => ({ name: p.name.slice(0, 22), value: p.revenue }))} color={GREEN} /> : <EmptyState title="No sales" />}</CardBody>
-              <Table>
-                <THead><TR><TH>Product</TH><TH>Units</TH><TH>Revenue</TH><TH>Profit</TH><TH>Margin</TH></TR></THead>
-                <TBody>{(data.all || []).map((p) => {
-                  // Every box of it sold before a buying price was set: its profit is not known.
-                  const unknown = p.noCost?.boxes > 0 && p.noCost.boxes >= p.unitsSold;
-                  return (
-                    <TR key={p.productId}>
-                      <TD>{p.name}{p.noCost?.boxes > 0 && <span className="ml-2 text-xs text-amber-300">{formatNumber(p.noCost.boxes)} with no buying price</span>}</TD>
-                      <TD>{formatNumber(p.unitsSold)}</TD><TD>{formatCurrency(p.revenue)}</TD>
-                      <TD>{unknown ? <span className="text-faint">Not known</span> : formatCurrency(p.profit)}</TD>
-                      <TD>{unknown ? <span className="text-faint">—</span> : formatPercent(p.margin)}</TD>
-                    </TR>
-                  );
-                })}</TBody>
-              </Table>
+              {/* Phones and tablets: one short row each, as on Settle (the tables hid their money columns
+                  behind a sideways scroll on a phone and an iPad). The table in a wide box. A product whose every
+                  box was sold before a buying price was set has no known profit. */}
+              <RowsOrTable>
+                <RowList>
+                  {(data.all || []).map((p) => {
+                    const unknown = p.noCost?.boxes > 0 && p.noCost.boxes >= p.unitsSold;
+                    return (
+                      <RowItem key={p.productId} title={p.name} figure={formatCurrency(p.revenue)}
+                        sub={`${formatNumber(p.unitsSold)} units · ${unknown ? 'profit not known' : `profit ${formatCurrency(p.profit)}`}`}
+                        badge={<span className="text-[12px] tabular-nums text-muted">{unknown ? '—' : formatPercent(p.margin)}</span>}
+                        extra={p.noCost?.boxes > 0 && <span className="mt-1 block text-[11px] text-amber-300">{formatNumber(p.noCost.boxes)} with no buying price</span>} />
+                    );
+                  })}
+                </RowList>
+                <Table className="rot-table">
+                  <THead><TR><TH>Product</TH><TH>Units</TH><TH>Revenue</TH><TH>Profit</TH><TH>Margin</TH></TR></THead>
+                  <TBody>{(data.all || []).map((p) => {
+                    // Every box of it sold before a buying price was set: its profit is not known.
+                    const unknown = p.noCost?.boxes > 0 && p.noCost.boxes >= p.unitsSold;
+                    return (
+                      <TR key={p.productId}>
+                        <TD>{p.name}{p.noCost?.boxes > 0 && <span className="ml-2 text-xs text-amber-300">{formatNumber(p.noCost.boxes)} with no buying price</span>}</TD>
+                        <TD>{formatNumber(p.unitsSold)}</TD><TD>{formatCurrency(p.revenue)}</TD>
+                        <TD>{unknown ? <span className="text-faint">Not known</span> : formatCurrency(p.profit)}</TD>
+                        <TD>{unknown ? <span className="text-faint">—</span> : formatPercent(p.margin)}</TD>
+                      </TR>
+                    );
+                  })}</TBody>
+                </Table>
+              </RowsOrTable>
               <NoCostNote noCost={(data.all || []).reduce((t, p) => ({ boxes: t.boxes + (p.noCost?.boxes || 0), revenue: t.revenue + (p.noCost?.revenue || 0) }), { boxes: 0, revenue: 0 })} className="px-4 pb-4 pt-3" />
             </Card>
           )}
@@ -178,41 +196,75 @@ export default function Reports({ embedded = false }) {
             <Card>
               <CardHeader title="Regional performance" />
               <CardBody>{data.items?.length ? <BarChartCard data={data.items.map((r) => ({ name: r.region, value: r.revenue }))} color={GREEN} /> : <EmptyState title="No regional sales" />}</CardBody>
-              <Table>
-                <THead><TR><TH>Region</TH><TH>Orders</TH><TH>Revenue</TH><TH>Profit</TH></TR></THead>
-                <TBody>{(data.items || []).map((r) => (<TR key={r.region}><TD>{r.region}</TD><TD>{r.orders}</TD><TD>{formatCurrency(r.revenue)}</TD><TD>{formatCurrency(r.profit)}</TD></TR>))}</TBody>
-              </Table>
+              <RowsOrTable>
+                <RowList>
+                  {(data.items || []).map((r) => (
+                    <RowItem key={r.region} title={r.region} figure={formatCurrency(r.revenue)}
+                      sub={`${formatNumber(r.orders)} order${r.orders === 1 ? '' : 's'} · profit ${formatCurrency(r.profit)}`} />
+                  ))}
+                </RowList>
+                <Table className="rot-table">
+                  <THead><TR><TH>Region</TH><TH>Orders</TH><TH>Revenue</TH><TH>Profit</TH></TR></THead>
+                  <TBody>{(data.items || []).map((r) => (<TR key={r.region}><TD>{r.region}</TD><TD>{r.orders}</TD><TD>{formatCurrency(r.revenue)}</TD><TD>{formatCurrency(r.profit)}</TD></TR>))}</TBody>
+                </Table>
+              </RowsOrTable>
               <NoCostNote noCost={(data.items || []).reduce((t, r) => ({ boxes: t.boxes + (r.noCost?.boxes || 0), revenue: t.revenue + (r.noCost?.revenue || 0) }), { boxes: 0, revenue: 0 })} className="px-4 pb-4 pt-3" />
             </Card>
           )}
           {tab === 'salesReps' && (
             <Card>
               <CardHeader title="Sales rep performance" />
-              <Table>
-                {/* Commission owed is what the business owes the rep (never below zero); fines bigger than what he
-                    earned are the rep owing the business, said apart (sale12). */}
-                <THead><TR><TH>Rep</TH><TH>Region</TH><TH>Orders</TH><TH>Revenue</TH><TH>Profit</TH><TH>Commission owed</TH><TH>Rep owes (fines)</TH><TH>Target</TH></TR></THead>
-                <TBody>{(data.items || []).map((r) => (
-                  <TR key={r.salesRepId}>
-                    <TD className="font-medium">{r.name}</TD><TD>{r.region || '—'}</TD><TD>{r.orders}</TD><TD>{formatCurrency(r.revenue)}</TD><TD>{formatCurrency(r.profit)}</TD>
-                    <TD className="text-violet-300">{formatCurrency(Math.max(0, Number(r.commissionOwed) || 0))}</TD>
-                    <TD className={r.repOwes > 0 ? 'text-rose-300' : 'text-faint'}>{r.repOwes > 0 ? formatCurrency(r.repOwes) : '—'}</TD>
-                    <TD>{r.attainment != null ? formatPercent(r.attainment) : '—'}</TD>
-                  </TR>
-                ))}</TBody>
-              </Table>
+              {/* Commission owed is what the business owes the rep (never below zero); fines bigger than what he
+                  earned are the rep owing the business, said apart (sale12). */}
+              <RowsOrTable>
+                <RowList>
+                  {(data.items || []).map((r) => (
+                    <RowItem key={r.salesRepId} title={r.name} figure={formatCurrency(r.revenue)}
+                      sub={`${r.region || 'No region'} · ${formatNumber(r.orders)} order${r.orders === 1 ? '' : 's'} · profit ${formatCurrency(r.profit)}`}
+                      badge={r.attainment != null ? <span className="text-[12px] tabular-nums text-muted">target {formatPercent(r.attainment)}</span> : null}
+                      extra={(
+                        <span className="mt-1 block text-[11px] tabular-nums">
+                          <span className="text-violet-300">commission owed {formatCurrency(Math.max(0, Number(r.commissionOwed) || 0))}</span>
+                          {r.repOwes > 0 && <span className="text-rose-300"> · owes {formatCurrency(r.repOwes)} in fines</span>}
+                        </span>
+                      )} />
+                  ))}
+                </RowList>
+                {/* In a wide box (an iPad held sideways, a laptop): the region under the name, so Commission owed and Target fit an iPad held sideways. */}
+                <Table className="rot-table">
+                  <THead><TR><TH>Rep</TH><TH>Orders</TH><TH>Revenue</TH><TH>Profit</TH><TH>Commission owed</TH><TH>Rep owes (fines)</TH><TH>Target</TH></TR></THead>
+                  <TBody>{(data.items || []).map((r) => (
+                    <TR key={r.salesRepId}>
+                      <TD><div className="font-medium">{r.name}</div><div className="mt-0.5 text-[11px] text-faint">{r.region || '—'}</div></TD>
+                      <TD>{r.orders}</TD><TD>{formatCurrency(r.revenue)}</TD><TD>{formatCurrency(r.profit)}</TD>
+                      <TD className="text-violet-300">{formatCurrency(Math.max(0, Number(r.commissionOwed) || 0))}</TD>
+                      <TD className={r.repOwes > 0 ? 'text-rose-300' : 'text-faint'}>{r.repOwes > 0 ? formatCurrency(r.repOwes) : '—'}</TD>
+                      <TD>{r.attainment != null ? formatPercent(r.attainment) : '—'}</TD>
+                    </TR>
+                  ))}</TBody>
+                </Table>
+              </RowsOrTable>
               <NoCostNote noCost={(data.items || []).reduce((t, r) => ({ boxes: t.boxes + (r.noCost?.boxes || 0), revenue: t.revenue + (r.noCost?.revenue || 0) }), { boxes: 0, revenue: 0 })} className="px-4 pb-4 pt-3" />
             </Card>
           )}
           {tab === 'valuation' && (
             <Card>
               <CardHeader title="Inventory valuation" subtitle={`Cost ${formatCurrency(data.totals.totalValue)} · Retail ${formatCurrency(data.totals.retailValue)}`} />
-              <Table>
-                <THead><TR><TH>Product</TH><TH>Warehouse</TH><TH>Reps</TH><TH>Total units</TH><TH>Cost value</TH><TH>Retail value</TH></TR></THead>
-                <TBody>{(data.items || []).map((p) => (
-                  <TR key={p.productId}><TD>{p.name}</TD><TD>{formatNumber(p.warehouseBase)}</TD><TD>{formatNumber(p.repBase)}</TD><TD>{formatNumber(p.totalBase)}</TD><TD>{formatCurrency(p.costValue)}</TD><TD>{formatCurrency(p.retailValue)}</TD></TR>
-                ))}</TBody>
-              </Table>
+              <RowsOrTable>
+                <RowList>
+                  {(data.items || []).map((p) => (
+                    <RowItem key={p.productId} title={p.name} figure={formatCurrency(p.costValue)}
+                      sub={`${formatNumber(p.warehouseBase)} warehouse · ${formatNumber(p.repBase)} reps · ${formatNumber(p.totalBase)} total`}
+                      badge={<span className="text-[12px] tabular-nums text-muted">retail {formatCurrency(p.retailValue)}</span>} />
+                  ))}
+                </RowList>
+                <Table className="rot-table">
+                  <THead><TR><TH>Product</TH><TH>Warehouse</TH><TH>Reps</TH><TH>Total units</TH><TH>Cost value</TH><TH>Retail value</TH></TR></THead>
+                  <TBody>{(data.items || []).map((p) => (
+                    <TR key={p.productId}><TD>{p.name}</TD><TD>{formatNumber(p.warehouseBase)}</TD><TD>{formatNumber(p.repBase)}</TD><TD>{formatNumber(p.totalBase)}</TD><TD>{formatCurrency(p.costValue)}</TD><TD>{formatCurrency(p.retailValue)}</TD></TR>
+                  ))}</TBody>
+                </Table>
+              </RowsOrTable>
             </Card>
           )}
         </div>

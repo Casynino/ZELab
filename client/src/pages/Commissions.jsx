@@ -24,8 +24,8 @@ import { formatCurrency, formatNumber, formatDate, formatDateTime, sharePercents
 import PayWithdrawalModal from '@/components/PayWithdrawalModal';
 import { PayoutHistory, earnedOn } from '@/components/WithdrawalNote';
 import {
-  PageHeader, Card, CardHeader, PageSpinner, EmptyState, LoadError, Badge, Button, Modal, Field, Input, NumberInput, Textarea,
-  Pagination, Select, Table, THead, TBody, TR, TH, TD,
+  PageHeader, Card, CardHeader, PageSpinner, EmptyState, LoadError, Badge, Button, Modal, Field, Input, NumberInput, Textarea, SectionTabs,
+  Pagination, Select, Table, THead, TBody, TR, TH, TD, RowsOrTable, RowList, RowItem,
 } from '@/components/ui';
 import DoneReceipt from '@/components/DoneReceipt';
 import { bonusFillPct } from '@/lib/labels';
@@ -652,11 +652,20 @@ function FinesHistory({ admin, canForgive = admin }) {
   const dateLine = (p) => (p.status === 'WAIVED' && p.waivedAt
     ? `${formatDateTime(p.appliedAt)} · forgiven ${formatDateTime(p.waivedAt)}`
     : formatDateTime(p.appliedAt));
-  // On a phone Type and Order move under the rep, Status and Date under the amount, so a 390 px screen
-  // shows the whole fine (and its Forgive) without scrolling sideways. Below xl the order sits under the
-  // type, so a 1024 px screen keeps Forgive inside the card.
+  // On a phone Type and Order move under the rep with Forgive on its own line there, Status and Date under
+  // the amount, so a 375 px screen shows the whole fine and its Forgive without scrolling sideways (it was
+  // clipped by 19 px). Below lg Status stays under the amount, so a tablet held upright keeps the table
+  // inside its card; below xl the order sits under the type, so a 1024 px screen does too.
   const head = (
-    <THead><TR>{admin && <TH>Rep</TH>}<TH className="hidden sm:table-cell">Type</TH><TH className="hidden xl:table-cell">Order</TH><TH className="text-right">Amount</TH><TH className="hidden sm:table-cell">Status</TH><TH className="hidden sm:table-cell">Date</TH>{admin && <TH />}</TR></THead>
+    <THead><TR>{admin && <TH>Rep</TH>}<TH className="hidden sm:table-cell">Type</TH><TH className="hidden xl:table-cell">Order</TH><TH className="text-right">Amount</TH><TH className="hidden lg:table-cell">Status</TH><TH className="hidden sm:table-cell">Date</TH>{admin && <TH className="hidden sm:table-cell" />}</TR></THead>
+  );
+  const forgiveButton = (p) => (
+    <button
+      onClick={() => setForgiving(p)}
+      className="inline-flex min-h-11 items-center gap-1 rounded-lg bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-600 transition hover:bg-emerald-500/20 sm:min-h-0 sm:px-2.5"
+    >
+      <HeartHandshake className="h-3.5 w-3.5" /> Forgive
+    </button>
   );
   const row = (p) => {
     const waived = p.status === 'WAIVED';
@@ -671,6 +680,7 @@ function FinesHistory({ admin, canForgive = admin }) {
               {kindLabel(p)}
               {p.settlement?.settlementNumber && <span className="block whitespace-nowrap text-faint">{p.settlement.settlementNumber}</span>}
             </div>
+            {!waived && canForgive && <div className="mt-1.5 sm:hidden">{forgiveButton(p)}</div>}
           </TD>
         )}
         <TD className="hidden sm:table-cell">
@@ -682,24 +692,17 @@ function FinesHistory({ admin, canForgive = admin }) {
         <TD className="hidden text-faint xl:table-cell" title={p.notes || undefined}>{p.settlement?.settlementNumber || '—'}</TD>
         <TD className="text-right">
           <span className={`font-semibold tabular-nums ${waived ? 'text-faint line-through' : 'text-rose-300'}`}>−{formatCurrency(p.amount)}</span>
-          <div className="mt-1 flex flex-col items-end gap-0.5 text-[11px] text-faint sm:hidden">
+          <div className="mt-1 flex flex-col items-end gap-0.5 text-[11px] text-faint lg:hidden">
             {statusBadge(p)}
-            <span className="mt-0.5 whitespace-nowrap">{formatDateTime(p.appliedAt)}</span>
-            {waived && p.waivedAt && <span className="whitespace-nowrap">forgiven {formatDateTime(p.waivedAt)}</span>}
+            <span className="mt-0.5 whitespace-nowrap sm:hidden">{formatDateTime(p.appliedAt)}</span>
+            {waived && p.waivedAt && <span className="whitespace-nowrap sm:hidden">forgiven {formatDateTime(p.waivedAt)}</span>}
           </div>
         </TD>
-        <TD className="hidden sm:table-cell">{statusBadge(p)}</TD>
+        <TD className="hidden lg:table-cell">{statusBadge(p)}</TD>
         <TD className="hidden text-faint sm:table-cell">{dateLine(p)}</TD>
         {admin && (
-          <TD>
-            {!waived && canForgive && (
-              <button
-                onClick={() => setForgiving(p)}
-                className="inline-flex min-h-11 items-center gap-1 rounded-lg bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-600 transition hover:bg-emerald-500/20 sm:min-h-0 sm:px-2.5"
-              >
-                <HeartHandshake className="h-3.5 w-3.5" /> Forgive
-              </button>
-            )}
+          <TD className="hidden sm:table-cell">
+            {!waived && canForgive && forgiveButton(p)}
           </TD>
         )}
       </TR>
@@ -1131,44 +1134,6 @@ function DeductModal({ reps, onClose }) {
   );
 }
 
-// One section at a time. The page had grown to four stacked tables and a wall
-// of forgiven fines, which buried the balances everyone actually opens it for.
-function SectionTabs({ value, onChange, tabs }) {
-  // Plain words on a hairline, the active one underlined in red — no boxed bar,
-  // no filled pill (Nino, 10 Nov 2026: no big shapes for small things).
-  return (
-    <div
-      role="tablist"
-      className="mt-4 flex items-stretch justify-between gap-4 overflow-x-auto border-b border-border px-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-    >
-      {tabs.map((t) => {
-        const on = value === t.key;
-        return (
-          <button
-            key={t.key}
-            type="button"
-            role="tab"
-            aria-selected={on}
-            onClick={() => onChange(t.key)}
-            className={clsx(
-              // 44px tall to hit on a phone, though only the words and the line show.
-              'relative -mb-px flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center whitespace-nowrap text-[13px] font-medium transition-colors sm:text-sm',
-              on
-                ? 'text-foreground after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:rounded-full after:bg-brand-500'
-                : 'text-muted hover:text-foreground',
-            )}
-          >
-            {t.label}
-            {t.count != null && t.count > 0 && (
-              <span className="ml-1.5 text-[11px] font-semibold text-brand-600">{t.count}</span>
-            )}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
 // ── Admin: commission rates ──────────────────────────────────────────────────
 // Rates are added, never edited. A new rate must start in the future, which is
 // what guarantees a settled box can never be re-priced — so the form offers a
@@ -1237,7 +1202,9 @@ function CommissionRateSettings({ canEdit }) {
         </div>
       </div>
       )}
-      <Table>
+      {/* A few rows: on a phone or a tablet held upright each is a small card of labelled figures, so the
+          start date and Remove are never past the edge. */}
+      <Table stack="wide">
         <THead><TR><TH>Brand</TH><TH className="text-right">Per box</TH><TH>Starts</TH><TH>Note</TH><TH /></TR></THead>
         <TBody>
           {rates.map((r) => {
@@ -1356,7 +1323,7 @@ function BonusSettings({ canEdit }) {
       </div>
       )}
 
-      <Table>
+      <Table stack="wide">
         <THead><TR><TH>Target</TH><TH className="text-right">Bonus</TH><TH>Starts</TH><TH>Awards</TH><TH /></TR></THead>
         <TBody>
           {rules.map((r) => (
@@ -1386,63 +1353,110 @@ function BonusSettings({ canEdit }) {
       {!!progress?.items?.length && (
         <>
           <CardHeader title="Rep progress" subtitle="Each rep's bonus cycle, against the rules in force now." />
-          <Table>
-            <THead><TR><TH>Rep</TH><TH className="text-right">Sales this cycle</TH><TH>Next tier</TH><TH>Progress</TH><TH>In wallet</TH></TR></THead>
-            <TBody>
+          {/* Phones and tablets: one short row per rep, as on Settle — sales this cycle, the bar, the next tier
+              and what his wallet holds. */}
+          <RowsOrTable>
+            <RowList>
               {progress.items.filter((i) => i.configured).map((i) => (
-                <TR key={i.salesRepId}>
-                  <TD className="font-medium text-foreground">
-                    {i.name}
-                    {i.cycleStart && <span className="block text-[11px] font-normal text-faint">from {formatDate(i.cycleStart)}</span>}
-                  </TD>
-                  <TD className="text-right">{formatCurrency(i.sales)}</TD>
-                  <TD className="text-muted">{i.next ? `${formatCurrency(i.next.target)} → ${formatCurrency(i.next.bonusAmount)}` : 'all tiers reached'}</TD>
-                  <TD>
-                    <div className="flex items-center gap-2">
-                      <div className="h-1.5 w-24 overflow-hidden rounded-full bg-white/10">
-                        <div className={clsx('h-full rounded-full', i.claimable ? 'bg-emerald-400' : 'bg-sky-400/80')} style={{ width: `${Math.min(100, i.progress)}%` }} />
-                      </div>
-                      <span className="text-xs text-muted">{i.progress}%</span>
-                    </div>
-                  </TD>
-                  {/* What his wallet holds from the bonus (the server's figure), or the withdrawal waiting for
-                      you, or how far he is from the next one. */}
-                  <TD>
-                    {Number(i.wallet?.available) > 0
-                      ? <Badge className="bg-emerald-500/15 text-emerald-300">{formatCurrency(i.wallet.available)}</Badge>
-                      : Number(i.wallet?.pending) > 0
-                        ? <span className="text-xs font-medium text-amber-300">{formatCurrency(i.wallet.pending)} requested</span>
-                        : <span className="text-xs text-faint">{i.next ? `${formatCurrency(i.remaining)} to go` : '—'}</span>}
-                  </TD>
-                </TR>
+                <RowItem
+                  key={i.salesRepId}
+                  title={i.name}
+                  figure={formatCurrency(i.sales)}
+                  sub={i.next ? `next ${formatCurrency(i.next.target)} → ${formatCurrency(i.next.bonusAmount)}` : 'all tiers reached'}
+                  badge={Number(i.wallet?.available) > 0
+                    ? <Badge className="bg-emerald-500/15 text-emerald-300">{formatCurrency(i.wallet.available)}</Badge>
+                    : Number(i.wallet?.pending) > 0
+                      ? <span className="text-[11px] font-medium text-amber-300">{formatCurrency(i.wallet.pending)} requested</span>
+                      : <span className="text-[11px] text-faint">{i.next ? `${formatCurrency(i.remaining)} to go` : '—'}</span>}
+                  extra={(
+                    <span className="mt-1.5 flex items-center gap-2">
+                      <span className="block h-1.5 w-24 overflow-hidden rounded-full bg-white/10">
+                        <span className={clsx('block h-full rounded-full', i.claimable ? 'bg-emerald-400' : 'bg-sky-400/80')} style={{ width: `${Math.min(100, i.progress)}%` }} />
+                      </span>
+                      <span className="text-[11px] text-muted">{i.progress}%</span>
+                      {i.cycleStart && <span className="truncate text-[11px] text-faint">from {formatDate(i.cycleStart)}</span>}
+                    </span>
+                  )}
+                />
               ))}
-            </TBody>
-          </Table>
+            </RowList>
+            <Table className="rot-table">
+              <THead><TR><TH>Rep</TH><TH className="text-right">Sales this cycle</TH><TH>Progress · next tier</TH><TH>In wallet</TH></TR></THead>
+              <TBody>
+                {progress.items.filter((i) => i.configured).map((i) => (
+                  <TR key={i.salesRepId}>
+                    <TD className="font-medium text-foreground">
+                      {i.name}
+                      {i.cycleStart && <span className="block text-[11px] font-normal text-faint">from {formatDate(i.cycleStart)}</span>}
+                    </TD>
+                    <TD className="text-right">{formatCurrency(i.sales)}</TD>
+                    {/* The next tier sits under the bar, so the table fits an iPad held sideways. */}
+                    <TD>
+                      <div className="flex items-center gap-2">
+                        <div className="h-1.5 w-24 overflow-hidden rounded-full bg-white/10">
+                          <div className={clsx('h-full rounded-full', i.claimable ? 'bg-emerald-400' : 'bg-sky-400/80')} style={{ width: `${Math.min(100, i.progress)}%` }} />
+                        </div>
+                        <span className="text-xs text-muted">{i.progress}%</span>
+                      </div>
+                      <div className="mt-1 text-[11px] text-muted">{i.next ? `${formatCurrency(i.next.target)} → ${formatCurrency(i.next.bonusAmount)}` : 'all tiers reached'}</div>
+                    </TD>
+                    {/* What his wallet holds from the bonus (the server's figure), or the withdrawal waiting for
+                        you, or how far he is from the next one. */}
+                    <TD>
+                      {Number(i.wallet?.available) > 0
+                        ? <Badge className="bg-emerald-500/15 text-emerald-300">{formatCurrency(i.wallet.available)}</Badge>
+                        : Number(i.wallet?.pending) > 0
+                          ? <span className="text-xs font-medium text-amber-300">{formatCurrency(i.wallet.pending)} requested</span>
+                          : <span className="text-xs text-faint">{i.next ? `${formatCurrency(i.remaining)} to go` : '—'}</span>}
+                    </TD>
+                  </TR>
+                ))}
+              </TBody>
+            </Table>
+          </RowsOrTable>
         </>
       )}
 
       {!!awards.length && (
         <>
           <CardHeader title="Bonuses earned" />
-          <Table>
-            <THead><TR><TH>Rep</TH><TH className="text-right">Bonus</TH><TH>Date</TH><TH>Status</TH><TH className="text-right">Cycle total</TH></TR></THead>
-            <TBody>
+          <RowsOrTable>
+            <RowList>
               {awards.map((a) => {
-                // Where each bonus is now (the server's `state`); a row from before 14 Nov 2026 was paid by hand.
                 const st = AWARD_STATE[a.state] || AWARD_STATE[a.status] || { label: a.status, cls: 'bg-white/[0.06] text-muted' };
                 const at = a.state === 'PAID' ? a.withdrawal?.paidAt : a.state === 'PAID_BEFORE_WALLET' ? a.paidAt : a.unlockedAt;
                 return (
-                  <TR key={a.id}>
-                    <TD className="font-medium text-foreground">{a.salesRep?.user?.name || a.salesRep?.code}</TD>
-                    <TD className="text-right font-semibold text-emerald-500">{formatCurrency(a.bonusAmount)}</TD>
-                    <TD className="text-muted">{formatDateTime(at || a.unlockedAt)}</TD>
-                    <TD><Badge className={st.cls}>{st.label}</Badge></TD>
-                    <TD className="text-right text-xs text-faint">{formatCurrency(a.qualifyingSales)} sold</TD>
-                  </TR>
+                  <RowItem
+                    key={a.id}
+                    title={a.salesRep?.user?.name || a.salesRep?.code}
+                    figure={formatCurrency(a.bonusAmount)}
+                    figureClass="text-emerald-500"
+                    sub={`${formatDateTime(at || a.unlockedAt)} · ${formatCurrency(a.qualifyingSales)} sold`}
+                    badge={<Badge className={st.cls}>{st.label}</Badge>}
+                  />
                 );
               })}
-            </TBody>
-          </Table>
+            </RowList>
+            <Table className="rot-table">
+              <THead><TR><TH>Rep</TH><TH className="text-right">Bonus</TH><TH>Date</TH><TH>Status</TH><TH className="text-right">Cycle total</TH></TR></THead>
+              <TBody>
+                {awards.map((a) => {
+                  // Where each bonus is now (the server's `state`); a row from before 14 Nov 2026 was paid by hand.
+                  const st = AWARD_STATE[a.state] || AWARD_STATE[a.status] || { label: a.status, cls: 'bg-white/[0.06] text-muted' };
+                  const at = a.state === 'PAID' ? a.withdrawal?.paidAt : a.state === 'PAID_BEFORE_WALLET' ? a.paidAt : a.unlockedAt;
+                  return (
+                    <TR key={a.id}>
+                      <TD className="font-medium text-foreground">{a.salesRep?.user?.name || a.salesRep?.code}</TD>
+                      <TD className="text-right font-semibold text-emerald-500">{formatCurrency(a.bonusAmount)}</TD>
+                      <TD className="text-muted">{formatDateTime(at || a.unlockedAt)}</TD>
+                      <TD><Badge className={st.cls}>{st.label}</Badge></TD>
+                      <TD className="text-right text-xs text-faint">{formatCurrency(a.qualifyingSales)} sold</TD>
+                    </TR>
+                  );
+                })}
+              </TBody>
+            </Table>
+          </RowsOrTable>
         </>
       )}
       <p

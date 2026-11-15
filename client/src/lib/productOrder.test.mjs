@@ -4,8 +4,9 @@ import assert from 'node:assert/strict';
 import { productRank, sortByCanonical } from './productOrder.js';
 
 test('names without the dash keep their place in the fixed order, the same as the old dashed names', () => {
-  assert.equal(productRank('OHIS Ndogo (Brown) Bila Filter'), 0);
-  assert.equal(productRank('OHIS Ndogo (Brown) – Bila Filter'), 0);
+  // Pepa is listed first (15 Nov 2026), so OHIS Ndogo comes right after the Pepa boxes, dashed or not.
+  assert.equal(productRank('OHIS Ndogo (Brown) Bila Filter'), productRank('OHIS Ndogo (Brown) – Bila Filter'));
+  assert.ok(productRank('Pepa Ndogo Kubwa (Brown) Bila Filter') < productRank('OHIS Ndogo (Brown) Bila Filter'));
   assert.equal(productRank('Civlily Ndogo (Mix) Bila Filter'), productRank('Civlily Ndogo (Mix) - Bila Filter'));
   const list = ['Civlily Kubwa (Mix) Na Filter', 'OHIS Kubwa (Brown) Bila Filter', 'Zeta New Product', 'OHIS Ndogo (Brown) Bila Filter']
     .map((name) => ({ name }));

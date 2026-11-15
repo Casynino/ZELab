@@ -279,7 +279,8 @@ function WhatsAppPanel({ settings }) {
   );
 }
 
-function SettingRow({ setting }) {
+// `grouped`: drawn inside the "Not used yet" section, which already says so.
+function SettingRow({ setting, grouped = false }) {
   const qc = useQueryClient();
   const [value, setValue] = useState(setting.value);
   useEffect(() => setValue(setting.value), [setting.value]);
@@ -310,7 +311,7 @@ function SettingRow({ setting }) {
           <span className="min-w-0 flex-1 truncate">
             {info.date && dayjs(setting.value).isValid() ? dayjs(setting.value).format('D MMM YYYY, HH:mm') : setting.value}
           </span>
-          {info.unused && <span className="shrink-0 whitespace-nowrap text-[11px] text-white/45">Not used yet</span>}
+          {info.unused && !grouped && <span className="shrink-0 whitespace-nowrap text-[11px] text-white/45">Not used yet</span>}
         </div>
       ) : (
         <div className="flex items-center gap-2">
@@ -363,20 +364,38 @@ export default function Settings() {
   // Known settings in a sensible order, anything else after them.
   const rank = (k) => { const i = SETTING_ORDER.indexOf(k); return i === -1 ? 999 : i; };
   const ordered = [...visible].sort((a, b) => rank(a.key) - rank(b.key) || a.key.localeCompare(b.key));
+  // The values the app reads first; the ones it does not read yet folded away under them, so they no longer
+  // take half the panel (audit ui-a10).
+  const live = ordered.filter((s) => !(SETTING_INFO[s.key] || {}).unused);
+  const unused = ordered.filter((s) => (SETTING_INFO[s.key] || {}).unused);
+  // Two settings side by side only where the panel is wide: beside the alerts (2xl) each panel is too
+  // narrow for that, and on a 1366 px laptop the WhatsApp number showed as "+255700000" (ui-a10).
+  const grid = 'grid gap-x-6 divide-y divide-white/[0.06] sm:grid-cols-2 sm:divide-y-0 2xl:grid-cols-1 2xl:divide-y';
 
   // A wide screen: the alerts on the left; the business settings and the messages on the right.
   return (
     <div>
       <PageHeader title="Settings" subtitle="Your alerts and how the business runs." />
-      <div className="grid items-start gap-4 xl:grid-cols-2">
+      <div className="grid items-start gap-4 2xl:grid-cols-2">
         <WhatsAppPanel settings={data} />
         <div className="space-y-4">
           <Card>
             <CardHeader title="Business settings" subtitle="Change a value, then press save beside it." />
             <CardBody>
-              <div className="grid gap-x-6 divide-y divide-white/[0.06] sm:grid-cols-2 sm:divide-y-0">
-                {ordered.map((s) => <SettingRow key={s.id} setting={s} />)}
+              <div className={grid}>
+                {live.map((s) => <SettingRow key={s.id} setting={s} />)}
               </div>
+              {unused.length > 0 && (
+                <details className="group mt-2 border-t border-white/[0.06] pt-3">
+                  <summary className="cursor-pointer list-none text-xs font-medium text-muted hover:text-foreground [&::-webkit-details-marker]:hidden">
+                    Not used yet <span className="tabular-nums text-faint">· {unused.length}</span>
+                    <span className="ml-1 text-faint group-open:hidden">— show</span>
+                  </summary>
+                  <div className={grid}>
+                    {unused.map((s) => <SettingRow key={s.id} setting={s} grouped />)}
+                  </div>
+                </details>
+              )}
             </CardBody>
           </Card>
           <RecentMessages />

@@ -54,6 +54,9 @@ import {
   TH,
   TD,
   Modal,
+  RowsOrTable,
+  RowList,
+  RowItem,
 } from '@/components/ui';
 import { RED } from '@/lib/brand';
 import { ROLES } from '@/lib/constants';
@@ -528,7 +531,7 @@ function Analysis({ a, navigate }) {
             </div>
             <div className="shrink-0 text-right">
               <div className="text-sm font-bold tabular-nums text-foreground">
-                {formatNumber(boxesByYear.reduce((n, b) => n + b.thisYear, 0))}
+                {formatNumber(boxesByYear.reduce((n, b) => n + (b.thisYear || 0), 0))}
               </div>
               <div className="text-[11px] text-faint">this year</div>
             </div>
@@ -547,6 +550,13 @@ function Analysis({ a, navigate }) {
       </div>
     </>
   );
+}
+
+// Where a rep stands on his orders, for the Sales rep performance list and table.
+function repStatusBadge(r) {
+  if (r.overdueOrders > 0) return <Badge className="bg-rose-500/15 text-rose-300">{r.overdueOrders} overdue</Badge>;
+  if (r.activeOrders > 0) return <Badge className="bg-sky-500/15 text-sky-300">Settling</Badge>;
+  return <Badge className="bg-emerald-500/15 text-emerald-300">Clear</Badge>;
 }
 
 /* The little heading that sits above a region, with the way deeper into it. */
@@ -1174,30 +1184,54 @@ export default function Dashboard() {
       <Card className="mt-8">
         <CardHeader title="Sales rep performance" subtitle="Who is selling, who is holding, who needs follow-up" />
         {reps.length === 0 ? <EmptyState title="No active reps" /> : (
-          <Table>
-            <THead>
-              <TR><TH>Rep</TH><TH>Boxes held</TH><TH>Sales today</TH><TH>Sales (month)</TH><TH>Commission</TH><TH>Orders</TH><TH>Status</TH></TR>
-            </THead>
-            <TBody>
-              {reps.map((r) => (
-                <TR key={r.salesRepId} className="cursor-pointer" onClick={() => navigate(`/reps/${r.salesRepId}`)}>
-                  <TD className="font-medium text-foreground">{r.name} <span className="text-xs text-faint">{r.code}</span></TD>
-                  <TD>{formatNumber(r.boxesHeld)}</TD>
-                  <TD className={r.salesToday > 0 ? 'text-emerald-500' : 'text-faint'}>{formatCurrency(r.salesToday)}</TD>
-                  <TD>{formatCurrency(r.salesMonth)}</TD>
-                  <TD className={r.commissionAvailable < 0 ? 'text-rose-500' : ''}>{formatCurrency(r.commissionAvailable)}</TD>
-                  <TD>{r.activeOrders > 0 ? `${r.activeOrders} active` : '—'}</TD>
-                  <TD>
-                    {r.overdueOrders > 0
-                      ? <Badge className="bg-rose-500/15 text-rose-300">{r.overdueOrders} overdue</Badge>
-                      : r.activeOrders > 0
-                        ? <Badge className="bg-sky-500/15 text-sky-300">Settling</Badge>
-                        : <Badge className="bg-emerald-500/15 text-emerald-300">Clear</Badge>}
-                  </TD>
-                </TR>
-              ))}
-            </TBody>
-          </Table>
+          <>
+            {/* Phones and tablets: one short row per rep, as on Settle — the month's sales, then boxes held,
+                today and commission, with where he stands. The row opens the rep. */}
+            <RowsOrTable>
+              <RowList>
+                {reps.map((r) => (
+                  <RowItem
+                    key={r.salesRepId}
+                    onClick={() => navigate(`/reps/${r.salesRepId}`)}
+                    title={<>{r.name} <span className="text-[12px] font-normal text-faint">{r.code}</span></>}
+                    figure={formatCurrency(r.salesMonth)}
+                    sub={`${formatNumber(r.boxesHeld)} boxes held · today ${formatCurrency(r.salesToday)}${r.activeOrders > 0 ? ` · ${r.activeOrders} active` : ''}`}
+                    badge={repStatusBadge(r)}
+                    extra={(
+                      <span className={clsx('mt-1 block text-[11px] tabular-nums', r.commissionAvailable < 0 ? 'text-rose-400' : 'text-faint')}>
+                        commission {formatCurrency(r.commissionAvailable)}
+                      </span>
+                    )}
+                  />
+                ))}
+              </RowList>
+              {/* In a wide box (an iPad held sideways, a laptop): the code under the name and the active orders under the status, so the table fits an
+                  iPad held sideways (882 px beside the rail). */}
+              <Table className="rot-table">
+                <THead>
+                  <TR><TH>Rep</TH><TH>Boxes held</TH><TH>Sales today</TH><TH>Sales (month)</TH><TH>Commission</TH><TH>Status</TH></TR>
+                </THead>
+                <TBody>
+                  {reps.map((r) => (
+                    <TR key={r.salesRepId} className="cursor-pointer" onClick={() => navigate(`/reps/${r.salesRepId}`)}>
+                      <TD>
+                        <div className="font-medium text-foreground">{r.name}</div>
+                        <div className="mt-0.5 text-[11px] text-faint">{r.code}</div>
+                      </TD>
+                      <TD>{formatNumber(r.boxesHeld)}</TD>
+                      <TD className={r.salesToday > 0 ? 'text-emerald-500' : 'text-faint'}>{formatCurrency(r.salesToday)}</TD>
+                      <TD>{formatCurrency(r.salesMonth)}</TD>
+                      <TD className={r.commissionAvailable < 0 ? 'text-rose-500' : ''}>{formatCurrency(r.commissionAvailable)}</TD>
+                      <TD>
+                        {repStatusBadge(r)}
+                        <div className="mt-1 text-[11px] text-faint">{r.activeOrders > 0 ? `${r.activeOrders} active` : 'no orders'}</div>
+                      </TD>
+                    </TR>
+                  ))}
+                </TBody>
+              </Table>
+            </RowsOrTable>
+          </>
         )}
       </Card>
 

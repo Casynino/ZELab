@@ -58,7 +58,8 @@ function Money({ label, value, tone = 'default', sub }) {
   return (
     <div className="rounded-xl border border-border bg-elevated p-3">
       <div className="text-[11px] uppercase tracking-wide text-faint">{label}</div>
-      <div className={`mt-0.5 text-lg font-bold tabular-nums sm:whitespace-nowrap ${tones[tone]}`}>{value}</div>
+      {/* A step smaller on a phone: "TSh 1,774,000" at text-lg was 131 px in a 127 px tile (ui-a09). */}
+      <div className={`mt-0.5 text-base font-bold tabular-nums sm:whitespace-nowrap sm:text-lg ${tones[tone]}`}>{value}</div>
       {sub && <div className="mt-0.5 text-[11px] text-faint">{sub}</div>}
     </div>
   );

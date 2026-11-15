@@ -14,7 +14,7 @@ import ProductPicker, {
 import { pickerRows, pickedItems, pickedBoxes, shortPlace, buttonPlace, boxWord } from '@/lib/stockPick';
 import {
   PageHeader, Card, PageSpinner, EmptyState, Badge, Button, Modal, Field, Textarea,
-  Pagination, LoadError, Table, THead, TBody, TR, TH, TD,
+  Pagination, LoadError, Table, THead, TBody, TR, TH, TD, RowsOrTable, RowList, RowItem,
 } from '@/components/ui';
 
 // New transfer — the quick way. Out to a rep is the usual move, so it is chosen; the warehouse the boxes
@@ -257,7 +257,8 @@ function TintCard({ label, value, sub, icon: Icon, ring, glow, chip, num }) {
   );
 }
 
-export default function Transfers() {
+// `tabs`: Inventory's tabs, drawn under this page's title (Transfers is a tab of Inventory).
+export default function Transfers({ tabs } = {}) {
   const qc = useQueryClient();
   const [page, setPage] = useState(1);
   const [open, setOpen] = useState(false);
@@ -285,10 +286,38 @@ export default function Transfers() {
 
   const from = (t) => t.direction === 'REP_TO_WAREHOUSE' ? t.fromRep?.user?.name : t.fromWarehouse?.name;
   const to = (t) => t.direction === 'WAREHOUSE_TO_REP' ? t.toRep?.user?.name : t.toWarehouse?.name;
+  // A transfer to a rep opened his order; its boxes come back through a Return on that order (the server
+  // refuses to cancel it), so it offers no cancel.
+  const canCancel = (t) => t.status !== 'CANCELLED' && t.direction !== 'WAREHOUSE_TO_REP';
+  const askCancel = (t) => { if (confirm(`Cancel ${t.transferNumber}? All ${t.boxes} boxes go back to ${from(t)}.`)) cancel.mutate(t.id); };
+  // What moved, opened under the row (the table's and the phone's).
+  const details = (t) => (
+    <div className="px-2 py-1">
+      <p className="mb-2 text-xs font-medium text-muted">
+        What moved · dispatched {formatDateTime(t.dispatchedAt)}
+        {t.dispatchedBy?.name ? ` by ${t.dispatchedBy.name}` : ''}
+      </p>
+      <div className="space-y-1.5">
+        {t.items.map((it) => (
+          <div key={it.id} className="flex items-baseline justify-between gap-3 text-sm">
+            <span className="truncate text-foreground">{it.product?.name}</span>
+            <span className="shrink-0 tabular-nums text-muted">
+              {formatNumber(it.quantity)} {it.packagingUnit?.name || 'unit'}
+              {/* Only worth spelling out when the unit is not already a box. */}
+              {it.baseQuantity !== it.quantity && (
+                <span className="ml-1.5 text-faint">= {formatNumber(it.baseQuantity)} boxes</span>
+              )}
+            </span>
+          </div>
+        ))}
+      </div>
+      {t.notes && <p className="mt-2 border-t border-white/[0.06] pt-2 text-xs text-faint">{t.notes}</p>}
+    </div>
+  );
 
   return (
     <div>
-      <PageHeader title="Stock Transfers" subtitle="Every box that left one place and arrived at another.">
+      <PageHeader title="Stock Transfers" subtitle="Every box that left one place and arrived at another." tabs={tabs}>
         <Button onClick={() => setOpen(true)}><Plus className="h-4 w-4" /> New transfer</Button>
       </PageHeader>
 
@@ -318,7 +347,8 @@ export default function Transfers() {
         )}
       </div>
 
-      <div className="mb-3 flex flex-wrap gap-2">
+      {/* One swipeable line of filters on a phone, as on Settle. */}
+      <div className="mb-3 flex gap-2 overflow-x-auto [scrollbar-width:none] sm:flex-wrap [&>*]:shrink-0">
         {DIR_FILTERS.map((f) => (
           <button
             key={f.key || 'all'}
@@ -340,84 +370,102 @@ export default function Transfers() {
             action={<Button onClick={() => setOpen(true)}><Plus className="h-4 w-4" /> New transfer</Button>} />
         ) : (
           <>
-            <Table>
-              <THead><TR><TH>Transfer</TH><TH>Route</TH><TH className="text-right">Boxes</TH><TH>Dispatched</TH><TH>Status</TH><TH /></TR></THead>
-              <TBody>
+            {/* Phones and tablets: one short row per transfer, as on Settle — where the boxes went and how
+                many, then where from, the number and the day, with its status. A tap opens what moved. */}
+            <RowsOrTable>
+              <RowList>
                 {rows.map((t) => {
-                  const tone = DIR_TONE[t.direction] || DIR_TONE.WAREHOUSE_TO_WAREHOUSE;
-                  const Icon = tone.icon;
-                  const isOpen = expanded === t.id;
                   const dead = t.status === 'CANCELLED';
+                  const isOpen = expanded === t.id;
                   return (
-                    <Fragment key={t.id}>
-                      <TR className={dead ? 'opacity-60' : ''}>
-                        <TD>
-                          <button onClick={() => setExpanded(isOpen ? null : t.id)} className="flex items-center gap-1.5 font-medium text-foreground hover:text-brand-600">
-                            <ChevronDown className={`h-3.5 w-3.5 text-faint transition ${isOpen ? 'rotate-0' : '-rotate-90'}`} />
-                            {t.transferNumber}
-                          </button>
-                        </TD>
-                        <TD>
-                          <div className="flex items-center gap-2">
-                            <span className={`rounded-md p-1 ${tone.chip}`}><Icon className="h-3 w-3" /></span>
-                            <span className="text-muted">{from(t)}</span>
-                            <ArrowRight className="h-3 w-3 shrink-0 text-faint" />
-                            <span className="font-medium text-foreground">{to(t)}</span>
-                          </div>
-                        </TD>
-                        <TD className="text-right">
-                          <span className={`font-semibold tabular-nums ${dead ? 'text-faint line-through' : 'text-foreground'}`}>
-                            {formatNumber(t.boxes || 0)}
-                          </span>
-                          <span className="ml-1 text-[11px] text-faint">{t.items.length} line{t.items.length === 1 ? '' : 's'}</span>
-                        </TD>
-                        <TD className="text-faint">{formatDate(t.dispatchedAt)}</TD>
-                        <TD>
-                          <Badge className={dead ? 'bg-rose-500/15 text-rose-300' : 'bg-emerald-500/15 text-emerald-300'}>
-                            {dead ? 'Reversed' : 'Delivered'}
-                          </Badge>
-                        </TD>
-                        {/* A transfer to a rep opened his order; its boxes come back through a Return on that
-                            order (the server refuses to cancel it), so it offers no cancel here. */}
-                        <TD>{!dead && t.direction !== 'WAREHOUSE_TO_REP' && (
-                          <button className="btn-ghost px-2 py-1 text-faint hover:text-rose-400" title="Cancel & return the stock"
-                            onClick={() => { if (confirm(`Cancel ${t.transferNumber}? All ${t.boxes} boxes go back to ${from(t)}.`)) cancel.mutate(t.id); }}>
-                            <Ban className="h-4 w-4" />
-                          </button>
-                        )}</TD>
-                      </TR>
-                      {isOpen && (
-                        <TR>
-                          <TD colSpan={6} className="bg-elevated/40">
-                            <div className="px-2 py-1">
-                              <p className="mb-2 text-xs font-medium text-muted">
-                                What moved · dispatched {formatDateTime(t.dispatchedAt)}
-                                {t.dispatchedBy?.name ? ` by ${t.dispatchedBy.name}` : ''}
-                              </p>
-                              <div className="space-y-1.5">
-                                {t.items.map((it) => (
-                                  <div key={it.id} className="flex items-baseline justify-between gap-3 text-sm">
-                                    <span className="truncate text-foreground">{it.product?.name}</span>
-                                    <span className="shrink-0 tabular-nums text-muted">
-                                      {formatNumber(it.quantity)} {it.packagingUnit?.name || 'unit'}
-                                      {/* Only worth spelling out when the unit is not already a box. */}
-                                      {it.baseQuantity !== it.quantity && (
-                                        <span className="ml-1.5 text-faint">= {formatNumber(it.baseQuantity)} boxes</span>
-                                      )}
-                                    </span>
-                                  </div>
-                                ))}
-                              </div>
-                              {t.notes && <p className="mt-2 border-t border-white/[0.06] pt-2 text-xs text-faint">{t.notes}</p>}
-                            </div>
-                          </TD>
-                        </TR>
+                    <RowItem
+                      key={t.id}
+                      dim={dead}
+                      expanded={isOpen}
+                      onClick={() => setExpanded(isOpen ? null : t.id)}
+                      title={<>{to(t)}<span className="ml-1.5 text-[12px] font-normal text-faint">from {from(t)}</span></>}
+                      figure={<>{formatNumber(t.boxes || 0)} <span className="text-[12px] font-medium text-muted">box{t.boxes === 1 ? '' : 'es'}</span></>}
+                      figureClass={dead ? 'text-faint line-through' : 'text-foreground'}
+                      sub={`${t.transferNumber} · ${formatDate(t.dispatchedAt)} · ${t.items.length} line${t.items.length === 1 ? '' : 's'}`}
+                      badge={(
+                        <Badge className={dead ? 'bg-rose-500/15 text-rose-300' : 'bg-emerald-500/15 text-emerald-300'}>
+                          {dead ? 'Reversed' : 'Delivered'}
+                        </Badge>
                       )}
-                    </Fragment>
+                    >
+                      {isOpen && (
+                        <div className="border-t border-border bg-elevated/40 px-2 py-2">
+                          {details(t)}
+                          {canCancel(t) && (
+                            <div className="px-2 pt-2">
+                              <button type="button" onClick={() => askCancel(t)}
+                                className="inline-flex min-h-11 items-center gap-1.5 text-xs font-semibold text-rose-400 hover:text-rose-300">
+                                <Ban className="h-3.5 w-3.5" /> Cancel &amp; return the stock
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </RowItem>
                   );
                 })}
-              </TBody>
-            </Table>
+              </RowList>
+              {/* In a wide box (an iPad held sideways, a laptop): the route with the number and the day under it, so the table fits an iPad held
+                  sideways and Status is never off the edge. */}
+              <Table className="rot-table">
+                <THead><TR><TH>Route · transfer</TH><TH className="text-right">Boxes</TH><TH>Status</TH><TH><span className="sr-only">Cancel</span></TH></TR></THead>
+                <TBody>
+                  {rows.map((t) => {
+                    const tone = DIR_TONE[t.direction] || DIR_TONE.WAREHOUSE_TO_WAREHOUSE;
+                    const Icon = tone.icon;
+                    const isOpen = expanded === t.id;
+                    const dead = t.status === 'CANCELLED';
+                    return (
+                      <Fragment key={t.id}>
+                        <TR className={dead ? 'opacity-60' : ''}>
+                          <TD>
+                            <button onClick={() => setExpanded(isOpen ? null : t.id)} aria-expanded={isOpen} className="flex items-start gap-2 text-left">
+                              <ChevronDown className={`mt-1 h-3.5 w-3.5 shrink-0 text-faint transition ${isOpen ? 'rotate-0' : '-rotate-90'}`} />
+                              <span className="min-w-0">
+                                <span className="flex items-center gap-2">
+                                  <span className={`rounded-md p-1 ${tone.chip}`}><Icon className="h-3 w-3" /></span>
+                                  <span className="text-muted">{from(t)}</span>
+                                  <ArrowRight className="h-3 w-3 shrink-0 text-faint" />
+                                  <span className="font-medium text-foreground">{to(t)}</span>
+                                </span>
+                                <span className="mt-0.5 block text-[11px] tabular-nums text-faint">{t.transferNumber} · {formatDate(t.dispatchedAt)}</span>
+                              </span>
+                            </button>
+                          </TD>
+                          <TD className="text-right">
+                            <span className={`font-semibold tabular-nums ${dead ? 'text-faint line-through' : 'text-foreground'}`}>
+                              {formatNumber(t.boxes || 0)}
+                            </span>
+                            <span className="ml-1 text-[11px] text-faint">{t.items.length} line{t.items.length === 1 ? '' : 's'}</span>
+                          </TD>
+                          <TD>
+                            <Badge className={dead ? 'bg-rose-500/15 text-rose-300' : 'bg-emerald-500/15 text-emerald-300'}>
+                              {dead ? 'Reversed' : 'Delivered'}
+                            </Badge>
+                          </TD>
+                          <TD className="w-px">{canCancel(t) && (
+                            <button className="btn-ghost px-2 py-1 text-faint hover:text-rose-400" title="Cancel & return the stock" aria-label={`Cancel ${t.transferNumber}`}
+                              onClick={() => askCancel(t)}>
+                              <Ban className="h-4 w-4" />
+                            </button>
+                          )}</TD>
+                        </TR>
+                        {isOpen && (
+                          <TR>
+                            <TD colSpan={4} className="bg-elevated/40">{details(t)}</TD>
+                          </TR>
+                        )}
+                      </Fragment>
+                    );
+                  })}
+                </TBody>
+              </Table>
+            </RowsOrTable>
             <Pagination page={page} totalPages={data.meta?.totalPages} total={data.meta?.total} onChange={setPage} />
           </>
         )}

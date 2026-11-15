@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import clsx from 'clsx';
 import dayjs from 'dayjs';
-import { Plus, Search, X, CheckCircle, XCircle, Eye, Clock, CheckCircle2, PackageOpen, PackageCheck } from 'lucide-react';
+import { Plus, Search, X, CheckCircle, XCircle, Clock, CheckCircle2, PackageOpen, PackageCheck } from 'lucide-react';
 import api, { unwrap, apiError } from '@/lib/api';
 import { pageQueries, keepOnPageTurn } from '@/lib/pageQueries';
 import { useOnce } from '@/lib/useOnce';
@@ -18,7 +18,7 @@ import { formatDate, formatDateTime, formatNumber, formatCurrency, unitWord } fr
 import { approvalLeftLabel } from '@/lib/labels';
 import {
   PageHeader, Card, PageSpinner, EmptyState, LoadError, Badge, Button, Modal, Field, Select, Textarea,
-  Pagination, Table, THead, TBody, TR, TH, TD,
+  Pagination, Table, THead, TBody, TR, TH, TD, RowsOrTable, RowList, RowItem,
 } from '@/components/ui';
 import NumberedLines from '@/components/NumberedLines';
 import CollapsibleList, { ShowOlder } from '@/components/CollapsibleList';
@@ -592,33 +592,19 @@ function HistoryRow({ r, onView }) {
   // The first two lines are enough to recognise it; the rest is a tap away.
   const lines = r.items.map((i) => `${formatNumber(i.quantity)}x ${i.product?.name}`);
   const summary = lines.slice(0, 2).join(' · ') + (lines.length > 2 ? ` · +${lines.length - 2} more` : '');
+  // Who returned the boxes first, the boxes at the right, as on the Settle rows: the return number used to
+  // take the line and cut the rep's name to two letters (audit ui-a08). The number, the day and what came
+  // back are the one muted line under it (truncated, so five products are as tall as one), with the status.
+  const who = r.salesRep ? `${r.salesRep.user?.name}${r.salesRep.code ? ` (${r.salesRep.code})` : ''}` : r.customer?.name || '—';
   return (
-    <button onClick={() => onView(r.id)} className="flex w-full items-center gap-3 px-4 py-3 text-left transition hover:bg-elevated">
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          {/* The identifier never shrinks — a truncated "RET-2026…" is useless. */}
-          <span className="shrink-0 text-sm font-semibold text-foreground">{r.returnNumber}</span>
-          <span className="truncate text-sm text-muted">
-            {r.salesRep ? `${r.salesRep.user?.name} (${r.salesRep.code})` : r.customer?.name || '—'}
-          </span>
-        </div>
-        {/* What came back is one truncated line, so a return with five products
-            is the same height as one with one. */}
-        <p className="mt-0.5 truncate text-xs text-faint">
-          {summary}
-          {r.settlementNumber ? ` · on ${r.settlementNumber}` : ''} · {formatDate(r.processedAt)}
-        </p>
-      </div>
-      {/* The figure the row exists for, and whether it counted. */}
-      <div className="shrink-0 text-right">
-        <div className={`text-lg font-bold leading-none tabular-nums ${accepted ? 'text-emerald-300' : 'text-muted'}`}>
-          {formatNumber(totalBoxes)}
-        </div>
-        <div className="mt-0.5 text-[10px] uppercase tracking-wide text-faint">box{plural(totalBoxes)}</div>
-      </div>
-      <Badge className={`shrink-0 ${meta.cls}`}>{meta.label}</Badge>
-      <Eye className="hidden h-3.5 w-3.5 shrink-0 text-faint sm:block" />
-    </button>
+    <RowItem
+      onClick={() => onView(r.id)}
+      title={who}
+      figure={<>{formatNumber(totalBoxes)} <span className="text-[12px] font-medium text-muted">box{plural(totalBoxes)}</span></>}
+      figureClass={accepted ? 'text-emerald-300' : 'text-muted'}
+      sub={`${r.returnNumber} · ${formatDate(r.processedAt)} · ${summary}${r.settlementNumber ? ` · on ${r.settlementNumber}` : ''}`}
+      badge={<Badge className={meta.cls}>{meta.label}</Badge>}
+    />
   );
 }
 
@@ -1046,7 +1032,7 @@ export default function Returns() {
                     a page-scoped one here would just contradict it. */}
                 <h2 className="text-sm font-semibold text-muted">Accepted — {approved.length} return{approved.length === 1 ? '' : 's'} listed</h2>
               </div>
-              <Card><div className="divide-y divide-border">{approved.map((r) => <HistoryRow key={r.id} r={r} onView={setViewingId} />)}</div></Card>
+              <Card><RowsOrTable><RowList table={false}>{approved.map((r) => <HistoryRow key={r.id} r={r} onView={setViewingId} />)}</RowList></RowsOrTable></Card>
             </div>
           )}
 
@@ -1058,7 +1044,7 @@ export default function Returns() {
                 <h2 className="text-sm font-semibold text-muted">Rejected, cancelled or expired — {rejected.length} listed</h2>
                 <span className="text-xs text-faint">no stock moved on these</span>
               </div>
-              <Card><div className="divide-y divide-border">{rejected.map((r) => <HistoryRow key={r.id} r={r} onView={setViewingId} />)}</div></Card>
+              <Card><RowsOrTable><RowList table={false}>{rejected.map((r) => <HistoryRow key={r.id} r={r} onView={setViewingId} />)}</RowList></RowsOrTable></Card>
             </div>
           )}
 

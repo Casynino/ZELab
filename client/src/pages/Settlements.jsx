@@ -24,7 +24,7 @@ import { useOlderPages, withOlder } from '@/lib/useOlderPages';
 import {
   PageHeader, Card, PageSpinner, EmptyState, Badge, Button,
   Pagination, LoadError, Table, THead, TBody, TR, TH, TD,
-  Remaining,
+  Remaining, RowsOrTable, RowList,
 } from '@/components/ui';
 
 // ── Rep-facing row for a COMPLETED order ─────────────────────────────────────
@@ -335,124 +335,127 @@ function StaffSettlements({ viewing, setViewing }) {
             {/* Phones and tablets: one short row per order — who, what is still owed, how far along, how long
                 is left. The full table (below) stacked into tall eight-box cards here, too long for 100+ orders. */}
             {/* iPad: two rows side by side, so the width is used rather than stretched. */}
-            <ul className="divide-y divide-border md:grid md:grid-cols-2 md:divide-y-0 lg:hidden [&>li]:border-border md:[&>li]:border-b md:[&>li:nth-child(odd)]:border-r">
-              {data.data.map((s) => {
-                const bx = s.boxes || { issued: 0, settled: 0, returned: 0, remaining: 0 };
-                const done = bx.settled + bx.returned;
-                const meta = SETTLEMENT_STATUS_META[s.status];
-                const owing = s.balance > 0;
-                return (
-                  <li key={s.id}>
-                    <button type="button" onClick={() => setViewing(s.id)}
-                      className="w-full px-4 py-3 text-left transition-colors hover:bg-elevated/60 active:bg-elevated/80">
-                      <span className="flex items-baseline justify-between gap-3">
-                        <span className="min-w-0 truncate text-[15px] font-semibold text-foreground">{s.salesRep?.user?.name || '—'}</span>
-                        <span className={clsx('shrink-0 text-[15px] font-bold tabular-nums',
-                          !owing ? 'text-emerald-400'
-                            : s.status === 'OVERDUE' ? 'text-rose-400' : s.approaching ? 'text-amber-300' : 'text-foreground')}>
-                          {formatCurrency(owing ? s.balance : s.paid)}
-                        </span>
-                      </span>
-                      <span className="mt-1 flex items-center justify-between gap-3">
-                        <span className="min-w-0 truncate text-[12px] tabular-nums text-muted">
-                          {formatNumber(done)}/{formatNumber(bx.issued)} boxes · {s.settlementNumber}
-                        </span>
-                        <Badge className={clsx('shrink-0', meta?.cls)}>{meta?.label}</Badge>
-                      </span>
-                      <span className="mt-1.5 flex items-center gap-3">
-                        <span className="flex h-1 w-16 shrink-0 overflow-hidden rounded-full bg-white/[0.07]">
-                          <span className="h-full bg-emerald-500" style={{ width: `${pct(bx.settled, bx.issued)}%` }} />
-                          <span className="h-full bg-sky-500" style={{ width: `${pct(bx.returned, bx.issued)}%` }} />
-                        </span>
-                        {s.status === 'SETTLED' ? (
-                          <span className="inline-flex items-center gap-1 text-[11px] text-emerald-500">
-                            <CheckCircle2 className="h-3 w-3" /> {s.settledAt ? formatDate(s.settledAt) : 'Settled'}
-                          </span>
-                        ) : (
-                          <span className="flex min-w-0 items-baseline gap-1.5 text-[11px] text-faint">
-                            <Remaining hours={s.hoursRemaining} className="!text-[12px]" />
-                            <span className="truncate">{formatDateTime(s.deadlineAt)}</span>
-                            {s.extensionUsed && <span className="shrink-0 font-semibold text-amber-400">+{s.extensionHours}h</span>}
-                          </span>
-                        )}
-                      </span>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-            <Table stack="wide" className="hidden lg:block">
-              <THead>
-                <TR>
-                  <TH>Rep · order</TH>
-                  <TH>Boxes</TH>
-                  <TH>Settled</TH><TH className="text-right">Balance</TH>
-                  <TH>Deadline</TH><TH>Status</TH><TH />
-                </TR>
-              </THead>
-              <TBody>
+            {/* A last order alone on its line takes both columns, so a page of fifteen ends without a hole (ui-a11). */}
+            <RowsOrTable>
+              <RowList>
                 {data.data.map((s) => {
                   const bx = s.boxes || { issued: 0, settled: 0, returned: 0, remaining: 0 };
                   const done = bx.settled + bx.returned;
+                  const meta = SETTLEMENT_STATUS_META[s.status];
+                  const owing = s.balance > 0;
                   return (
-                    <TR key={s.id} className="group cursor-pointer" onClick={() => setViewing(s.id)}>
-                      {/* Who first — that is who the admin chases — with the order number under it. */}
-                      <TD>
-                        <div className="font-semibold text-foreground">{s.salesRep?.user?.name || '—'}</div>
-                        <div className="mt-0.5 text-[11px] tabular-nums text-faint">{s.settlementNumber}</div>
-                      </TD>
-                      {/* What the order is made of, not only what it is worth. */}
-                      <TD>
-                        <div className="flex items-baseline gap-1 tabular-nums">
-                          <span className="font-semibold text-foreground">{formatNumber(done)}</span>
-                          <span className="text-faint">/ {formatNumber(bx.issued)}</span>
-                        </div>
-                        <div className="mt-1 flex h-1 w-20 overflow-hidden rounded-full bg-white/[0.07]">
-                          <div className="h-full bg-emerald-500" style={{ width: `${pct(bx.settled, bx.issued)}%` }} />
-                          <div className="h-full bg-sky-500" style={{ width: `${pct(bx.returned, bx.issued)}%` }} />
-                        </div>
-                      </TD>
-                      <TD>
-                        <div className="tabular-nums text-emerald-400">{formatCurrency(s.paid)}</div>
-                        <div className="mt-0.5 text-[11px] tabular-nums text-faint">of {formatCurrency(s.assignedValue)}</div>
-                      </TD>
-                      {/* Every live order has a balance, so a red one on every row made a red column. It is
-                          coloured like the rep's own order card: rose when late, amber when the deadline is
-                          near, plain otherwise. */}
-                      <TD className={clsx('text-right tabular-nums', s.balance > 0
-                        ? clsx('font-bold', s.status === 'OVERDUE' ? 'text-rose-400' : s.approaching ? 'text-amber-300' : 'text-foreground')
-                        : 'text-faint')}>{formatCurrency(s.balance)}</TD>
-                      <TD>
-                        {s.status === 'SETTLED' ? (
-                          // Finalized order — no countdown, no overdue, just when it closed.
-                          <div className="inline-flex items-center gap-1 text-xs text-emerald-500">
-                            <CheckCircle2 className="h-3.5 w-3.5" /> Settled{s.settledAt ? ` · ${formatDateTime(s.settledAt)}` : ''}
-                          </div>
-                        ) : (
-                          <>
-                            <Remaining hours={s.hoursRemaining} />
-                            <div className="mt-1 text-[11px] text-faint">{formatDateTime(s.deadlineAt)}</div>
-                          </>
-                        )}
-                        {/* The self-extension rewrites deadlineAt, so without
-                            this the date above is the extended one and the row
-                            gives no sign that the rep took the extra time —
-                            which also doubles what a late day costs them. */}
-                        {s.extensionUsed && (
-                          <div className="mt-1 text-[11px] font-semibold text-amber-400">
-                            +{s.extensionHours}h taken
-                          </div>
-                        )}
-                      </TD>
-                      <TD><Badge className={SETTLEMENT_STATUS_META[s.status]?.cls}>{SETTLEMENT_STATUS_META[s.status]?.label}</Badge></TD>
-                      <TD className="w-px">
-                        <ChevronRight className="h-4 w-4 text-faint transition-colors group-hover:text-foreground" aria-label="Open" />
-                      </TD>
-                    </TR>
+                    <li key={s.id}>
+                      <button type="button" onClick={() => setViewing(s.id)}
+                        className="w-full px-4 py-3 text-left transition-colors hover:bg-elevated/60 active:bg-elevated/80">
+                        <span className="flex items-baseline justify-between gap-3">
+                          <span className="min-w-0 truncate text-[15px] font-semibold text-foreground">{s.salesRep?.user?.name || '—'}</span>
+                          <span className={clsx('shrink-0 text-[15px] font-bold tabular-nums',
+                            !owing ? 'text-emerald-400'
+                              : s.status === 'OVERDUE' ? 'text-rose-400' : s.approaching ? 'text-amber-300' : 'text-foreground')}>
+                            {formatCurrency(owing ? s.balance : s.paid)}
+                          </span>
+                        </span>
+                        <span className="mt-1 flex items-center justify-between gap-3">
+                          <span className="min-w-0 truncate text-[12px] tabular-nums text-muted">
+                            {formatNumber(done)}/{formatNumber(bx.issued)} boxes · {s.settlementNumber}
+                          </span>
+                          <Badge className={clsx('shrink-0', meta?.cls)}>{meta?.label}</Badge>
+                        </span>
+                        <span className="mt-1.5 flex items-center gap-3">
+                          <span className="flex h-1 w-16 shrink-0 overflow-hidden rounded-full bg-white/[0.07]">
+                            <span className="h-full bg-emerald-500" style={{ width: `${pct(bx.settled, bx.issued)}%` }} />
+                            <span className="h-full bg-sky-500" style={{ width: `${pct(bx.returned, bx.issued)}%` }} />
+                          </span>
+                          {s.status === 'SETTLED' ? (
+                            <span className="inline-flex items-center gap-1 text-[11px] text-emerald-500">
+                              <CheckCircle2 className="h-3 w-3" /> {s.settledAt ? formatDate(s.settledAt) : 'Settled'}
+                            </span>
+                          ) : (
+                            <span className="flex min-w-0 items-baseline gap-1.5 text-[11px] text-faint">
+                              <Remaining hours={s.hoursRemaining} className="!text-[12px]" />
+                              <span className="truncate">{formatDateTime(s.deadlineAt)}</span>
+                              {s.extensionUsed && <span className="shrink-0 font-semibold text-amber-400">+{s.extensionHours}h</span>}
+                            </span>
+                          )}
+                        </span>
+                      </button>
+                    </li>
                   );
                 })}
-              </TBody>
-            </Table>
+              </RowList>
+              <Table stack="wide" className="rot-table">
+                <THead>
+                  <TR>
+                    <TH>Rep · order</TH>
+                    <TH>Boxes</TH>
+                    <TH>Settled</TH><TH className="text-right">Balance</TH>
+                    <TH>Deadline</TH><TH>Status</TH><TH />
+                  </TR>
+                </THead>
+                <TBody>
+                  {data.data.map((s) => {
+                    const bx = s.boxes || { issued: 0, settled: 0, returned: 0, remaining: 0 };
+                    const done = bx.settled + bx.returned;
+                    return (
+                      <TR key={s.id} className="group cursor-pointer" onClick={() => setViewing(s.id)}>
+                        {/* Who first — that is who the admin chases — with the order number under it. */}
+                        <TD>
+                          <div className="font-semibold text-foreground">{s.salesRep?.user?.name || '—'}</div>
+                          <div className="mt-0.5 text-[11px] tabular-nums text-faint">{s.settlementNumber}</div>
+                        </TD>
+                        {/* What the order is made of, not only what it is worth. */}
+                        <TD>
+                          <div className="flex items-baseline gap-1 tabular-nums">
+                            <span className="font-semibold text-foreground">{formatNumber(done)}</span>
+                            <span className="text-faint">/ {formatNumber(bx.issued)}</span>
+                          </div>
+                          <div className="mt-1 flex h-1 w-20 overflow-hidden rounded-full bg-white/[0.07]">
+                            <div className="h-full bg-emerald-500" style={{ width: `${pct(bx.settled, bx.issued)}%` }} />
+                            <div className="h-full bg-sky-500" style={{ width: `${pct(bx.returned, bx.issued)}%` }} />
+                          </div>
+                        </TD>
+                        <TD>
+                          <div className="tabular-nums text-emerald-400">{formatCurrency(s.paid)}</div>
+                          <div className="mt-0.5 text-[11px] tabular-nums text-faint">of {formatCurrency(s.assignedValue)}</div>
+                        </TD>
+                        {/* Every live order has a balance, so a red one on every row made a red column. It is
+                            coloured like the rep's own order card: rose when late, amber when the deadline is
+                            near, plain otherwise. */}
+                        <TD className={clsx('text-right tabular-nums', s.balance > 0
+                          ? clsx('font-bold', s.status === 'OVERDUE' ? 'text-rose-400' : s.approaching ? 'text-amber-300' : 'text-foreground')
+                          : 'text-faint')}>{formatCurrency(s.balance)}</TD>
+                        <TD>
+                          {s.status === 'SETTLED' ? (
+                            // Finalized order — no countdown, no overdue, just when it closed.
+                            <div className="inline-flex items-center gap-1 text-xs text-emerald-500">
+                              <CheckCircle2 className="h-3.5 w-3.5" /> Settled{s.settledAt ? ` · ${formatDateTime(s.settledAt)}` : ''}
+                            </div>
+                          ) : (
+                            <>
+                              <Remaining hours={s.hoursRemaining} />
+                              <div className="mt-1 text-[11px] text-faint">{formatDateTime(s.deadlineAt)}</div>
+                            </>
+                          )}
+                          {/* The self-extension rewrites deadlineAt, so without
+                              this the date above is the extended one and the row
+                              gives no sign that the rep took the extra time —
+                              which also doubles what a late day costs them. */}
+                          {s.extensionUsed && (
+                            <div className="mt-1 text-[11px] font-semibold text-amber-400">
+                              +{s.extensionHours}h taken
+                            </div>
+                          )}
+                        </TD>
+                        <TD><Badge className={SETTLEMENT_STATUS_META[s.status]?.cls}>{SETTLEMENT_STATUS_META[s.status]?.label}</Badge></TD>
+                        <TD className="w-px">
+                          <ChevronRight className="h-4 w-4 text-faint transition-colors group-hover:text-foreground" aria-label="Open" />
+                        </TD>
+                      </TR>
+                    );
+                  })}
+                </TBody>
+              </Table>
+            </RowsOrTable>
             <Pagination page={page} totalPages={data.meta?.totalPages} total={data.meta?.total} onChange={setPage} />
           </>
         )}
