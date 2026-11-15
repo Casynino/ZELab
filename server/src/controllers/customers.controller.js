@@ -41,7 +41,13 @@ const list = asyncHandler(async (req, res) => {
       where,
       include: {
         salesRep: { include: { user: { select: { name: true } } } },
-        _count: { select: { sales: true, creditSales: true } },
+        // Live sales only (ui-a05): a cancelled sale is no order, the same rule the customer's own page counts by.
+        _count: {
+          select: {
+            sales: { where: { status: { not: 'CANCELLED' } } },
+            creditSales: { where: { sale: { is: { status: { not: 'CANCELLED' } } } } },
+          },
+        },
       },
       skip: pagination.skip,
       take: pagination.take,
@@ -68,7 +74,10 @@ const get = asyncHandler(async (req, res) => {
 
   const [purchaseAgg, outstandingAgg] = await Promise.all([
     prisma.sale.aggregate({ where: { customerId: customer.id, status: { not: 'CANCELLED' } }, _sum: { total: true }, _count: true }),
-    prisma.creditSale.aggregate({ where: { customerId: customer.id, balance: { gt: 0 } }, _sum: { balance: true } }),
+    // What the customer still owes, from the sales themselves (15 Nov 2026, sale02): a credit sale AND the rest of
+    // a part-paid cash sale. Only credit sales were counted, so a part-paid sale's debt was on no customer.
+    // (sale.balanceDue moves with every payment, credit ones included, and is 0 on a cancelled sale.)
+    prisma.sale.aggregate({ where: { customerId: customer.id, status: { not: 'CANCELLED' }, balanceDue: { gt: 0 } }, _sum: { balanceDue: true } }),
   ]);
 
   return ok(res, {
@@ -76,15 +85,36 @@ const get = asyncHandler(async (req, res) => {
     stats: {
       totalPurchases: round2(toNumber(purchaseAgg._sum.total)),
       orderCount: purchaseAgg._count,
-      outstandingDebt: round2(toNumber(outstandingAgg._sum.balance)),
+      outstandingDebt: round2(toNumber(outstandingAgg._sum.balanceDue)),
     },
   });
 });
 
+// One shop, one customer (ui-a06, 15 Nov 2026): a double tap or a second entry made twins that split one shop's
+// sales and debts. An exact duplicate — the same name (any case) and the same phone (written any usual way; no
+// phone counts as the same "no phone"), among the active customers of the same rep (or of ZELab) — is refused.
+const phoneKey = (p) => {
+  const d = String(p ?? '').replace(/\D/g, '');
+  return d.length >= 9 ? d.slice(-9) : d; // 0712 345 678 = +255 712 345 678
+};
+const nameKey = (n) => String(n ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
+
 const create = asyncHandler(async (req, res) => {
   const data = { ...req.body, createdById: req.user.id };
   if (req.user.role === ROLES.SALES_REP) data.salesRepId = req.user.salesRepId;
-  const customer = await prisma.customer.create({ data });
+  const customer = await prisma.$transaction(async (tx) => {
+    // Two presses at the same moment wait for each other here, so the second one sees the first one's customer.
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`customer:${nameKey(data.name)}`}))`;
+    const same = await tx.customer.findMany({
+      where: { isActive: true, salesRepId: data.salesRepId || null, name: { equals: String(data.name || '').trim(), mode: 'insensitive' } },
+      select: { id: true, name: true, phone: true },
+    });
+    const twin = same.find((c) => nameKey(c.name) === nameKey(data.name) && phoneKey(c.phone) === phoneKey(data.phone));
+    if (twin) {
+      throw ApiError.conflict(`Already a customer: ${twin.name}${twin.phone ? ` (${twin.phone})` : ''}.`, { customerId: twin.id, code: 'DUPLICATE_CUSTOMER' });
+    }
+    return tx.customer.create({ data });
+  });
   await audit.record(req, { action: 'CREATE', entityType: 'Customer', entityId: customer.id, newValues: { name: customer.name } });
   return created(res, customer);
 });
