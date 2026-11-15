@@ -104,6 +104,11 @@ const authenticate = asyncHandler(async (req, _res, next) => {
     salesRepId: user.salesRep ? user.salesRep.id : null,
   };
 
+  // The checks that are due at a moment (the owner's "fine about to start" warning, the 21:00 report's
+  // fallback) ride on signed-in requests: at most every 5 minutes, in the background, never holding this
+  // request up or failing it. No scheduler on the free plans runs them reliably (audit repo00, 15 Nov 2026).
+  try { require('../services/whatsappNotify.service').dueChecksSoon(); } catch { /* never blocks a request */ }
+
   return next();
 });
 

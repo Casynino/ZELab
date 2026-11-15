@@ -82,7 +82,8 @@ async function buildWeeklyData(weekKey) {
   const [rep, prof, accounts, val, stlSummary, suppliers, low, pending, extras] = await Promise.all([
     finance.report({ from, to }),
     reports.profitOverview({ from, to }),
-    finance.accountBalances(),
+    // what each account held when the week ended, not on Tuesday when the report is built (audit repo07)
+    finance.accountBalances({ asOf: range.end }),
     inventory.valuation(prisma),
     settlement.summary(),
     finance.supplierSummaries(),
@@ -101,12 +102,9 @@ async function buildWeeklyData(weekKey) {
   const rangeEnd = range.end;
 
   // Movement, commission paid and commission owed (rep sales come from extras.reps).
-  const [movementRows, paidAgg, commissionAll] = await Promise.all([
-    prisma.inventoryTransaction.groupBy({
-      by: ['type'],
-      where: { occurredAt: { gte: rangeStart, lte: rangeEnd } },
-      _sum: { baseQuantity: true },
-    }).catch(() => []),
+  const [movement, paidAgg, commissionAll] = await Promise.all([
+    // whole-business movement from the ledger (transfers cancel out; cancelled sales netted out)
+    reportData.stockMovement(rangeStart, rangeEnd),
     // Money actually handed over in the week, on the day it was handed over (audit #81). APPROVED is not
     // paid, and decidedAt moves when an approved request is later paid, so one withdrawal was counted in
     // the week it was approved AND again in the week it was paid. Rows paid before paidAt existed fall
@@ -125,16 +123,6 @@ async function buildWeeklyData(weekKey) {
 
   const repPerformance = extras.reps;
   const topRep = repPerformance[0] || null;
-
-  // Whole-business inventory movement from the ledger (transfers cancel out).
-  const mv = new Map(movementRows.map((m) => [m.type, m._sum.baseQuantity || 0]));
-  const movement = {
-    stockInBoxes: mv.get('STOCK_IN') || 0,
-    purchasedBoxes: mv.get('PURCHASE_RECEIPT') || 0,
-    soldBoxes: -((mv.get('CASH_SALE') || 0) + (mv.get('CREDIT_SALE') || 0)),
-    returnedBoxes: mv.get('CUSTOMER_RETURN') || 0,
-    adjustedBoxes: (mv.get('ADJUSTMENT') || 0) + (mv.get('CORRECTION') || 0) + (mv.get('STOCK_COUNT') || 0) + (mv.get('DAMAGE') || 0),
-  };
 
   // Commission: earned this period (boxes settled × rate), paid this period,
   // and what is payable right now across all reps.

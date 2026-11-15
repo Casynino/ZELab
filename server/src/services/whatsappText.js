@@ -67,6 +67,10 @@ const doc = (...parts) => parts.filter((p) => p !== null && p !== undefined && p
 // The brand is the item's `brand`, else the first word of its name (every product is named "<Brand> …"); a
 // one-word name has no heading. `line(item, shortName, k)` writes a product line. Only the first `shown`
 // products are written; the rest are counted in a last "+N more, see ZELab" line.
+// `byCity`: a request split between cities (audit ui-r07, 15 Nov 2026: "(2) Ndogo (White) Bila Filter: 2 Boxes · Dodoma"
+// was 47 characters, past the 41 that fit on Nino's phone). The products are grouped by city first (A-Z), then
+// brand, and the city goes in the group's heading — "Dodoma — OHIS" — so every product line stays as short as
+// in a one-city request. A line with no city comes last, under its brand alone.
 const brandOf = (i) => {
   if (i && i.brand) return String(i.brand).trim();
   const words = String((i && i.name) || '').trim().split(/\s+/);
@@ -76,20 +80,21 @@ const withoutBrand = (name, brand) => {
   const n = String(name || '').trim();
   return brand && n.toLowerCase().startsWith(`${brand.toLowerCase()} `) ? n.slice(brand.length).trim() : n;
 };
-function byBrand(items, line, shown = items.length) {
+const compareCities = (a, b) => (!a === !b ? a.localeCompare(b) : a ? -1 : 1); // no city last
+function byBrand(items, line, shown = items.length, { byCity = false } = {}) {
   const sorted = items
-    .map((item, at) => ({ item, at, brand: brandOf(item) }))
-    .sort((a, b) => compareBrands(a.brand, b.brand) || compareProducts(a.item.name, b.item.name) || a.at - b.at);
+    .map((item, at) => ({ item, at, brand: brandOf(item), city: byCity ? String(item.city || '').trim() : '' }))
+    .sort((a, b) => compareCities(a.city, b.city) || compareBrands(a.brand, b.brand) || compareProducts(a.item.name, b.item.name) || a.at - b.at);
   const groups = [];
   sorted.slice(0, shown).forEach((e, k) => {
-    const key = e.brand.toLowerCase();
+    const key = `${e.city.toLowerCase()}|${e.brand.toLowerCase()}`;
     let g = groups[groups.length - 1];
-    if (!g || g.key !== key) { g = { key, brand: e.brand, rows: [] }; groups.push(g); }
+    if (!g || g.key !== key) { g = { key, heading: [e.city, e.brand].filter(Boolean).join(' — '), rows: [] }; groups.push(g); }
     g.rows.push(line(e.item, withoutBrand(e.item.name, e.brand), k));
   });
   const more = shown < items.length && `+${items.length - shown} more, see ZELab`; // right under the last line
   if (more && groups.length) groups[groups.length - 1].rows.push(more);
-  return doc(...groups.map((g) => lines(g.brand, ...g.rows)), !groups.length && more);
+  return doc(...groups.map((g) => lines(g.heading, ...g.rows)), !groups.length && more);
 }
 
 // ═══ To the owner ════════════════════════════════════════════════════════════
@@ -101,8 +106,8 @@ const owner = {
   // request (a carton counts as the boxes it holds: `boxes`), and the value.
   // The totals are what the owner needs most, so a very long request drops products from the
   // END of the list ("+3 more, see ZELab") and never the totals.
-  // The city the stock is for stands under the name; a request split between cities says each line's city
-  // after its boxes instead.
+  // The city the stock is for stands under the name; a request split between cities groups its products by
+  // city ("Dodoma — OHIS" over its lines), so no product line runs past one phone line.
   stockRequest: ({ by, city, items = [], total }) => {
     const itemCities = [...new Set(items.map((i) => i.city).filter(Boolean))];
     const split = itemCities.length > 1;
@@ -114,7 +119,7 @@ const owner = {
       : `Total Value: ${money(total)}`;
     const build = ({ shown }) => doc(
       ...head,
-      items.length > 0 && byBrand(items, (i, name, k) => `${mark(k)}${name}: ${boxes(i.qty, i.unit)}${split && i.city ? ` · ${i.city}` : ''}`, shown),
+      items.length > 0 && byBrand(items, (i, name, k) => `${mark(k)}${name}: ${boxes(i.qty, i.unit)}`, shown, { byCity: split }),
       tail,
     );
     const steps = [];
@@ -136,6 +141,12 @@ const owner = {
         lines(`Payment: ${money(amount)}${method ? ` (${method})` : ''}`, Number(commission) > 0 && `Commission: ${money(commission)}`),
       );
     }
+    // In the fixed order every other product list follows — Pepa, OHIS, Civlily, then other brands A-Z — not
+    // the order the rep ticked them (audit repo08, 15 Nov 2026).
+    items = items
+      .map((i, at) => ({ i, at, brand: brandOf({ name: i.product }) }))
+      .sort((a, b) => compareBrands(a.brand, b.brand) || compareProducts(a.i.product, b.i.product) || a.at - b.at)
+      .map((e) => e.i);
     const totalBoxes = items.reduce((s, i) => s + (Number(i.boxes) || 0), 0);
     const paid = lines(
       ...(payments || []).map((p) => `Payment: ${money(p.amount)}${p.method ? ` (${p.method})` : ''}`),
@@ -273,7 +284,9 @@ owner.dailyReport = (d) => {
     // A missed report sent the next morning: its stock is the morning's, so say so (no time — Nino, 12 Nov 2026:
     // no date or time on any text; the report's own day stays, so a late one is never taken for today's). Its cash balance is the
     // day's closing balance (the caller passes the period's end), whenever it is sent.
-    lines(bold('ZELAB — DAILY REPORT'), d.date, d.late && 'Sent late (stock as at sending)'),
+    // The window it covers (audit repo01, 15 Nov 2026): each report runs from the last one's 21:00 cut-off to
+    // this day's 21:00, so a sale or payment after 21:00 is in the next day's report instead of in none.
+    lines(bold('ZELAB — DAILY REPORT'), d.date, d.covers && `Covers: ${d.covers}`, d.late && 'Sent late (stock as at sending)'),
     lines(`Sales: ${money(d.sales)} (${boxes(d.boxesSold)})`, `Net Profit: ${money(d.netProfit)}`, `Expenses: ${money(d.expenses)}`),
     lines(`Cash In: ${money(d.cashIn)}`, `Cash Out: ${money(d.cashOut)}`, `Cash Balance: ${money(d.cashBalance)}`),
     `Orders: ${d.orders} | Settlements: ${d.settlements} | Returns: ${d.returns}`,
@@ -293,7 +306,8 @@ const periodReport = (title, linkLabel) => (d) => {
     lines(`Revenue: ${money(d.revenue)}`, `Net Profit: ${money(d.netProfit)}`, `Expenses: ${money(d.expenses)}`, `Cash Balance: ${money(d.cashBalance)}`),
     growth !== null && `Revenue Growth: ${growth > 0 ? '+' : ''}${growth}%`,
     lines(
-      product && d.topProduct && `Top Product: ${d.topProduct.name} — ${money(d.topProduct.revenue)}`,
+      // Ranked by sales value (audit repo02: it was the most PROFITABLE product shown with its revenue).
+      product && d.topProduct && `Top Product by Sales: ${d.topProduct.name} — ${money(d.topProduct.revenue)}`,
       d.topRep && `Top Rep: ${d.topRep.name} — ${money(d.topRep.revenue)}`,
     ),
     topList('Brand Sales:', d.brands || [], brands),
@@ -327,7 +341,7 @@ owner.yearlyReport = (d) => {
     leaders && lines(
       d.topBrand && `Top Brand: ${d.topBrand.name} — ${money(d.topBrand.revenue)}`,
       d.topRep && `Top Rep: ${d.topRep.name} — ${money(d.topRep.revenue)}`,
-      d.topProduct && `Top Product: ${d.topProduct.name}`,
+      d.topProduct && `Top Product by Sales: ${d.topProduct.name}`,
     ),
     `Cash Balance: ${money(d.cashBalance)}`,
     d.link && lines('Full Year Report (PDF):', d.link),
@@ -346,10 +360,11 @@ const rep = (title, ...parts) => doc(bold(title), ...parts, FOOT);
 
 // The approved request (audit, 11 Nov 2026: the rep was not told about a part-approval): Nino's sample,
 // plus the order it opened and its deadline, then one numbered line per product as on the owner's
-// STOCK REQUEST — a line cut by the admin reads "3 of 4 Boxes". A request split between cities says each
-// line's city after its boxes (" · Arusha"), as the owner's STOCK REQUEST does, so the same product asked
-// for two cities is never two identical lines (audit, 12 Nov 2026). A very long list drops products from
-// the end ("+2 more, see ZELab"), never the order or the deadline.
+// STOCK REQUEST — a line cut by the admin reads "3 of 4 Boxes". A request split between cities groups its
+// lines by city ("Arusha — Civlily" over them), as the owner's STOCK REQUEST does, so the same product asked
+// for two cities is never two identical lines (audit, 12 Nov 2026) and no line runs past one phone line
+// (audit ui-r07, 15 Nov 2026). A very long list drops products from the end ("+2 more, see ZELab"), never
+// the order or the deadline.
 const stockRequestApproved = ({ request, order, deadline, items }) => {
   const list = Array.isArray(items) ? items : [];
   const short = (i) => Number(i.approved) < Number(i.requested);
@@ -357,11 +372,11 @@ const stockRequestApproved = ({ request, order, deadline, items }) => {
   const split = new Set(list.map((i) => i.city).filter(Boolean)).size > 1;
   const line = (i, name, k) => `${mark(k)}${name}: ${short(i)
     ? `${Math.round(Number(i.approved) || 0)} of ${boxes(i.requested, i.unit)}`
-    : boxes(i.approved, i.unit)}${split && i.city ? ` · ${i.city}` : ''}`;
+    : boxes(i.approved, i.unit)}`;
   const build = ({ shown }) => rep(
     'STOCK REQUEST APPROVED',
     lines(`Request: ${request}`, order && `Order: ${order}`, deadline && `Deadline: ${dateTime(deadline)}`),
-    list.length > 0 && byBrand(list, line, shown),
+    list.length > 0 && byBrand(list, line, shown, { byCity: split }),
     lines('Your stock request has been approved and issued.', cut && 'Some products were approved in a smaller quantity than you asked for.'),
   );
   const steps = [];

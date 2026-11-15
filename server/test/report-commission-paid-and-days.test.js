@@ -68,6 +68,7 @@ function stubReportDeps(withdrawals) {
   stub('../src/services/reportData.service', {
     periodExtras: async () => ({ reps: [{ id: 'r1', name: 'Rep One' }, { id: 'r2', name: 'Rep Two' }], prev: null }),
     stockBlock: () => ({ costValue: 0, units: 0 }),
+    stockMovement: async () => ({ stockInBoxes: 0, purchasedBoxes: 0, soldBoxes: 0, returnedBoxes: 0, cancelledBoxes: 0, adjustedBoxes: 0, netMove: 0 }),
   });
   stub('../src/services/commission.service', { summaryAllReps: async () => ({ items: [] }), earnedBetween: async () => ({ total: 0, byRep: new Map() }) });
 }

@@ -632,7 +632,11 @@ function BellPanel({ unread, notes, onClose, onReadAll, onReadOne, onViewAll, po
                 <div className="min-w-0 flex-1">
                   <div className="text-xs font-semibold text-foreground">{n.title}</div>
                   <div className="mt-0.5 line-clamp-2 text-xs text-muted">{n.message}</div>
-                  <div className="mt-1 text-[10px] text-faint">{fromNow(n.createdAt)}</div>
+                  {/* a notice written to a rep, in the owner's bell: whom it went to (audit ui-a07) */}
+                  <div className="mt-1 text-[10px] text-faint">
+                    {n.recipient && <><span className="font-medium text-muted">To {n.recipient.name}</span>{' · '}</>}
+                    {fromNow(n.createdAt)}
+                  </div>
                 </div>
                 {!n.isRead && <button onClick={() => onReadOne(n.id)} className="tap-phone shrink-0 cursor-pointer px-1 text-[10px] text-brand-600 hover:underline">Read</button>}
               </li>

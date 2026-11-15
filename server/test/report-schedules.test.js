@@ -319,7 +319,7 @@ function loadWeekly({ existingKeys = [], lastWeeklySent = null } = {}) {
   stub('../src/services/inventory.service', { valuation: async () => ({}) });
   stub('../src/services/reorder.service', { lowStock: async () => [] });
   stub('../src/services/settlement.service', { summary: async () => ({ overdueCount: 0 }) });
-  stub('../src/services/reportData.service', { periodExtras: async () => ({ reps: [], prev: null }), stockBlock: () => ({ costValue: 0, units: 0 }) });
+  stub('../src/services/reportData.service', { periodExtras: async () => ({ reps: [], prev: null }), stockBlock: () => ({ costValue: 0, units: 0 }), stockMovement: async () => ({ stockInBoxes: 0, purchasedBoxes: 0, soldBoxes: 0, returnedBoxes: 0, cancelledBoxes: 0, adjustedBoxes: 0, netMove: 0 }) });
   stub('../src/services/commission.service', { summaryAllReps: async () => ({ items: [] }), earnedBetween: async () => ({ total: 0 }) });
   stub('../src/services/reportPdf.service', { weeklyPdf: async () => Buffer.from('%PDF-'), monthlyPdf: async () => Buffer.from('%PDF-') });
   stub('../src/services/reportArchive.service', { save: async (o) => { calls.saves.push(o); return { id: 'a1' }; }, publicLink: (id) => `https://x/${id}.pdf` });
@@ -432,18 +432,21 @@ test('daily: "Orders" are orders issued that day and "Returns" are returns accep
   stub('../src/services/reorder.service', { lowStock: async () => [] });
   stub('../src/services/settlement.service', { summary: async () => ({ overdueCount: 0 }) });
   stub('../src/services/inventory.service', { valuation: async () => ({}) });
-  stub('../src/services/reportData.service', { periodExtras: async () => ({ reps: [] }), stockBlock: () => ({ costValue: 0, units: 0 }) });
+  stub('../src/services/reportData.service', { periodExtras: async () => ({ reps: [] }), stockBlock: () => ({ costValue: 0, units: 0 }), stockMovement: async () => ({ stockInBoxes: 0, purchasedBoxes: 0, soldBoxes: 0, returnedBoxes: 0, cancelledBoxes: 0, adjustedBoxes: 0, netMove: 0 }) });
   const daily = fresh('../src/services/dailyBusinessReport.service');
   const d = await daily.buildDailyData('2026-11-10');
   assert.deepEqual(d.activity, { newOrders: 1, settlements: 3, returns: 2 });
   assert.ok(seen.settlement[0].issuedAt, 'orders counted on the day they were issued');
+  // the report day runs 21:00 the evening before to 21:00 (audit repo01): 9 Nov 18:00Z to 10 Nov 17:59:59.999Z
+  assert.equal(seen.settlement[0].issuedAt.gte.toISOString(), '2026-11-09T18:00:00.000Z');
+  assert.equal(seen.settlement[0].issuedAt.lte.toISOString(), '2026-11-10T17:59:59.999Z');
   const ret = seen.return.find((w) => w.decidedAt);
   assert.deepEqual(ret.status, { in: ['APPROVED', 'COMPLETED'] });
   assert.ok(!(seen.stockRequest || []).some((w) => w.createdAt), 'requests created are no longer counted as orders');
 
   // a late send says so under the date
   const text = daily.buildWhatsAppText(d, null, { late: new Date('2026-11-11T06:00:00Z') });
-  assert.match(text, /^\*ZELAB — DAILY REPORT\*\n10 November 2026\nSent late \(stock as at sending\)\n/);
+  assert.match(text, /^\*ZELAB — DAILY REPORT\*\n10 November 2026\nCovers: 9 Nov 21:00 – 10 Nov 21:00\nSent late \(stock as at sending\)\n/);
   assert.ok(!daily.buildWhatsAppText(d, null).includes('Sent late'));
 });
 

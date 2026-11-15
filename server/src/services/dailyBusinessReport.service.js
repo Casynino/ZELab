@@ -11,6 +11,14 @@
 // under the header. The day is the business's day (EAT), never the server's.
 // Every figure comes from the services the dashboard reads; nothing is
 // recomputed here (see reportData.service.js).
+//
+// WHAT A DAILY REPORT COVERS (audit repo01, 15 Nov 2026): the report for day D
+// runs from 21:00 on D-1 to 21:00 on D (Tanzania time) — from the cut-off of the
+// report before it to the moment it is sent. It used to be the calendar day built
+// at 21:00, so everything recorded from 21:00 to midnight (23% of the money in, on
+// some weeks) fell into no daily report at all. Now every minute is in exactly
+// one daily report, whenever the report is actually built (a late cron, the
+// morning catch-up), and the text and the PDF both say which 24 hours they hold.
 // ===========================================================================
 
 const prisma = require('../config/prisma');
@@ -20,21 +28,40 @@ const reorder = require('./reorder.service');
 const settlementSvc = require('./settlement.service');
 const inventorySvc = require('./inventory.service');
 const reportData = require('./reportData.service');
-const { dayjs, eatNow, eatRange, eatToUtc } = require('../utils/dates');
+const { dayjs, eatNow, eatToUtc } = require('../utils/dates');
 
 const fmt = (n) => `TSh ${Math.round(Number(n) || 0).toLocaleString('en-US')}`;
+
+// The daily report is cut at 21:00 Tanzania time: the report of day D covers 21:00 on D-1 to 21:00 on D.
+const CUT_OFF_HOUR = 21;
+const DAY_SHIFT_MS = (24 - CUT_OFF_HOUR) * 3600 * 1000; // a moment after 21:00 belongs to the next report day
+
+/** The 24 hours a day's report covers: [21:00 the day before, 21:00 that day), as real instants. */
+function reportWindow(eatDay) {
+  const cut = eatDay.startOf('day').hour(CUT_OFF_HOUR);
+  const from = cut.subtract(1, 'day');
+  return {
+    eatFrom: from,
+    eatTo: cut,
+    start: eatToUtc(from).toDate(),
+    end: new Date(eatToUtc(cut).valueOf() - 1), // the queries take `lte`: up to 20:59:59.999
+  };
+}
 
 /** The report for one EAT day: 'YYYY-MM-DD', or today when omitted. */
 async function buildDailyData(dateKey) {
   const anchor = dateKey && /^\d{4}-\d{2}-\d{2}$/.test(dateKey) ? dayjs.utc(`${dateKey}T12:00:00`) : eatNow();
-  const day = eatRange('day', anchor);
-  const before = eatRange('day', anchor.subtract(1, 'day'));
-  const key = day.eatStart.format('YYYY-MM-DD');
-  // The little chart shows this day and the six before it.
-  const chartStart = eatToUtc(day.eatStart.subtract(6, 'day')).toDate();
+  const dayStart = anchor.startOf('day');
+  const day = reportWindow(dayStart);
+  const before = reportWindow(dayStart.subtract(1, 'day'));
+  const key = dayStart.format('YYYY-MM-DD');
+  // The little chart shows this report day and the six before it, each 21:00 to 21:00.
+  const chartStart = reportWindow(dayStart.subtract(6, 'day')).start;
 
-  const [rep, accounts, val, low, stl, counts, suppliers, extras, mvRows] = await Promise.all([
+  const [rep, accounts, accountsNow, val, low, stl, counts, suppliers, extras, movement] = await Promise.all([
     finance.report({ start: day.start, end: day.end }),
+    // What each account held at the cut-off, for the PDF; the "below zero" alert reads them as they are now.
+    finance.accountBalances({ asOf: day.end }),
     finance.accountBalances(),
     inventorySvc.valuation(prisma),
     reorder.lowStock(),
@@ -51,27 +78,14 @@ async function buildDailyData(dateKey) {
       prisma.settlement.count({ where: { issuedAt: { gte: day.start, lte: day.end } } }),
     ]),
     finance.supplierSummaries(),
-    reportData.periodExtras({ start: day.start, end: day.end }, before, { dayWindow: { start: chartStart, end: day.end } }),
-    // the day's stock movement, for the PDF's "boxes moved"
-    prisma.inventoryTransaction.groupBy({
-      by: ['type'],
-      where: { occurredAt: { gte: day.start, lte: day.end } },
-      _sum: { baseQuantity: true },
-    }).catch(() => []),
+    reportData.periodExtras({ start: day.start, end: day.end }, before, { dayWindow: { start: chartStart, end: day.end }, dayShiftMs: DAY_SHIFT_MS }),
+    // the window's stock movement, for the PDF's "boxes moved" (cancelled sales netted out)
+    reportData.stockMovement(day.start, day.end),
   ]);
-
-  const mv = new Map(mvRows.map((m) => [m.type, m._sum.baseQuantity || 0]));
-  const movement = {
-    stockInBoxes: mv.get('STOCK_IN') || 0,
-    purchasedBoxes: mv.get('PURCHASE_RECEIPT') || 0,
-    soldBoxes: -((mv.get('CASH_SALE') || 0) + (mv.get('CREDIT_SALE') || 0)),
-    returnedBoxes: mv.get('CUSTOMER_RETURN') || 0,
-    adjustedBoxes: (mv.get('ADJUSTMENT') || 0) + (mv.get('CORRECTION') || 0) + (mv.get('STOCK_COUNT') || 0) + (mv.get('DAMAGE') || 0),
-  };
 
   const supplierDue = suppliers.reduce((s, x) => s + x.outstanding, 0);
   const cashPosition = accounts.reduce((s, a) => s + a.balance, 0);
-  const negAccounts = accounts.filter((a) => a.balance < 0);
+  const negAccounts = accountsNow.filter((a) => a.balance < 0);
   const pendingTotal = counts[0] + counts[1] + counts[2];
 
   const attention = [];
@@ -82,7 +96,17 @@ async function buildDailyData(dateKey) {
   if (supplierDue > 0) attention.push(`Owed to suppliers: ${fmt(supplierDue)}`);
 
   return {
-    period: { label: day.eatStart.format('dddd D MMMM YYYY'), shortLabel: day.eatStart.format('D MMMM YYYY'), key, start: day.start, end: day.end },
+    period: {
+      label: dayStart.format('dddd D MMMM YYYY'),
+      shortLabel: dayStart.format('D MMMM YYYY'),
+      key,
+      start: day.start,
+      end: day.end,
+      // "14 Nov 21:00 – 15 Nov 21:00": the 24 hours this report holds
+      covers: `${day.eatFrom.format('D MMM HH:mm')} – ${day.eatTo.format('D MMM HH:mm')}`,
+      // "from 21:00 on Friday 14 November to 21:00 on Saturday 15 November 2026"
+      coversLong: `from ${day.eatFrom.format('HH:mm [on] dddd D MMMM')} to ${day.eatTo.format('HH:mm [on] dddd D MMMM YYYY')}`,
+    },
     generatedAt: `${eatNow().format('D MMM YYYY, HH:mm')} EAT`,
     number: `ZL-D-${key}`,
     extras,
@@ -101,6 +125,7 @@ async function buildDailyData(dateKey) {
       boxesSold: rep.boxesSold,
     },
     brands: (rep.topBrands || []).map((b) => ({ name: b.name, revenue: b.revenue, cost: b.cost, profit: b.profit, margin: b.margin, boxes: b.boxes })),
+    // the best sellers by sales value (finance.report ranks them so)
     topProducts: (rep.topProducts || []).slice(0, 5).map((p) => ({ name: p.name, revenue: p.revenue, boxes: p.boxes })),
     repPerformance: extras.reps,
     accounts: accounts.map((a) => ({ name: a.name, balance: a.balance })),
@@ -128,6 +153,7 @@ function buildWhatsAppText(d, link, { late = null } = {}) {
   const f = d.finance;
   return require('./whatsappText').owner.dailyReport({
     date: d.period.shortLabel,
+    covers: d.period.covers,
     late,
     sales: f.revenue,
     boxesSold: f.boxesSold,
@@ -193,4 +219,4 @@ async function sendDailyReport({ force = false, dateKey, queue, late = false } =
   return { ...result, pdf: link, archiveId, chars: text.length };
 }
 
-module.exports = { buildDailyData, buildWhatsAppText, sendDailyReport };
+module.exports = { buildDailyData, buildWhatsAppText, sendDailyReport, reportWindow, CUT_OFF_HOUR };

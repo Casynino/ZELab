@@ -38,8 +38,13 @@ const kindLabel = (t) => KIND_LABEL[t] || String(t || 'Other').replace(/_/g, ' '
 
 const ACTIVE_SALE = { status: { not: 'CANCELLED' } };
 
-/** Revenue, gross profit and boxes for every EAT day from `start` to `end` (empty days are zeros). */
-async function salesByDay(start, end) {
+/**
+ * Revenue, gross profit and boxes for every EAT day from `start` to `end` (empty days are zeros).
+ * `shiftMs` moves the day's start: the daily report's day runs 21:00 to 21:00, so a sale at 22:00 belongs
+ * to the next day's column (shiftMs = 3 hours), and each column matches one daily report.
+ */
+async function salesByDay(start, end, { shiftMs = 0 } = {}) {
+  const dayOf = (d) => eatDayKey(new Date(new Date(d).getTime() + shiftMs));
   const items = await prisma.saleItem.findMany({
     where: { sale: { is: { ...ACTIVE_SALE, soldAt: { gte: start, lte: end } } } },
     // Discount and cost by the same line maths as finance.report (sale05), so a day's column adds up to the headline.
@@ -47,14 +52,15 @@ async function salesByDay(start, end) {
   });
   const byDay = new Map();
   for (const it of items) {
-    const k = eatDayKey(it.sale.soldAt);
+    // Day by the report's own window (21:00 cut-off, repo01) and line maths shared with finance.report (sale05).
+    const k = dayOf(it.sale.soldAt);
     const row = byDay.get(k) || profitMath.newTally();
     profitMath.addLine(row, profitMath.lineFinancials(it));
     byDay.set(k, row);
   }
   const out = [];
-  const last = eatDayKey(end);
-  for (let d = dayjs.utc(eatDayKey(start)); d.format('YYYY-MM-DD') <= last; d = d.add(1, 'day')) {
+  const last = dayOf(end);
+  for (let d = dayjs.utc(dayOf(start)); d.format('YYYY-MM-DD') <= last; d = d.add(1, 'day')) {
     const k = d.format('YYYY-MM-DD');
     const row = byDay.get(k) || profitMath.newTally();
     // Boxes sold before a buying price was set: in the day's revenue, not in its profit.
@@ -130,10 +136,10 @@ function splitKinds(byType) {
  *   opts.prevReport: that window's finance.report(), when the caller already has it
  *   opts.cashflow:   this window's finance.cashflow({start,end}), likewise
  */
-async function periodExtras(range, prior, { dayWindow, prevReport, cashflow } = {}) {
+async function periodExtras(range, prior, { dayWindow, dayShiftMs = 0, prevReport, cashflow } = {}) {
   // cashflow() is awaited once: it carries the by-kind split AND the account statement.
   const [days, cats, cf, orders, board, prev] = await Promise.all([
-    salesByDay(dayWindow?.start || range.start, dayWindow?.end || range.end),
+    salesByDay(dayWindow?.start || range.start, dayWindow?.end || range.end, { shiftMs: dayShiftMs }),
     expensesByCategory(range.start, range.end),
     cashflow || finance.cashflow({ start: range.start, end: range.end }),
     prisma.sale.count({ where: { ...ACTIVE_SALE, soldAt: { gte: range.start, lte: range.end } } }).catch(() => 0),
@@ -166,6 +172,51 @@ async function periodExtras(range, prior, { dayWindow, prevReport, cashflow } = 
   };
 }
 
+/**
+ * The "Boxes moved" block of a report for the window [start, end], from the movement ledger.
+ * Boxes put back on a sale — the sale cancelled (CORRECTION) or refunded (CUSTOMER_RETURN), both filed
+ * against the sale — are taken off "Sold" when the sale itself was made in the window: those boxes were
+ * never really sold, and "Sold" then agrees with the boxes-sold figure (audit sale16, 15 Nov 2026: a
+ * daily PDF said 11 boxes sold and "Sold -226", the cancelled sales still counted). Boxes put back on a
+ * sale made before the window have their own line, `cancelledBoxes`. Nothing is left out: the lines still
+ * add up to the window's whole movement (`netMove`, transfers netting to nothing), so the opening and
+ * closing boxes of the monthly report still agree.
+ */
+async function stockMovement(start, end) {
+  const inWindow = { occurredAt: { gte: start, lte: end } };
+  const [byType, putBack] = await Promise.all([
+    prisma.inventoryTransaction.groupBy({ by: ['type'], where: inWindow, _sum: { baseQuantity: true } }).catch(() => []),
+    prisma.inventoryTransaction.findMany({
+      where: { ...inWindow, referenceType: 'SALE', type: { in: ['CORRECTION', 'CUSTOMER_RETURN'] } },
+      select: { type: true, baseQuantity: true, referenceId: true },
+    }).catch(() => []),
+  ]);
+  const saleIds = [...new Set(putBack.map((r) => r.referenceId).filter(Boolean))];
+  const soldHere = new Set(saleIds.length
+    ? (await prisma.sale.findMany({ where: { id: { in: saleIds }, soldAt: { gte: start, lte: end } }, select: { id: true } }).catch(() => [])).map((x) => x.id)
+    : []);
+  const mv = new Map(byType.map((m) => [m.type, m._sum.baseQuantity || 0]));
+  const get = (t) => mv.get(t) || 0;
+  let backOnSalesHere = 0;
+  let backOnEarlierSales = 0;
+  const backByType = { CORRECTION: 0, CUSTOMER_RETURN: 0 };
+  for (const r of putBack) {
+    backByType[r.type] += r.baseQuantity || 0;
+    if (soldHere.has(r.referenceId)) backOnSalesHere += r.baseQuantity || 0;
+    else backOnEarlierSales += r.baseQuantity || 0;
+  }
+  return {
+    stockInBoxes: get('STOCK_IN'),
+    purchasedBoxes: get('PURCHASE_RECEIPT'),
+    // the sale rows are negative and the boxes put back positive: sold = what left, less what came back
+    soldBoxes: -(get('CASH_SALE') + get('CREDIT_SALE') + backOnSalesHere),
+    returnedBoxes: get('CUSTOMER_RETURN') - backByType.CUSTOMER_RETURN,
+    cancelledBoxes: backOnEarlierSales,
+    adjustedBoxes: get('ADJUSTMENT') + get('CORRECTION') - backByType.CORRECTION + get('STOCK_COUNT') + get('DAMAGE'),
+    netMove: byType.reduce((s, m) => s + (m._sum.baseQuantity || 0), 0),
+  };
+}
+
 /** The stock block every report prints, from inventory.valuation() and reorder.lowStock(). */
 function stockBlock(val, low) {
   return {
@@ -180,4 +231,4 @@ function stockBlock(val, low) {
   };
 }
 
-module.exports = { stockBlock, salesByDay, expensesByCategory, repLeaderboard, splitKinds, periodExtras, kindLabel, eatDayKey };
+module.exports = { stockBlock, stockMovement, salesByDay, expensesByCategory, repLeaderboard, splitKinds, periodExtras, kindLabel, eatDayKey };

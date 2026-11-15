@@ -6,9 +6,15 @@
 # tried. A fine begins the moment a deadline passes, so a daily sweep is useless
 # for this one alert.
 #
-# GitHub Actions runs it instead, free, every five minutes. The endpoint is
-# idempotent and deduplicated per order, so a run that finds nothing costs
-# nothing and a repeated run repeats nothing.
+# GitHub Actions asks for it every five minutes, but that schedule is best-effort:
+# in practice it ran about five times a day, hours apart (audit, 15 Nov 2026). So
+# it is only a backstop now. The app runs the same check itself, at most every
+# five minutes, whenever anyone signed in uses ZELab (whatsappNotify.dueChecksSoon),
+# and it warns up to an hour before a deadline, so a late check still lands before
+# the fine. Overnight, with nobody using the app, only this schedule (or an outside
+# pinger such as cron-job.org calling the same URL with the same header) can warn.
+# The endpoint is idempotent and deduplicated per order and deadline, so a run that
+# finds nothing costs nothing and a repeated run repeats nothing.
 #
 # If CRON_SECRET is set in Vercel, add the same value as a repository secret of
 # the same name (Settings → Secrets and variables → Actions). Without it the
@@ -17,9 +23,8 @@ name: Deadline watch
 
 on:
   schedule:
-    # GitHub's shortest interval is 5 minutes, and it runs on a best-effort
-    # queue — a run can be late under load. Warnings therefore land between
-    # roughly 5 and 10 minutes before the fine, never after it.
+    # GitHub's shortest interval is 5 minutes, on a best-effort queue: runs are
+    # often hours late or dropped. Do not count on this alone (see above).
     - cron: '*/5 * * * *'
   workflow_dispatch: {}
 

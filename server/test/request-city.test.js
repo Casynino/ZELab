@@ -207,11 +207,12 @@ test('approve: the stock is issued as one line per product, the cities stay on t
   assert.equal(issued.length, 1);
 });
 
-test('STOCK REQUEST text split between cities says each line\'s city', () => {
+// The city heads its group of lines (audit ui-r07, 15 Nov 2026: " · Dodoma" after each line ran past one phone line).
+test('STOCK REQUEST text split between cities groups the lines under each city', () => {
   const t = require('../src/services/whatsappText');
   const at = new Date('2026-11-10T11:32:00Z');
   const text = t.owner.stockRequest({ by: 'Juma', items: [{ name: 'Pepa', qty: 2, city: 'Arusha' }, { name: 'Pepa', qty: 3, city: 'Kilimanjaro' }], total: 180000, when: at });
-  assert.match(text, /\(1\) Pepa: 2 Boxes · Arusha/);
-  assert.match(text, /\(2\) Pepa: 3 Boxes · Kilimanjaro/);
+  assert.match(text, /\n\nArusha\n\(1\) Pepa: 2 Boxes\n\nKilimanjaro\n\(2\) Pepa: 3 Boxes\n/);
+  assert.ok(!/·/.test(text));
   assert.ok(!/City:/.test(text));
 });

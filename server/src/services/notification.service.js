@@ -23,16 +23,27 @@ async function list(user, filters, pagination) {
   if (filters.isRead !== undefined) where.isRead = filters.isRead;
   if (filters.severity) where.severity = filters.severity;
 
-  const [items, total, unread] = await Promise.all([
+  // The owner also sees the notices written TO a rep ("Your return … has been approved"), so each of those
+  // says whom it was sent to (audit ui-a07, 15 Nov 2026: 143 of the 332 in his bell read as if addressed
+  // to him, with no rep named). Only the name and role go out, and only to an admin.
+  const admin = user && user.role === 'ADMIN';
+  const [rows, total, unread] = await Promise.all([
     prisma.notification.findMany({
       where,
       skip: pagination.skip,
       take: pagination.take,
       orderBy: { createdAt: 'desc' },
+      ...(admin ? { include: { user: { select: { id: true, name: true, role: { select: { name: true } } } } } } : {}),
     }),
     prisma.notification.count({ where }),
     prisma.notification.count({ where: { ...visibilityWhere(user), isRead: false } }),
   ]);
+  const items = admin
+    ? rows.map(({ user: to, ...n }) => ({
+      ...n,
+      recipient: to && to.id !== user.id ? { name: to.name, role: to.role?.name || null } : null,
+    }))
+    : rows;
   return { items, total, unread };
 }
 
