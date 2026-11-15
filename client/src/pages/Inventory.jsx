@@ -18,7 +18,7 @@ import ProductPicker, {
 import { pickerRows, pickedItems, pickedBoxes, shortPlace, buttonPlace, boxWord, ADJUST_REASONS, DAMAGE_REASONS } from '@/lib/stockPick';
 import {
   PageHeader, Card, PageSpinner, EmptyState, Badge, Button, Modal, Field, Select, Textarea,
-  SearchInput, Pagination, LoadError, Table, THead, TBody, TR, TH, TD,
+  SearchInput, Pagination, LoadError, Table, THead, TBody, TR, TH, TD, RowsOrTable, RowList, RowItem, PageTabs,
 } from '@/components/ui';
 
 // Receive stock, Adjust and Record damage — the quick way (Nino, 11 Nov 2026: "make it for me to just pick
@@ -552,25 +552,54 @@ function Movements() {
       </div>
       {isLoading ? <PageSpinner /> : isError && !data ? <LoadError what="the movements" onRetry={refetch} /> : !data?.data?.length ? <EmptyState title="No movements" /> : (
         <>
-          <Table stack="wide">
-            <THead><TR><TH>When</TH><TH>Type</TH><TH>Product</TH><TH>Qty</TH><TH>Base Δ</TH><TH>Location</TH><TH>By</TH></TR></THead>
-            <TBody>
+          {/* Phones and tablets: one short row per movement, as on Settle — the product and the change in
+              boxes, then when, where and who, with its type. */}
+          <RowsOrTable>
+            <RowList>
               {data.data.map((m) => {
                 const meta = MOVEMENT_META[m.type] || { label: m.type, cls: 'bg-elevated' };
+                const place = m.locationType === 'WAREHOUSE' ? m.warehouse?.name : m.salesRep?.user?.name;
                 return (
-                  <TR key={m.id}>
-                    <TD className="text-muted">{formatDateTime(m.occurredAt)}</TD>
-                    <TD><Badge className={meta.cls}>{meta.label}</Badge></TD>
-                    <TD className="stack-full max-w-[200px] truncate">{m.product?.name}</TD>
-                    <TD>{formatNumber(m.quantity)} {m.packagingUnit?.name ? unitWord(m.quantity, m.packagingUnit.name) : ''}</TD>
-                    <TD className={m.baseQuantity < 0 ? 'text-rose-600' : 'text-emerald-600'}>{m.baseQuantity > 0 ? '+' : ''}{formatNumber(m.baseQuantity)}</TD>
-                    <TD>{m.locationType === 'WAREHOUSE' ? m.warehouse?.name : m.salesRep?.user?.name}</TD>
-                    <TD>{m.user?.name || '—'}</TD>
-                  </TR>
+                  <RowItem
+                    key={m.id}
+                    title={m.product?.name || '—'}
+                    figure={`${m.baseQuantity > 0 ? '+' : ''}${formatNumber(m.baseQuantity)}`}
+                    figureClass={m.baseQuantity < 0 ? 'text-rose-400' : 'text-emerald-400'}
+                    sub={[formatDateTime(m.occurredAt), place].filter(Boolean).join(' · ')}
+                    badge={<Badge className={meta.cls}>{meta.label}</Badge>}
+                    extra={(
+                      <span className="mt-1 block truncate text-[11px] text-faint">
+                        {formatNumber(m.quantity)} {m.packagingUnit?.name ? unitWord(m.quantity, m.packagingUnit.name) : ''}
+                        {m.user?.name ? ` · by ${m.user.name}` : ''}
+                      </span>
+                    )}
+                  />
                 );
               })}
-            </TBody>
-          </Table>
+            </RowList>
+            {/* In a wide box (an iPad held sideways, a laptop): where and who sit under the product, so the table fits an iPad held sideways. */}
+            <Table className="rot-table">
+              <THead><TR><TH>When</TH><TH>Product</TH><TH>Type</TH><TH>Qty</TH><TH className="text-right">Base Δ</TH></TR></THead>
+              <TBody>
+                {data.data.map((m) => {
+                  const meta = MOVEMENT_META[m.type] || { label: m.type, cls: 'bg-elevated' };
+                  const place = m.locationType === 'WAREHOUSE' ? m.warehouse?.name : m.salesRep?.user?.name;
+                  return (
+                    <TR key={m.id}>
+                      <TD className="text-muted">{formatDateTime(m.occurredAt)}</TD>
+                      <TD className="max-w-[260px]">
+                        <div className="truncate text-foreground">{m.product?.name}</div>
+                        <div className="mt-0.5 truncate text-[11px] text-faint">{place || '—'}{m.user?.name ? ` · by ${m.user.name}` : ''}</div>
+                      </TD>
+                      <TD><Badge className={meta.cls}>{meta.label}</Badge></TD>
+                      <TD>{formatNumber(m.quantity)} {m.packagingUnit?.name ? unitWord(m.quantity, m.packagingUnit.name) : ''}</TD>
+                      <TD className={`text-right font-semibold tabular-nums ${m.baseQuantity < 0 ? 'text-rose-600' : 'text-emerald-600'}`}>{m.baseQuantity > 0 ? '+' : ''}{formatNumber(m.baseQuantity)}</TD>
+                    </TR>
+                  );
+                })}
+              </TBody>
+            </Table>
+          </RowsOrTable>
           <Pagination page={page} totalPages={data.meta?.totalPages} total={data.meta?.total} onChange={setPage} />
         </>
       )}
@@ -714,24 +743,18 @@ export default function Inventory() {
   // Only ahead of the click: one that fails on a weak line is dropped, and the tab asks again when opened.
   useEffect(() => { warmPart('Purchases'); warmPart('Transfers'); warmPart('Reorder'); }, []);
 
-  const tabs = (
-    <div className="mb-5 flex flex-wrap gap-2">
-      {INVENTORY_TABS.map(([k, label]) => (
-        <button key={k} type="button" onClick={() => setParams(k === 'balances' ? {} : { tab: k }, { replace: true })}
-          aria-current={tab === k ? 'page' : undefined}
-          className={`cursor-pointer rounded-full px-4 py-2 text-sm font-semibold ring-1 transition duration-200 ${tab === k ? 'bg-brand-500 text-white ring-brand-500' : 'bg-transparent text-muted ring-white/10 hover:bg-white/[0.05] hover:text-foreground'}`}>{label}</button>
-      ))}
-    </div>
-  );
+  // One swipeable line of pills under the page's title and buttons, as on Finance (audit ui-a13: on a phone
+  // they were two wrapped rows above the heading).
+  const tabs = <PageTabs tabs={INVENTORY_TABS} value={tab} onChange={(k) => setParams(k === 'balances' ? {} : { tab: k }, { replace: true })} />;
 
-  // The inner pages keep their own title and buttons (New PO, New transfer, the reorder list).
+  // The inner pages keep their own title and buttons (New PO, New transfer, the reorder list), and draw
+  // these tabs under them.
   const Inner = INNER[tab];
   if (Inner) {
     return (
       <div>
-        {tabs}
         <PageLoadBoundary what="this tab" resetKey={tab}>
-          <Suspense fallback={<PageSpinner />}><Inner /></Suspense>
+          <Suspense fallback={<><PageHeader title="Inventory" tabs={tabs} /><PageSpinner /></>}><Inner tabs={tabs} /></Suspense>
         </PageLoadBoundary>
       </div>
     );
@@ -739,8 +762,7 @@ export default function Inventory() {
 
   return (
     <div>
-      {tabs}
-      <PageHeader title="Inventory" subtitle="Live balances and the full movement ledger.">
+      <PageHeader title="Inventory" subtitle="Live balances and the full movement ledger." tabs={tabs}>
         <Button variant="secondary" onClick={() => setModal('damage')}>Record damage</Button>
         <Button variant="secondary" onClick={() => setModal('adjust')}><SlidersHorizontal className="h-4 w-4" /> Adjust</Button>
         <Button onClick={() => setModal('receive')}><PackagePlus className="h-4 w-4" /> Receive stock</Button>

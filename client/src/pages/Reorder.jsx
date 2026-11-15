@@ -6,7 +6,7 @@ import api, { unwrap } from '@/lib/api';
 import { formatCurrency, formatNumber, pluralizeUnit } from '@/lib/format';
 import {
   PageHeader, Card, CardHeader, PageSpinner, EmptyState, Badge, LoadError,
-  Table, THead, TBody, TR, TH, TD,
+  Table, THead, TBody, TR, TH, TD, RowsOrTable, RowList, RowItem,
 } from '@/components/ui';
 
 // Urgency is days of cover now, so the colours run with the clock: rose when
@@ -47,7 +47,8 @@ function CoverCell({ item }) {
   );
 }
 
-export default function Reorder() {
+// `tabs`: Inventory's tabs, drawn under this page's title (Reorder is a tab of Inventory).
+export default function Reorder({ tabs } = {}) {
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['reorder'],
     queryFn: async () => unwrap(await api.get('/reorder')).data,
@@ -62,9 +63,11 @@ export default function Reorder() {
   const all = data?.items || [];
   const shown = band ? recs.filter((r) => r.urgency === band) : recs;
 
-  if (isLoading) return <PageSpinner />;
+  // The title and the tabs stay while the list loads or fails, so another tab is one tap away.
+  const head = tabs ? <PageHeader title="Reorder Engine" tabs={tabs} /> : null;
+  if (isLoading) return <div>{head}<PageSpinner /></div>;
   // Not "nothing to reorder": the list never came back.
-  if (isError && !data) return <LoadError what="the reorder list" onRetry={refetch} />;
+  if (isError && !data) return <div>{head}<LoadError what="the reorder list" onRetry={refetch} /></div>;
 
   const pace = `the last ${s.lookbackDays} days`;
   const urgent = (s.criticalCount || 0) + (s.highCount || 0);
@@ -112,6 +115,7 @@ export default function Reorder() {
       <PageHeader
         title="Reorder Engine"
         subtitle={`Selling pace measured over ${pace}; target ${s.coverDays} days of cover held.`}
+        tabs={tabs}
       />
 
       <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
@@ -160,7 +164,8 @@ export default function Reorder() {
           title="Worth reordering"
           subtitle={`Ranked by how soon the shelf empties at the pace of ${pace}`}
         />
-        <div className="flex flex-wrap items-center gap-2 border-b border-border p-4">
+        {/* One swipeable line of filters on a phone, as on Settle. */}
+        <div className="flex items-center gap-2 overflow-x-auto border-b border-border p-3 [scrollbar-width:none] sm:flex-wrap sm:p-4 [&>*]:shrink-0">
           {chips.map((c) => (
             <button
               key={c.key || 'all'}
@@ -183,45 +188,68 @@ export default function Reorder() {
               : `Every product holds more than ${s.coverDays} days of cover at the pace of ${pace}.`}
           />
         ) : (
-          <Table>
-            <THead>
-              <TR>
-                <TH>Product</TH><TH>Cover left</TH><TH>Why it is here</TH><TH>On hand</TH><TH>Order</TH><TH>Urgency</TH>
-              </TR>
-            </THead>
-            <TBody>
+          <>
+          {/* Phones and tablets: one row per product, as on Settle — the product and its days of cover, what
+              is on hand and what to order with the urgency, and why it is here under that. */}
+          <RowsOrTable>
+            <RowList>
               {shown.map((r) => {
                 const meta = URGENCY[r.urgency] || URGENCY.OK;
+                const unit = pluralizeUnit(r.baseUnitName);
                 return (
-                  <TR key={r.productId}>
-                    <TD className="min-w-[11rem] whitespace-normal">
-                      <div className="font-medium text-foreground">{r.name}</div>
-                      <div className="text-xs text-faint">{r.brand}</div>
-                    </TD>
-                    <TD><CoverCell item={r} /></TD>
-                    <TD className="min-w-[12rem] whitespace-normal"><span className="text-xs text-muted">{r.reason}</span></TD>
-                    <TD>
-                      <span className="tabular-nums">{formatNumber(r.onHand)}</span>
-                      <span className="text-xs text-faint"> {pluralizeUnit(r.baseUnitName)}</span>
-                      <div className="text-[11px] text-faint">minimum {formatNumber(r.minStockLevel)}</div>
-                    </TD>
-                    <TD>
-                      {r.recommendedQty > 0 ? (
-                        <>
-                          <span className="font-semibold tabular-nums text-foreground">{formatNumber(r.recommendedQty)}</span>
-                          <span className="text-xs text-faint"> {pluralizeUnit(r.baseUnitName)}</span>
-                          <div className="text-[11px] text-faint">{formatCurrency(r.recommendedValue)}</div>
-                        </>
-                      ) : (
-                        <span className="text-xs text-faint">nothing yet</span>
-                      )}
-                    </TD>
-                    <TD><Badge className={meta.badge}>{meta.label}</Badge></TD>
-                  </TR>
+                  <RowItem
+                    key={r.productId}
+                    title={r.name}
+                    figure={r.daysRemaining === null ? '—' : <>{formatNumber(r.daysRemaining)} <span className="text-[12px] font-medium text-muted">day{r.daysRemaining === 1 ? '' : 's'}</span></>}
+                    figureClass={r.daysRemaining === null ? 'text-faint' : meta.num}
+                    sub={`${formatNumber(r.onHand)} on hand · ${r.recommendedQty > 0 ? `order ${formatNumber(r.recommendedQty)} ${unit} · ${formatCurrency(r.recommendedValue)}` : 'nothing to order yet'}`}
+                    badge={<Badge className={meta.badge}>{meta.label}</Badge>}
+                    extra={<span className="mt-1 block text-[11px] leading-snug text-faint">{r.brand ? `${r.brand} · ` : ''}{r.reason}</span>}
+                  />
                 );
               })}
-            </TBody>
-          </Table>
+            </RowList>
+            <Table className="rot-table">
+              <THead>
+                <TR>
+                  <TH>Product</TH><TH>Cover left</TH><TH>Why it is here</TH><TH>On hand</TH><TH>Order</TH><TH>Urgency</TH>
+                </TR>
+              </THead>
+              <TBody>
+                {shown.map((r) => {
+                  const meta = URGENCY[r.urgency] || URGENCY.OK;
+                  return (
+                    <TR key={r.productId}>
+                      <TD className="min-w-[11rem] whitespace-normal">
+                        <div className="font-medium text-foreground">{r.name}</div>
+                        <div className="text-xs text-faint">{r.brand}</div>
+                      </TD>
+                      <TD><CoverCell item={r} /></TD>
+                      <TD className="min-w-[12rem] whitespace-normal"><span className="text-xs text-muted">{r.reason}</span></TD>
+                      <TD>
+                        <span className="tabular-nums">{formatNumber(r.onHand)}</span>
+                        <span className="text-xs text-faint"> {pluralizeUnit(r.baseUnitName)}</span>
+                        <div className="text-[11px] text-faint">minimum {formatNumber(r.minStockLevel)}</div>
+                      </TD>
+                      <TD>
+                        {r.recommendedQty > 0 ? (
+                          <>
+                            <span className="font-semibold tabular-nums text-foreground">{formatNumber(r.recommendedQty)}</span>
+                            <span className="text-xs text-faint"> {pluralizeUnit(r.baseUnitName)}</span>
+                            <div className="text-[11px] text-faint">{formatCurrency(r.recommendedValue)}</div>
+                          </>
+                        ) : (
+                          <span className="text-xs text-faint">nothing yet</span>
+                        )}
+                      </TD>
+                      <TD><Badge className={meta.badge}>{meta.label}</Badge></TD>
+                    </TR>
+                  );
+                })}
+              </TBody>
+            </Table>
+          </RowsOrTable>
+          </>
         )}
       </Card>
 
@@ -253,35 +281,54 @@ export default function Reorder() {
               {all.length === 0 ? (
                 <EmptyState icon={PackageSearch} title="No active products" />
               ) : (
-                <Table>
-                  <THead>
-                    <TR>
-                      <TH>Product</TH><TH>On hand</TH><TH>Sold per day</TH><TH>Cover left</TH><TH>Minimum</TH><TH>Status</TH>
-                    </TR>
-                  </THead>
-                  <TBody>
+                <>
+                <RowsOrTable>
+                  <RowList>
                     {all.map((r) => {
                       const meta = URGENCY[r.urgency] || URGENCY.OK;
                       return (
-                        <TR key={r.productId}>
-                          <TD>
-                            <div className="text-foreground">{r.name}</div>
-                            <div className="text-xs text-faint">{r.brand}</div>
-                          </TD>
-                          <TD className="tabular-nums">{formatNumber(r.onHand)}</TD>
-                          <TD className="tabular-nums">{r.avgDailySales > 0 ? r.avgDailySales : <span className="text-faint">—</span>}</TD>
-                          <TD className="tabular-nums">
-                            {r.daysRemaining === null
-                              ? <span className="text-faint">—</span>
-                              : `${formatNumber(r.daysRemaining)} day${r.daysRemaining === 1 ? '' : 's'}`}
-                          </TD>
-                          <TD className="tabular-nums">{formatNumber(r.minStockLevel)}</TD>
-                          <TD><Badge className={meta.badge}>{meta.label}</Badge></TD>
-                        </TR>
+                        <RowItem
+                          key={r.productId}
+                          title={r.name}
+                          figure={r.daysRemaining === null ? '—' : `${formatNumber(r.daysRemaining)} day${r.daysRemaining === 1 ? '' : 's'}`}
+                          figureClass={r.daysRemaining === null ? 'text-faint' : 'text-foreground'}
+                          sub={`${formatNumber(r.onHand)} on hand · ${r.avgDailySales > 0 ? `${r.avgDailySales}/day` : 'not selling'} · minimum ${formatNumber(r.minStockLevel)}`}
+                          badge={<Badge className={meta.badge}>{meta.label}</Badge>}
+                        />
                       );
                     })}
-                  </TBody>
-                </Table>
+                  </RowList>
+                  <Table className="rot-table">
+                    <THead>
+                      <TR>
+                        <TH>Product</TH><TH>On hand</TH><TH>Sold per day</TH><TH>Cover left</TH><TH>Minimum</TH><TH>Status</TH>
+                      </TR>
+                    </THead>
+                    <TBody>
+                      {all.map((r) => {
+                        const meta = URGENCY[r.urgency] || URGENCY.OK;
+                        return (
+                          <TR key={r.productId}>
+                            <TD>
+                              <div className="text-foreground">{r.name}</div>
+                              <div className="text-xs text-faint">{r.brand}</div>
+                            </TD>
+                            <TD className="tabular-nums">{formatNumber(r.onHand)}</TD>
+                            <TD className="tabular-nums">{r.avgDailySales > 0 ? r.avgDailySales : <span className="text-faint">—</span>}</TD>
+                            <TD className="tabular-nums">
+                              {r.daysRemaining === null
+                                ? <span className="text-faint">—</span>
+                                : `${formatNumber(r.daysRemaining)} day${r.daysRemaining === 1 ? '' : 's'}`}
+                            </TD>
+                            <TD className="tabular-nums">{formatNumber(r.minStockLevel)}</TD>
+                            <TD><Badge className={meta.badge}>{meta.label}</Badge></TD>
+                          </TR>
+                        );
+                      })}
+                    </TBody>
+                  </Table>
+                </RowsOrTable>
+                </>
               )}
             </motion.div>
           )}

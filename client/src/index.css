@@ -743,3 +743,28 @@ body {
   @media (min-width: 1024px) { .table-stack-wide > table > tbody > tr > td.hidden.lg\:table-cell:not(:empty) { display: block; } }
   @media (min-width: 1280px) { .table-stack-wide > table > tbody > tr > td.hidden.xl\:table-cell:not(:empty) { display: block; } }
 }
+
+/* ───────── Rows, then a table (ui.jsx RowsOrTable + RowList) ─────────
+   The Settle page's way for a long list (Nino, 15 Nov 2026): one short row per record in a narrow box,
+   two rows side by side from 40rem (an iPad held upright), the page's table from 54rem (an iPad held
+   sideways beside the rail, a laptop). Every table given to it fits 54rem. It follows the box, not the
+   screen, so the open sidebar or the profile's right-hand column never leaves a table cut off at the edge.
+   Without container queries the rows stay, one a line — every record still readable and tappable. */
+.rows-or-table { container-type: inline-size; }
+.rot-rows > li + li { border-top-width: 1px; }
+.rows-or-table > .rot-table { display: none; }
+@container (min-width: 40rem) {
+  .rot-rows { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .rot-rows > li + li { border-top-width: 0; }
+  .rot-rows > li { border-bottom-width: 1px; }
+  .rot-rows > li:nth-child(odd) { border-right-width: 1px; }
+  /* A last row alone on its line takes both columns: no hole at the end of a page (ui-a11). */
+  .rot-rows > li:last-child:nth-child(odd) { grid-column: 1 / -1; border-right-width: 0; }
+  /* No line under the last row, as on a phone (the card's edge or the page count is below it). */
+  .rot-rows > li:last-child,
+  .rot-rows > li:nth-last-child(2):nth-child(odd) { border-bottom-width: 0; }
+}
+@container (min-width: 54rem) {
+  .rows-or-table > .rot-swap { display: none; }
+  .rows-or-table > .rot-table { display: block; }
+}

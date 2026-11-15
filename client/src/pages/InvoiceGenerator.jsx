@@ -114,7 +114,8 @@ function InvoicePreview({ inv }) {
   );
 }
 
-export default function InvoiceGenerator() {
+// `tabs`: the Sales page's tabs, when the invoice maker is opened as its tab (staff); a rep's own page has none.
+export default function InvoiceGenerator({ tabs } = {}) {
   const { data: products = [] } = useProducts(); // canonical order + sellingPrice
   const { data: availableIds = [] } = useQuery({
     queryKey: ['stock-requests', 'available-products'],
@@ -199,7 +200,7 @@ export default function InvoiceGenerator() {
   if (invoice) {
     return (
       <div>
-        <PageHeader title="Invoice ready" subtitle={`${invoice.number} · ${tzs(invoice.total)}`}>
+        <PageHeader title="Invoice ready" subtitle={`${invoice.number} · ${tzs(invoice.total)}`} tabs={tabs}>
           <Button variant="secondary" onClick={startNew}><ArrowLeft className="h-4 w-4" /> New invoice</Button>
           <Button variant="secondary" onClick={download}><Download className="h-4 w-4" /> Download PDF</Button>
           <Button onClick={share}><Share2 className="h-4 w-4" /> Share</Button>
@@ -216,7 +217,7 @@ export default function InvoiceGenerator() {
   // ── Builder view ──
   return (
     <div>
-      <PageHeader title="Generate Invoice" subtitle="Create a customer invoice in seconds — download or share. Does not affect stock." />
+      <PageHeader title="Generate Invoice" subtitle="Create a customer invoice in seconds — download or share. Does not affect stock." tabs={tabs} />
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
         {/* Customer */}

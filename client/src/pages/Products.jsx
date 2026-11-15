@@ -14,7 +14,7 @@ import { formatCurrency, formatNumber, pluralizeUnit, unitWord } from '@/lib/for
 import { brandInName, closestProduct, setupFrom, usualCategory, setupParts, sameNameAs, otherKind, unitPlural } from '@/lib/productDefaults';
 import {
   PageHeader, Card, PageSpinner, EmptyState, Badge, Button, Modal, Field, Input, NumberInput, Select, Textarea,
-  SearchInput, Pagination, LoadError, Table, THead, TBody, TR, TH, TD,
+  SearchInput, Pagination, LoadError, Table, THead, TBody, TR, TH, TD, RowsOrTable, RowList, RowItem, PageTabs,
 } from '@/components/ui';
 
 function PackagingEditor({ rows, setRows, units, unitWord, unitsWord }) {
@@ -473,28 +473,20 @@ export default function Products() {
   const isOwner = role === ROLES.ADMIN;
   const tab = isOwner && params.get('tab') === 'label' ? 'label' : 'catalogue';
   if (!isOwner) return <ProductsCatalogue />;
+  // The same pill tabs as Finance, under the title and its button (audit ui-a13): each tab's header draws them.
+  const tabs = <PageTabs tabs={PRODUCT_TABS} value={tab} onChange={(k) => setParams(k === 'catalogue' ? {} : { tab: k }, { replace: true })} />;
   return (
     <div>
-      {/* The same pill tabs as Finance. */}
-      <div className="mb-5 flex flex-wrap gap-2">
-        {PRODUCT_TABS.map(([k, label]) => (
-          <button key={k} type="button" onClick={() => setParams(k === 'catalogue' ? {} : { tab: k }, { replace: true })}
-            aria-current={tab === k ? 'page' : undefined}
-            className={`cursor-pointer rounded-full px-4 py-2 text-sm font-semibold ring-1 transition duration-200 ${tab === k
-              ? 'bg-brand-500 text-white ring-brand-500'
-              : 'bg-transparent text-muted ring-white/10 hover:bg-white/[0.05] hover:text-foreground'}`}>{label}</button>
-        ))}
-      </div>
       {tab === 'label' ? (
         <PageLoadBoundary what="this tab" resetKey={tab}>
-          <Suspense fallback={<PageSpinner />}><ProductLabel /></Suspense>
+          <Suspense fallback={<><PageHeader title="Product label" tabs={tabs} /><PageSpinner /></>}><ProductLabel tabs={tabs} /></Suspense>
         </PageLoadBoundary>
-      ) : <ProductsCatalogue />}
+      ) : <ProductsCatalogue tabs={tabs} />}
     </div>
   );
 }
 
-function ProductsCatalogue() {
+function ProductsCatalogue({ tabs }) {
   const qc = useQueryClient();
   // Creating, editing and removing products is the owner's (the server refuses staff); staff see the list.
   const isOwner = useAuth().role === ROLES.ADMIN;
@@ -536,7 +528,7 @@ function ProductsCatalogue() {
 
   return (
     <div>
-      <PageHeader title="Products" subtitle="Catalog, pricing and multi-level packaging.">
+      <PageHeader title="Products" subtitle="Catalog, pricing and multi-level packaging." tabs={tabs}>
         {isOwner && <Button onClick={() => setModal({ open: true, editing: null })} disabled={!units.length}><Plus className="h-4 w-4" /> New product</Button>}
       </PageHeader>
 
@@ -608,47 +600,80 @@ function ProductsCatalogue() {
           )
         ) : (
           <>
-            <Table stack="wide">
-              <THead><TR><TH>Product</TH><TH>Brand</TH><TH>Packaging</TH><TH>Pack price</TH><TH>On hand</TH><TH>Status</TH><TH /></TR></THead>
-              <TBody>
-                {data.data.map((p) => (
-                  <TR key={p.id}>
-                    <TD className="stack-full min-w-[12rem] whitespace-normal">
-                      <div className="font-medium text-foreground">{p.name}</div>
-                      <div className="text-xs text-faint">{p.sku}</div>
-                    </TD>
-                    <TD>{p.brand?.name}</TD>
-                    <TD>
-                      <div className="flex flex-wrap gap-1">
-                        {p.packagings.sort((a, b) => a.baseQuantity - b.baseQuantity).map((pk) => (
-                          <Badge key={pk.id} className="bg-white/[0.06] text-muted ring-1 ring-inset ring-white/[0.08]">{pk.packagingUnit.name}×{pk.baseQuantity}</Badge>
-                        ))}
-                      </div>
-                    </TD>
-                    <TD>{formatCurrency(p.sellingPrice)}</TD>
-                    <TD>
-                      <span className={`font-semibold tabular-nums ${p.onHandBase <= 0 ? 'text-rose-400' : p.lowStock ? 'text-amber-400' : 'text-foreground'}`}>
-                        {formatNumber(p.onHandBase)}
-                      </span> <span className="text-muted">{pluralizeUnit(p.baseUnitName)}</span>
-                      {p.onHandBase <= 0
-                        ? <Badge className="ml-2 bg-rose-500/15 text-rose-300">Out</Badge>
-                        : p.lowStock && <Badge className="ml-2 bg-amber-500/15 text-amber-300">Low</Badge>}
-                      {/* Low is the warehouse against its minimum; the count above includes the reps' boxes. */}
-                      {p.onHandBase > 0 && p.lowStock && p.warehouseBase !== p.onHandBase && (
-                        <div className="text-[11px] text-faint">{formatNumber(p.warehouseBase)} in the warehouse</div>
+            {/* Phones and tablets: one short row per product, as on Settle — the name and what is on hand,
+                then brand, price and code with its state. The owner opens a row to edit it. */}
+            <RowsOrTable>
+              <RowList>
+                {data.data.map((p) => {
+                  const state = !p.isActive ? ['Inactive', 'bg-white/[0.06] text-muted']
+                    : p.onHandBase <= 0 ? ['Out', 'bg-rose-500/15 text-rose-300']
+                      : p.lowStock ? ['Low', 'bg-amber-500/15 text-amber-300'] : ['Active', 'bg-emerald-500/15 text-emerald-300'];
+                  const packs = [...p.packagings].sort((a, b) => a.baseQuantity - b.baseQuantity).map((pk) => `${pk.packagingUnit.name}×${pk.baseQuantity}`).join(' · ');
+                  return (
+                    <RowItem
+                      key={p.id}
+                      onClick={isOwner ? () => setModal({ open: true, editing: p }) : undefined}
+                      title={p.name}
+                      figure={<>{formatNumber(p.onHandBase)} <span className="text-[12px] font-medium text-muted">{pluralizeUnit(p.baseUnitName)}</span></>}
+                      figureClass={p.onHandBase <= 0 ? 'text-rose-400' : p.lowStock ? 'text-amber-400' : 'text-foreground'}
+                      sub={[p.brand?.name, formatCurrency(p.sellingPrice), p.sku].filter(Boolean).join(' · ')}
+                      badge={<Badge className={state[1]}>{state[0]}</Badge>}
+                      extra={(packs || (p.onHandBase > 0 && p.lowStock && p.warehouseBase !== p.onHandBase)) && (
+                        <span className="mt-1 block truncate text-[11px] text-faint">
+                          {packs}
+                          {p.onHandBase > 0 && p.lowStock && p.warehouseBase !== p.onHandBase && `${packs ? ' · ' : ''}${formatNumber(p.warehouseBase)} in the warehouse`}
+                        </span>
                       )}
-                    </TD>
-                    <TD><Badge className={p.isActive ? 'bg-emerald-500/15 text-emerald-300' : 'bg-white/[0.06] text-muted'}>{p.isActive ? 'Active' : 'Inactive'}</Badge></TD>
-                    <TD>
-                      <div className="flex justify-end gap-1">{isOwner && <>
-                        <button title="Edit" className="cursor-pointer px-2 py-1 text-faint transition hover:text-brand-600" onClick={() => setModal({ open: true, editing: p })}><Pencil className="h-4 w-4" /></button>
-                        <button title="Remove" className="cursor-pointer px-2 py-1 text-faint transition hover:text-rose-400" onClick={() => askRemove(p)}><Trash2 className="h-4 w-4" /></button>
-                      </>}</div>
-                    </TD>
-                  </TR>
-                ))}
-              </TBody>
-            </Table>
+                      action={isOwner && (
+                        <button type="button" title="Remove" aria-label={`Remove ${p.name}`} onClick={() => askRemove(p)}
+                          className="flex h-11 w-11 cursor-pointer items-center justify-center text-faint transition hover:text-rose-400"><Trash2 className="h-4 w-4" /></button>
+                      )}
+                    />
+                  );
+                })}
+              </RowList>
+              <Table className="rot-table">
+                <THead><TR><TH>Product</TH><TH>Brand</TH><TH>Packaging</TH><TH>Pack price</TH><TH>On hand</TH><TH>Status</TH><TH /></TR></THead>
+                <TBody>
+                  {data.data.map((p) => (
+                    <TR key={p.id}>
+                      <TD className="min-w-[12rem] whitespace-normal">
+                        <div className="font-medium text-foreground">{p.name}</div>
+                        <div className="text-xs text-faint">{p.sku}</div>
+                      </TD>
+                      <TD>{p.brand?.name}</TD>
+                      <TD>
+                        <div className="flex flex-wrap gap-1">
+                          {p.packagings.sort((a, b) => a.baseQuantity - b.baseQuantity).map((pk) => (
+                            <Badge key={pk.id} className="bg-white/[0.06] text-muted ring-1 ring-inset ring-white/[0.08]">{pk.packagingUnit.name}×{pk.baseQuantity}</Badge>
+                          ))}
+                        </div>
+                      </TD>
+                      <TD>{formatCurrency(p.sellingPrice)}</TD>
+                      <TD>
+                        <span className={`font-semibold tabular-nums ${p.onHandBase <= 0 ? 'text-rose-400' : p.lowStock ? 'text-amber-400' : 'text-foreground'}`}>
+                          {formatNumber(p.onHandBase)}
+                        </span> <span className="text-muted">{pluralizeUnit(p.baseUnitName)}</span>
+                        {p.onHandBase <= 0
+                          ? <Badge className="ml-2 bg-rose-500/15 text-rose-300">Out</Badge>
+                          : p.lowStock && <Badge className="ml-2 bg-amber-500/15 text-amber-300">Low</Badge>}
+                        {/* Low is the warehouse against its minimum; the count above includes the reps' boxes. */}
+                        {p.onHandBase > 0 && p.lowStock && p.warehouseBase !== p.onHandBase && (
+                          <div className="text-[11px] text-faint">{formatNumber(p.warehouseBase)} in the warehouse</div>
+                        )}
+                      </TD>
+                      <TD><Badge className={p.isActive ? 'bg-emerald-500/15 text-emerald-300' : 'bg-white/[0.06] text-muted'}>{p.isActive ? 'Active' : 'Inactive'}</Badge></TD>
+                      <TD>
+                        <div className="flex justify-end gap-1">{isOwner && <>
+                          <button title="Edit" className="cursor-pointer px-2 py-1 text-faint transition hover:text-brand-600" onClick={() => setModal({ open: true, editing: p })}><Pencil className="h-4 w-4" /></button>
+                          <button title="Remove" className="cursor-pointer px-2 py-1 text-faint transition hover:text-rose-400" onClick={() => askRemove(p)}><Trash2 className="h-4 w-4" /></button>
+                        </>}</div>
+                      </TD>
+                    </TR>
+                  ))}
+                </TBody>
+              </Table>
+            </RowsOrTable>
             <Pagination page={page} totalPages={data.meta?.totalPages} total={data.meta?.total} onChange={setPage} />
           </>
         )}

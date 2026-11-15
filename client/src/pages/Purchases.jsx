@@ -17,7 +17,7 @@ import ProductPicker, { useHomeWarehouse, PlaceLine, Chips, Caution, MoreToggle,
 import { pickerRows, cartonRows, rowsWithSaved, pickedBoxes, primaryWarehouse, lineCost, boxWord, shortPlace, buttonPlace } from '@/lib/stockPick';
 import {
   PageHeader, Card, PageSpinner, EmptyState, Badge, Button, Modal, Field, Input, NumberInput, Textarea, Select,
-  Pagination, LoadError, Table, THead, TBody, TR, TH, TD,
+  Pagination, LoadError, Table, THead, TBody, TR, TH, TD, RowsOrTable, RowList, RowItem, SectionTabs,
 } from '@/components/ui';
 
 // New purchase order — the quick way (Nino, 11 Nov 2026: "the PO should be easy, not complicated and hard to
@@ -996,49 +996,92 @@ function PurchaseOrders({ isAdmin }) {
       </div>
       {isLoading ? <PageSpinner /> : isError && !data ? <LoadError what="the purchase orders" onRetry={refetch} /> : !data?.data?.length ? <EmptyState title={status || productId || from || to ? 'No orders match' : 'No purchase orders'} icon={Ship} /> : (
         <>
-          <Table stack="wide">
-            <THead><TR><TH>PO</TH><TH>Supplier</TH><TH>Products</TH><TH>Boxes</TH>{isAdmin && <TH>Total cost</TH>}<TH>Status</TH><TH /></TR></THead>
-            <TBody>
+          {/* Phones and tablets: one short row per order, as on Settle — the supplier and the boxes, then the
+              number, the day and the status. The whole row opens the order (edit, delete and every step are
+              there too); the next step it is waiting for sits under it for the owner. */}
+          <RowsOrTable>
+            <RowList>
               {data.data.map((po) => {
                 const boxes = orderBoxes(po);
                 const left = orderLeft(po);
                 const started = po.status === 'PARTLY_RECEIVED' || po.status === 'RECEIVED';
+                const step = isAdmin && NOT_YET_BOUGHT.includes(po.status) ? 'purchase' : isAdmin && ARRIVING.includes(po.status) ? 'receive' : null;
                 return (
-                  <TR key={po.id} className="cursor-pointer" onClick={() => setViewing(po.id)}>
-                    <TD className="font-medium text-foreground">
-                      {po.poNumber}
-                      <span className="block text-[11px] font-normal text-faint">{formatDate(po.purchasedAt || po.createdAt)}</span>
-                    </TD>
-                    <TD>{po.supplier?.name}</TD>
-                    <TD className="text-muted">{po.items.length}</TD>
-                    <TD className="tabular-nums">
-                      <span className="font-semibold text-foreground">{formatNumber(boxes)}</span>
-                      {started && left > 0 && <span className="block text-[11px] text-amber-300">{formatNumber(left)} still to come</span>}
-                    </TD>
-                    {isAdmin && <TD>{formatCurrency(po.totalCost)}</TD>}
-                    <TD><Badge className={PO_STATUS_META[po.status]?.cls}>{PO_STATUS_META[po.status]?.label}</Badge></TD>
-                    <TD>
-                      <div className="flex items-center justify-end gap-2">
-                        <button title="Open this order" onClick={(e) => { e.stopPropagation(); setViewing(po.id); }} className="cursor-pointer text-faint transition hover:text-brand-600">
-                          <Eye className="h-4 w-4" />
-                        </button>
-                        {isAdmin && NOT_YET_BOUGHT.includes(po.status) && (
-                          <>
-                            <button title="Edit this order" onClick={(e) => { e.stopPropagation(); setEditing(po); }} className="cursor-pointer text-faint transition hover:text-brand-600"><Pencil className="h-4 w-4" /></button>
-                            <button title="Delete this draft" onClick={(e) => { e.stopPropagation(); askDelete(po); }} className="cursor-pointer text-faint transition hover:text-rose-400"><Trash2 className="h-4 w-4" /></button>
-                            <Button variant="secondary" className="px-3 py-1 text-xs" onClick={(e) => { e.stopPropagation(); onStep('purchase', po); }}><Wallet className="h-4 w-4" /> Confirm purchase</Button>
-                          </>
-                        )}
-                        {isAdmin && ARRIVING.includes(po.status) && (
-                          <Button variant="secondary" className="px-3 py-1 text-xs" onClick={(e) => { e.stopPropagation(); onStep('receive', po); }}><PackageCheck className="h-4 w-4" /> Receive</Button>
-                        )}
+                  <RowItem
+                    key={po.id}
+                    onClick={() => setViewing(po.id)}
+                    title={po.supplier?.name || po.poNumber}
+                    figure={<>{formatNumber(boxes)} <span className="text-[12px] font-medium text-muted">box{boxes === 1 ? '' : 'es'}</span></>}
+                    sub={`${po.poNumber} · ${formatDate(po.purchasedAt || po.createdAt)}`}
+                    badge={<Badge className={PO_STATUS_META[po.status]?.cls}>{PO_STATUS_META[po.status]?.label}</Badge>}
+                    extra={(
+                      <span className="mt-1 flex items-baseline justify-between gap-3 text-[11px]">
+                        <span className="min-w-0 truncate text-faint">
+                          {po.items.length} product{po.items.length === 1 ? '' : 's'}
+                          {started && left > 0 && <span className="text-amber-300"> · {formatNumber(left)} still to come</span>}
+                        </span>
+                        {isAdmin && <span className="shrink-0 tabular-nums text-muted">{formatCurrency(po.totalCost)}</span>}
+                      </span>
+                    )}
+                  >
+                    {step && (
+                      <div className="px-4 pb-3">
+                        {step === 'purchase'
+                          ? <Button variant="secondary" className="px-3 py-1 text-xs" onClick={() => onStep('purchase', po)}><Wallet className="h-4 w-4" /> Confirm purchase</Button>
+                          : <Button variant="secondary" className="px-3 py-1 text-xs" onClick={() => onStep('receive', po)}><PackageCheck className="h-4 w-4" /> Receive</Button>}
                       </div>
-                    </TD>
-                  </TR>
+                    )}
+                  </RowItem>
                 );
               })}
-            </TBody>
-          </Table>
+            </RowList>
+            {/* In a wide box (an iPad held sideways, a laptop): the supplier with the number under it, and the products count under the boxes, so the
+                table and its buttons fit an iPad held sideways (882 px beside the rail). */}
+            <Table className="rot-table">
+              <THead><TR><TH>Supplier · PO</TH><TH>Boxes</TH>{isAdmin && <TH>Total cost</TH>}<TH>Status</TH><TH><span className="sr-only">Actions</span></TH></TR></THead>
+              <TBody>
+                {data.data.map((po) => {
+                  const boxes = orderBoxes(po);
+                  const left = orderLeft(po);
+                  const started = po.status === 'PARTLY_RECEIVED' || po.status === 'RECEIVED';
+                  return (
+                    <TR key={po.id} className="cursor-pointer" onClick={() => setViewing(po.id)}>
+                      <TD>
+                        <div className="font-medium text-foreground">{po.supplier?.name || '—'}</div>
+                        <div className="mt-0.5 text-[11px] tabular-nums text-faint">{po.poNumber} · {formatDate(po.purchasedAt || po.createdAt)}</div>
+                      </TD>
+                      <TD className="tabular-nums">
+                        <span className="font-semibold text-foreground">{formatNumber(boxes)}</span>
+                        <span className="ml-1 text-[11px] text-faint">{po.items.length} product{po.items.length === 1 ? '' : 's'}</span>
+                        {started && left > 0 && <span className="block text-[11px] text-amber-300">{formatNumber(left)} still to come</span>}
+                      </TD>
+                      {isAdmin && <TD className="tabular-nums">{formatCurrency(po.totalCost)}</TD>}
+                      <TD><Badge className={PO_STATUS_META[po.status]?.cls}>{PO_STATUS_META[po.status]?.label}</Badge></TD>
+                      <TD className="w-px">
+                        <div className="flex items-center justify-end gap-2">
+                          <button title="Open this order" aria-label={`Open ${po.poNumber}`} onClick={(e) => { e.stopPropagation(); setViewing(po.id); }} className="cursor-pointer text-faint transition hover:text-brand-600">
+                            <Eye className="h-4 w-4" />
+                          </button>
+                          {isAdmin && NOT_YET_BOUGHT.includes(po.status) && (
+                            <>
+                              <button title="Edit this order" aria-label={`Edit ${po.poNumber}`} onClick={(e) => { e.stopPropagation(); setEditing(po); }} className="cursor-pointer text-faint transition hover:text-brand-600"><Pencil className="h-4 w-4" /></button>
+                              <button title="Delete this draft" aria-label={`Delete ${po.poNumber}`} onClick={(e) => { e.stopPropagation(); askDelete(po); }} className="cursor-pointer text-faint transition hover:text-rose-400"><Trash2 className="h-4 w-4" /></button>
+                              <Button variant="secondary" className="px-3 py-1 text-xs" title="Confirm purchase" onClick={(e) => { e.stopPropagation(); onStep('purchase', po); }}>
+                                <Wallet className="h-4 w-4" /> <span className="xl:hidden">Confirm</span><span className="hidden xl:inline">Confirm purchase</span>
+                              </Button>
+                            </>
+                          )}
+                          {isAdmin && ARRIVING.includes(po.status) && (
+                            <Button variant="secondary" className="px-3 py-1 text-xs" onClick={(e) => { e.stopPropagation(); onStep('receive', po); }}><PackageCheck className="h-4 w-4" /> Receive</Button>
+                          )}
+                        </div>
+                      </TD>
+                    </TR>
+                  );
+                })}
+              </TBody>
+            </Table>
+          </RowsOrTable>
           <Pagination page={page} totalPages={data.meta?.totalPages} total={data.meta?.total} onChange={setPage} />
         </>
       )}
@@ -1144,19 +1187,18 @@ function Suppliers() {
   );
 }
 
-export default function Purchases() {
+// `tabs`: Inventory's tabs, drawn under this page's title (Purchases is a tab of Inventory).
+export default function Purchases({ tabs } = {}) {
   const [tab, setTab] = useState('orders');
   // Buying, paying and receiving are the admin's; other staff see the orders without prices.
   const isAdmin = useAuth().user?.role === ROLES.ADMIN;
-  const tabs = [['orders', 'Purchase orders'], ...(isAdmin ? [['prices', 'Price history']] : []), ['suppliers', 'Suppliers']];
+  const sections = [['orders', 'Purchase orders'], ...(isAdmin ? [['prices', 'Price history']] : []), ['suppliers', 'Suppliers']];
   return (
     <div>
-      <PageHeader title="Imports & Purchase Orders" subtitle="Buy in China with cash, track the shipment, receive it into the warehouse." />
-      <div className="mb-4 flex flex-wrap gap-2">
-        {tabs.map(([k, label]) => (
-          <button key={k} onClick={() => setTab(k)} className={`cursor-pointer rounded-full px-4 py-2 text-sm font-semibold ring-1 transition duration-200 ${tab === k ? 'bg-brand-500 text-white ring-brand-500' : 'bg-transparent text-muted ring-white/10 hover:bg-white/[0.05] hover:text-foreground'}`}>{label}</button>
-        ))}
-      </div>
+      <PageHeader title="Imports & Purchase Orders" subtitle="Buy in China with cash, track the shipment, receive it into the warehouse." tabs={tabs} />
+      {/* The sections of this tab as plain words on a hairline, not a second row of pills under Inventory's
+          (audit ui-a13: a phone showed three rows of pills before the first order). */}
+      <SectionTabs className="mb-4 sm:justify-start sm:gap-6" value={tab} onChange={setTab} tabs={sections.map(([key, label]) => ({ key, label }))} />
       {tab === 'orders' ? <PurchaseOrders isAdmin={isAdmin} /> : tab === 'prices' && isAdmin ? <PriceHistory /> : <Suppliers />}
     </div>
   );

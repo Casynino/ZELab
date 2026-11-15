@@ -11,7 +11,7 @@ import { ROLES } from '@/lib/constants';
 import { formatCurrency, formatDate } from '@/lib/format';
 import {
   PageHeader, Card, PageSpinner, EmptyState, LoadError, Badge, Button, Modal, Field, Input, NumberInput, Textarea,
-  Pagination, Table, THead, TBody, TR, TH, TD,
+  Pagination, Table, THead, TBody, TR, TH, TD, RowsOrTable, RowList, RowItem,
 } from '@/components/ui';
 
 const KIND = { OPENING: 'opening', CLOSING: 'closing' };
@@ -117,27 +117,26 @@ export default function DailyReports() {
           <EmptyState title="No daily reports yet" icon={NotebookPen} />
         ) : (
           <>
-            {/* On a phone, one stacked row per report: the six-column table pushed Collected and
-                Notes off the screen. The table stays from the sm breakpoint up. */}
-            <div className="divide-y divide-border sm:hidden">
-              {data.data.map((r) => (
-                <div key={r.id} className="px-4 py-3">
-                  <div className="flex items-center gap-2">
-                    <span className="shrink-0 text-sm font-semibold text-foreground">{formatDate(r.reportDate)}</span>
-                    <Badge className={r.type === 'OPENING' ? 'bg-amber-500/15 text-amber-300' : 'bg-indigo-500/15 text-indigo-300'}>{r.type}</Badge>
-                    {staff && <span className="ml-auto truncate text-xs text-muted">{r.salesRep?.user?.name}</span>}
-                  </div>
-                  <p className="mt-1 text-xs tabular-nums text-muted">
-                    {r.type === 'OPENING'
-                      ? <>Cash <span className="text-foreground">{formatCurrency(r.cashOnHand || 0)}</span></>
-                      : <>Sales <span className="text-foreground">{formatCurrency(r.salesAmount || 0)}</span> · Collected <span className="text-foreground">{formatCurrency(r.cashCollected || 0)}</span></>}
-                  </p>
-                  {(r.openingNote || r.closingNote) && <p className="mt-0.5 truncate text-xs text-faint">{r.openingNote || r.closingNote}</p>}
-                </div>
-              ))}
-            </div>
-            <div className="hidden sm:block">
-              <Table>
+            {/* One short row per report, as on Settle: the six-column table pushed Collected and Notes off a
+                phone, and ran past the profile's right-hand column on an iPad and on a laptop with the sidebar
+                open (782 px in 736 and 698). The table comes back where the box is wide enough for it. */}
+            <RowsOrTable>
+              <RowList>
+                {data.data.map((r) => {
+                  const opening = r.type === 'OPENING';
+                  return (
+                    <RowItem
+                      key={r.id}
+                      title={staff ? (r.salesRep?.user?.name || '—') : formatDate(r.reportDate)}
+                      figure={formatCurrency(opening ? (r.cashOnHand || 0) : (r.salesAmount || 0))}
+                      sub={[staff ? formatDate(r.reportDate) : null, opening ? 'cash on hand' : `sales · collected ${formatCurrency(r.cashCollected || 0)}`].filter(Boolean).join(' · ')}
+                      badge={<Badge className={opening ? 'bg-amber-500/15 text-amber-300' : 'bg-indigo-500/15 text-indigo-300'}>{r.type}</Badge>}
+                      extra={(r.openingNote || r.closingNote) && <span className="mt-1 block truncate text-[11px] text-faint">{r.openingNote || r.closingNote}</span>}
+                    />
+                  );
+                })}
+              </RowList>
+              <Table className="rot-table">
                 <THead><TR><TH>Date</TH>{staff && <TH>Rep</TH>}<TH>Type</TH><TH>Cash / Sales</TH><TH>Collected</TH><TH>Notes</TH></TR></THead>
                 <TBody>
                   {data.data.map((r) => (
@@ -152,7 +151,7 @@ export default function DailyReports() {
                   ))}
                 </TBody>
               </Table>
-            </div>
+            </RowsOrTable>
             <Pagination page={page} totalPages={data.meta?.totalPages} total={data.meta?.total} onChange={setPage} />
           </>
         )}

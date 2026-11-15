@@ -469,7 +469,8 @@ function BoxCard({ product, pic, path, pictureCount, onOpen }) {
 // next person to sign in on this tab never gets someone else's half-done edits.
 let unsavedDraft = null; // { who: user id, base: JSON of the saved label it was edited from, form }
 
-export default function ProductLabel() {
+// `tabs`: the Products page's tabs (this is its Label tab), drawn under the title as every page has them.
+export default function ProductLabel({ tabs } = {}) {
   const qc = useQueryClient();
   const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
     queryKey: ['product-page'],
@@ -541,6 +542,8 @@ export default function ProductLabel() {
   // label, so that a Save can never overwrite it. Say so, rather than spin.
   if (isError && !form) {
     return (
+      <div>
+        {tabs && <PageHeader title="Product label" tabs={tabs} />}
       <Card>
         <EmptyState
           title="Couldn't load the label"
@@ -548,9 +551,10 @@ export default function ProductLabel() {
           action={<Button onClick={() => refetch()} loading={isFetching}><RefreshCw className="mr-2 h-4 w-4" /> Try again</Button>}
         />
       </Card>
+      </div>
     );
   }
-  if (isLoading || !form) return <PageSpinner />;
+  if (isLoading || !form) return tabs ? <div><PageHeader title="Product label" tabs={tabs} /><PageSpinner /></div> : <PageSpinner />;
 
   const set = (patch) => setForm((f) => ({ ...f, ...patch }));
   const setProduct = (i, patch) => setForm((f) => ({
@@ -596,6 +600,7 @@ export default function ProductLabel() {
           subtitle={pg
             ? `Everything on this box — scanning its code opens /${pg.path}, which shows this box alone`
             : 'A new box. Press Save and it gets its own code.'}
+          tabs={tabs}
         >
           <Button variant="secondary" onClick={() => setOpenBox(null)}>
             <ArrowLeft className="mr-2 h-4 w-4" /> All boxes
@@ -735,6 +740,7 @@ export default function ProductLabel() {
       <PageHeader
         title="Product label"
         subtitle="One box, one code, one page — open a box to change its words, its pictures and its code"
+        tabs={tabs}
       >
         {saveBar}
       </PageHeader>
