@@ -121,6 +121,7 @@ export const pageQueries = {
   },
   commissionsInsights: () => ({ queryKey: ['commissions', 'me', 'insights'], queryFn: dataOf('/commissions/me/insights') }),
   commissionsMine: () => ({ queryKey: ['commissions', 'me'], queryFn: dataOf('/commissions/me') }),
+  walletActivity: () => ({ queryKey: ['commissions', 'me', 'activity'], queryFn: dataOf('/commissions/me/activity') }),
   withdrawalsMine: () => ({ queryKey: ['commissions', 'withdrawals', 'mine'], queryFn: listOf('/commissions/withdrawals', { limit: 20 }) }),
   commissionsSummary: () => ({ queryKey: ['commissions', 'summary'], queryFn: dataOf('/commissions/summary') }),
   withdrawalsAll: () => ({ queryKey: ['commissions', 'withdrawals', 'all'], queryFn: listOf('/commissions/withdrawals', { limit: 30 }) }),

@@ -371,6 +371,84 @@ async function earnedLinesForRep(salesRepId, start, end) {
   });
 }
 
+// Everything that has moved a rep's wallet, newest first (Nino, 15 Nov 2026: the card shows only the balance;
+// tapping it opens every transaction with the totals). Commission is priced per sale through the very same
+// rule as the balance (rate in force when the order was issued, by brand, Pepa from its own start), so the
+// EARNED rows add up to grossEarned exactly. Bonus credits, payouts, requests still waiting, fines and a
+// one-off adjustment complete it. A forgiven fine is listed but takes nothing.
+async function activityForRep(salesRepId) {
+  const [rates, items, rep, awards, withdrawals, fines] = await Promise.all([
+    allRates(),
+    prisma.saleItem.findMany({
+      where: { sale: { is: { salesRepId, settlementId: { not: null }, status: { not: 'CANCELLED' } } } },
+      select: {
+        baseQuantity: true,
+        product: { select: PRICED_PRODUCT },
+        sale: { select: { id: true, saleNumber: true, soldAt: true, settlement: { select: { issuedAt: true, settlementNumber: true } } } },
+      },
+    }),
+    prisma.salesRepresentative.findUnique({
+      where: { id: salesRepId },
+      select: { commissionAdjustment: true, commissionAdjustmentNote: true, commissionAdjustedAt: true },
+    }),
+    prisma.bonusAward.findMany({
+      where: { salesRepId, status: 'CREDITED' },
+      select: { id: true, bonusAmount: true, unlockedAt: true, qualifyingSales: true },
+    }),
+    prisma.commissionWithdrawal.findMany({
+      where: { salesRepId, status: { in: ['PENDING', 'APPROVED', 'PAID'] } },
+      select: { id: true, amount: true, status: true, source: true, requestedAt: true, paidAt: true, decidedAt: true },
+    }),
+    prisma.settlementPenalty.findMany({
+      where: { salesRepId },
+      select: {
+        id: true, amount: true, kind: true, status: true, appliedAt: true, daysOverdue: true,
+        settlement: { select: { settlementNumber: true } },
+      },
+    }),
+  ]);
+
+  const out = [];
+  const bySale = new Map();
+  for (const it of items) {
+    const when = it.sale?.settlement?.issuedAt || it.sale?.soldAt || new Date();
+    const rate = pickRate(rates, normalizeBrand(it.product?.brand?.name), rateMoment(when, it.product?.createdAt));
+    const qty = it.baseQuantity || 0;
+    const row = bySale.get(it.sale.id) || {
+      id: `sale-${it.sale.id}`, kind: 'EARNED', at: it.sale.soldAt,
+      ref: it.sale.settlement?.settlementNumber || it.sale.saleNumber, boxes: 0, amount: 0,
+    };
+    row.boxes += qty;
+    row.amount += qty * rate;
+    bySale.set(it.sale.id, row);
+  }
+  for (const r of bySale.values()) out.push({ ...r, amount: round2(r.amount) });
+
+  const adj = round2(toNumber(rep?.commissionAdjustment));
+  if (adj !== 0) {
+    out.push({ id: 'adjustment', kind: 'ADJUSTMENT', at: rep.commissionAdjustedAt, ref: rep.commissionAdjustmentNote || null, amount: adj });
+  }
+  for (const a of awards) {
+    out.push({ id: `bonus-${a.id}`, kind: 'BONUS', at: a.unlockedAt, ref: null, sales: round2(toNumber(a.qualifyingSales)), amount: round2(toNumber(a.bonusAmount)) });
+  }
+  for (const w of withdrawals) {
+    const paid = w.status === 'PAID';
+    out.push({
+      id: `wd-${w.id}`, kind: paid ? 'PAID_OUT' : 'WAITING', at: paid ? (w.paidAt || w.decidedAt || w.requestedAt) : w.requestedAt,
+      ref: w.source === 'BONUS' ? 'Bonus' : 'Commission', status: w.status, amount: -round2(toNumber(w.amount)),
+    });
+  }
+  for (const f of fines) {
+    out.push({
+      id: `fine-${f.id}`, kind: 'FINE', at: f.appliedAt, ref: f.settlement?.settlementNumber || null,
+      day: f.daysOverdue || 0, forgiven: f.status === 'WAIVED', late: f.kind === 'LATE_FINE',
+      amount: f.status === 'WAIVED' ? 0 : -round2(toNumber(f.amount)), fine: round2(toNumber(f.amount)),
+    });
+  }
+  out.sort((a, b) => new Date(b.at || 0) - new Date(a.at || 0));
+  return out;
+}
+
 // Boxes a rep has SETTLED (paid for) across all their orders. Each settlement
 // records a CASH sale linked to the order, so settled boxes = base units sold
 // on settlement-linked sales (the base unit is the Box). Commission is earned
@@ -1092,6 +1170,7 @@ module.exports = {
   currentRates,
   rateForProductOnOrder,
   computeForRep,
+  activityForRep,
   computeForReps,
   summaryAllReps,
   requestWithdrawal,

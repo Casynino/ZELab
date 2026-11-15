@@ -33,6 +33,7 @@ import { PageSpinner, Button, LoadError } from '@/components/ui';
 import { repRegions, shortRegion } from '@/lib/repRegions';
 import CollapsibleList from '@/components/CollapsibleList';
 import WalletCard from '@/components/WalletCard';
+import WalletActivity from '@/components/WalletActivity';
 import VerifiedBadge from '@/components/VerifiedBadge';
 import { Ring } from '@/components/Ring';
 
@@ -625,6 +626,7 @@ export default function Profile() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const isRep = user?.role === ROLES.SALES_REP;
+  const [activityOpen, setActivityOpen] = useState(false);
 
   const { data: stats, isLoading: statsLoading, isError: statsError, refetch: retryStats } = useQuery({
     queryKey: ['dashboard', 'me', 'stats'],
@@ -685,17 +687,12 @@ export default function Profile() {
               negative={card.available < 0}
               canWithdraw={canWithdraw}
               pct={pct}
-              stats={[
-                { label: 'Earned', value: formatCurrency(card.earned) },
-                { label: 'Paid out', value: formatCurrency(card.paid) },
-                // As on the wallet page: a request waiting to be paid shows as Pending, even for a rep with fines.
-                (Number(card.pending) || 0) > 0 || !(c.penalties > 0)
-                  ? { label: 'Pending', value: formatCurrency(card.pending), tone: (Number(card.pending) || 0) > 0 ? 'amber' : undefined }
-                  : { label: 'Fines', value: formatCurrency(c.penalties), tone: 'rose' },
-              ]}
+              // As on the wallet page: only the balance; the card opens every transaction with the totals.
+              onOpen={() => setActivityOpen(true)}
               onWithdraw={() => navigate('/commissions')}
             />
           )}
+          <WalletActivity open={activityOpen} onClose={() => setActivityOpen(false)} />
 
           <DoingCard insights={insights} />
 

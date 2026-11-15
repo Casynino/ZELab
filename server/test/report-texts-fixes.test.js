@@ -89,6 +89,11 @@ function loadNotify({ rows = [], settings = OWNER, notices = [], settlements = [
 
 // ── repo00 ─────────────────────────────────────────────────────────────────────────────────────────
 test('repo00: signed-in traffic runs the deadline check at most once every 5 minutes, looking an hour ahead', async () => {
+  // The same due checks also send the evening/weekly/monthly reports once their hour has come; this test is
+  // about the deadline check only, so those are quiet here (it failed after 21:00 Dar es Salaam time).
+  stub('../src/services/dailyBusinessReport.service', { sendDailyReport: async () => ({}) });
+  stub('../src/services/weeklyReport.service', { REPORT_WEEKDAY: 2, weekKeyOf: () => '2026-W45', sendWeeklyReport: async () => ({}) });
+  stub('../src/services/monthlyReport.service', { sendMonthlyReport: async () => ({}) });
   const { wa, calls } = loadNotify();
   const t0 = Date.now();
   assert.equal(wa.dueChecksSoon(t0), true);

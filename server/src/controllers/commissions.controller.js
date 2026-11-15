@@ -31,6 +31,19 @@ const insightsMe = asyncHandler(async (req, res) => {
   return ok(res, await require('../services/repInsights.service').insightsForRep(req.user.salesRepId));
 });
 
+// Every transaction behind the rep's wallet card, with the card's own totals (commission + bonus, as the
+// card shows them), so the list and the card can never tell two stories.
+const activityMe = asyncHandler(async (req, res) => {
+  if (!req.user.salesRepId) throw ApiError.forbidden('Only sales representatives have commissions');
+  const id = req.user.salesRepId;
+  const [c, items, b] = await Promise.all([commission.computeForRep(id), commission.activityForRep(id), bonus.walletForRep(id)]);
+  const card = bonus.combine(c, b);
+  return ok(res, {
+    totals: { earned: card.earned, paid: card.paid, waiting: card.pending, fines: c.penalties, balance: card.available },
+    items,
+  });
+});
+
 const getForRep = asyncHandler(async (req, res) => ok(res, await withBonus(await commission.computeForRep(req.params.salesRepId), req.params.salesRepId)));
 
 const summary = asyncHandler(async (_req, res) => ok(res, await commission.summaryAllReps()));
@@ -172,4 +185,4 @@ module.exports = {
   setEmergencyWindow,
   listRates, createRate, deleteRate,
   bonusMe, bonusSummary, bonusRules, createBonusRule, updateBonusRule, setBonusRuleActive, bonusAwards, payBonusAward,
-  me, insightsMe, getForRep, summary, rule, listWithdrawals, requestWithdrawal, decideWithdrawal };
+  me, insightsMe, activityMe, getForRep, summary, rule, listWithdrawals, requestWithdrawal, decideWithdrawal };

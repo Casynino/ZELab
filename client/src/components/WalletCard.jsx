@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import clsx from 'clsx';
-import { ArrowUpRight, Eye, EyeOff } from 'lucide-react';
+import { ArrowUpRight, ChevronRight, Eye, EyeOff } from 'lucide-react';
 
 // The rep's balance as a small digital wallet card (Nino, 10 Nov 2026: "a nice
 // digital card, like a wallet, well designed, premium look, small — show the
@@ -23,18 +23,27 @@ export default function WalletCard({
   negative,           // balance below zero (overdue fines)
   canWithdraw,
   pct,                // 0–100, progress to the withdrawal minimum
-  stats,              // [{ label, value (formatted), tone? }] — three of them
+  stats = [],         // [{ label, value (formatted), tone? }] — optional; the rep's own card shows none
   onWithdraw,
+  onOpen,             // tap the card: every transaction, with the totals (Nino, 15 Nov 2026)
 }) {
   const [hidden, setHidden] = useState(readHidden);
   const toggle = () => setHidden((h) => { saveHidden(!h); return !h; });
   const mask = (s) => (hidden ? '•••' : s);
 
+  // The whole card opens the wallet's transactions; the eye and Withdraw keep their own job.
+  const own = (fn) => (e) => { e.stopPropagation(); fn?.(e); };
   return (
     <section
+      role={onOpen ? 'button' : undefined}
+      tabIndex={onOpen ? 0 : undefined}
+      aria-label={onOpen ? 'Open my wallet: every transaction' : undefined}
+      onClick={onOpen}
+      onKeyDown={onOpen ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(); } } : undefined}
       className={clsx(
         'relative isolate overflow-hidden rounded-[22px] p-4 text-white ring-1 ring-inset',
         negative ? 'ring-rose-400/25' : 'ring-white/[0.09]',
+        onOpen && 'cursor-pointer transition active:scale-[0.995]',
       )}
       style={{
         background: negative
@@ -61,7 +70,7 @@ export default function WalletCard({
           <span className="truncate text-[11px] font-medium tracking-wide text-white/60">Available balance</span>
           <button
             type="button"
-            onClick={toggle}
+            onClick={own(toggle)}
             aria-pressed={hidden}
             aria-label={hidden ? 'Show amounts' : 'Hide amounts'}
             className="-m-3 flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-white/55 transition hover:text-white active:scale-95"
@@ -88,7 +97,7 @@ export default function WalletCard({
             height is only for the thumb — nothing of it shows. */}
         <button
           type="button"
-          onClick={onWithdraw}
+          onClick={own(onWithdraw)}
           disabled={!canWithdraw}
           className={clsx(
             'flex h-11 shrink-0 items-center gap-1 text-[15px] font-semibold transition active:opacity-70',
@@ -114,8 +123,16 @@ export default function WalletCard({
         </div>
       )}
 
-      {/* The three supporting figures: small, plain, no lines or boxes around them. */}
-      <div className="mt-3.5 flex flex-wrap justify-between gap-x-4 gap-y-2">
+      {/* Where the card leads: every transaction and the totals. */}
+      {onOpen && (
+        <p className="mt-3.5 flex items-center justify-between text-[12px] text-white/55">
+          <span>Transactions</span>
+          <ChevronRight className="h-4 w-4" aria-hidden="true" />
+        </p>
+      )}
+
+      {/* Supporting figures, where a page still passes them: small, plain, no lines or boxes around them. */}
+      {stats.length > 0 && <div className="mt-3.5 flex flex-wrap justify-between gap-x-4 gap-y-2">
         {stats.map((s) => (
           <div key={s.label} className="min-w-0">
             <p className="text-[10px] text-white/40">{s.label}</p>
@@ -124,7 +141,7 @@ export default function WalletCard({
             </p>
           </div>
         ))}
-      </div>
+      </div>}
     </section>
   );
 }

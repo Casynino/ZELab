@@ -90,9 +90,9 @@ export function EarningsCard({ insights }) {
   return (
     <InsightCard title="My earnings" said={said}>
       {!quiet && (
+        // No money total here (Nino, 15 Nov 2026): the months, the bars and the boxes; totals live in the wallet.
         <dl className="mb-5 flex flex-wrap justify-between gap-x-4 gap-y-3">
-          <Figure label={`Earned · ${months.length} months`} value={formatCurrency(totals.earned)} />
-          <Figure label="Boxes" value={formatNumber(totals.boxes)} />
+          <Figure label={`Boxes · ${months.length} months`} value={formatNumber(totals.boxes)} />
           {best && <Figure label={`Best month · ${best.label}`} value={formatCurrency(best.earned)} />}
         </dl>
       )}

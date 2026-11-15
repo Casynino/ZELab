@@ -8,6 +8,7 @@ import toast from 'react-hot-toast';
 import clsx from 'clsx';
 import BonusProgress, { PaidBonuses } from '@/components/BonusProgress';
 import WalletCard from '@/components/WalletCard';
+import WalletActivity from '@/components/WalletActivity';
 import { EarningsCard, BrandCard, SettlementCard, TopProductsCard, PayoutsCard, Ring } from '@/components/RepCharts';
 import { Coins, Crown, TrendingUp, AlertTriangle, ShieldAlert, HeartHandshake, ShieldCheck, Search, X, ChevronRight, ArrowUpDown } from 'lucide-react';
 import SideSheet from '@/components/SideSheet';
@@ -898,6 +899,7 @@ function useTabParam(name, keys, fallback) {
 function RepView() {
   const { user } = useAuth();
   const [open, setOpen] = useState(false);
+  const [activityOpen, setActivityOpen] = useState(false);
   const [tab, setTab] = useTabParam('tab', REP_TABS, 'overview');
   const insightsQ = useQuery(pageQueries.commissionsInsights());
   const insights = insightsQ.data;
@@ -947,18 +949,12 @@ function RepView() {
         negative={balanceNegative}
         canWithdraw={canWithdraw}
         pct={pct}
-        stats={[
-          // "all time", so nobody reads it as money in hand today (Nino, 11 Nov 2026).
-          { label: 'Earned all time', value: formatCurrency(card.earned) },
-          { label: 'Paid out', value: formatCurrency(card.paid) },
-          // A withdrawal waiting to be paid is already off the balance above (the server counts it out of
-          // Available at once), so while one waits the card says where it went: Pending, even for a rep with fines.
-          (Number(card.pending) || 0) > 0 || !hasPenalties
-            ? { label: 'Pending', value: formatCurrency(card.pending), tone: (Number(card.pending) || 0) > 0 ? 'amber' : undefined }
-            : { label: 'Fines', value: formatCurrency(c.penalties), tone: 'rose' },
-        ]}
+        // Only the balance on the card (Nino, 15 Nov 2026); tapping it shows every transaction with the totals
+        // (earned, paid out, fines, waiting).
+        onOpen={() => setActivityOpen(true)}
         onWithdraw={() => setOpen(true)}
       />
+      <WalletActivity open={activityOpen} onClose={() => setActivityOpen(false)} />
 
       {/* The two rare states that need a sentence get it HERE, as one quiet line under
           the card — the card itself stays figures only. No box, no icon: a dot
