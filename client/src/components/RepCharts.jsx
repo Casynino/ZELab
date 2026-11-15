@@ -250,9 +250,9 @@ export function PayoutsCard({ items }) {
     const m = months.find((x) => x.key === eatMonth(w.paidAt || w.decidedAt || w.requestedAt));
     if (m) { m.amount += Number(w.amount) || 0; m.count += 1; }
   }
-  const total = paid.reduce((s, w) => s + (Number(w.amount) || 0), 0);
+  // No money total here (Nino, 15 Nov 2026): the months and the payouts themselves; the totals are in the wallet.
   return (
-    <InsightCard title="Paid out" said={`${formatCurrency(total)} paid to you in ${paid.length} payout${paid.length === 1 ? '' : 's'}.`}>
+    <InsightCard title="Paid out" said={`${paid.length} payout${paid.length === 1 ? '' : 's'}, month by month.`}>
       <ResponsiveContainer width="100%" height={130}>
         <BarChart data={months} margin={{ top: 6, right: 4, left: 0, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
