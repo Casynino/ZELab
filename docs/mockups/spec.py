@@ -213,7 +213,7 @@ SMALL = dict(
     panels=[
         ("Front", "50 LEAVES, Pepa, scene, tear line", "正面", 118.2, 269.57, 192.2, 424.57, "74 × 155 mm"),
         ("Back", "pattern only, no text", "背面", 118.2, 66.57, 192.2, 221.57, "74 × 155 mm"),
-        ("Top", "info panel, QR, and a 19 × 6 mm half-moon notch", "顶面", 118.2, 221.57, 192.2, 269.57, "74 × 48 mm"),
+        ("Top", "info panel, QR, and a 20 × 6 mm half-moon notch", "顶面", 118.2, 221.57, 192.2, 269.57, "74 × 48 mm"),
         ("Bottom", "the same QR again, and Pepa", "底面", 118.2, 18.57, 192.2, 66.57, "74 × 48 mm"),
         ("Side", "scene, 50 LEAVES, Pepa", "侧面", 70.3, 66.57, 118.2, 221.57, "48 × 155 mm"),
         ("Side", "scene, 50 LEAVES, Pepa", "侧面", 192.2, 66.57, 240.2, 221.57, "48 × 155 mm"),
@@ -230,7 +230,7 @@ SMALL = dict(
         ("Booklets per box", "每盒本数", "50"),
         ("Papers per box", "每盒张数", "2,500"),
         ("Booklet", "内册尺寸", "73 × 22.5 × 5 mm assembled, from a 73 × 93 mm blank"),
-        ("Flat sheet", "展开尺寸", "264 × 464 mm, one box plus one booklet per sheet"),
+        ("Flat sheet", "展开尺寸", "the die measures 242.7 × 427 mm, box and booklet together, on a 264 × 464 mm file"),
         ("QR codes", "二维码", "Top panel, bottom panel and booklet — three codes, all read "
                                 "HTTPS://WWW.ZELAB.SITE/P"),
     ],
@@ -299,14 +299,14 @@ KUBWA = dict(
     # instead of a display nobody has confirmed.
     hero="with-booklets", display=False,
     panels=[
-        ("Front panel", "Pepa, QR, half-round thumb notch", "正面板", 205.19, 233.30, 286.22, 287.74, "81 × 54 mm"),
-        ("Back panel", "information panel and QR; the lid hinges off it", "背面板", 412.20, 233.30, 493.23, 287.74, "81 × 54 mm"),
-        ("Side panel", "scene, 50 LEAVES, 50 PER BOX, Pepa", "侧面板", 79.21, 233.30, 205.19, 287.74, "126 × 54 mm"),
-        ("Side panel", "scene, 50 LEAVES, 50 PER BOX, Pepa", "侧面板", 286.22, 233.30, 412.20, 287.74, "126 × 54 mm"),
+        ("Front panel", "Pepa, QR, half-round thumb notch", "正面板", 205.19, 233.30, 286.22, 287.74, "81 × 54.4 mm"),
+        ("Back panel", "information panel and QR; the lid hinges off it", "背面板", 412.20, 233.30, 493.23, 287.74, "81 × 54.4 mm"),
+        ("Side panel", "scene, 50 LEAVES, 50 PER BOX, Pepa", "侧面板", 79.21, 233.30, 205.19, 287.74, "126 × 54.4 mm"),
+        ("Side panel", "scene, 50 LEAVES, 50 PER BOX, Pepa", "侧面板", 286.22, 233.30, 412.20, 287.74, "126 × 54.4 mm"),
         ("Lid", "50 LEAVES, Pepa, scene; folded across its middle", "盒盖", 412.20, 107.27, 493.23, 233.30, "81 × 126 mm"),
         ("Lid tuck flap", "tucks inside the front panel", "盒盖插舌", 412.20, 67.39, 493.23, 107.27, "81 × 40 mm"),
-        ("Glue flap", "glued to the side panel", "粘口", 64.18, 233.30, 79.08, 287.74, "15 × 54 mm"),
-        ("Hook bottom", "four flaps, paste areas marked on the die", "勾底", 79.21, 287.74, 493.23, 339.51, "414 × 51 mm"),
+        ("Glue flap", "folds off a side panel; glued inside the back panel's free edge", "粘口", 64.18, 233.30, 79.08, 287.74, "15 × 54.4 mm"),
+        ("Hook bottom", "four flaps, paste areas marked on the die", "勾底", 79.21, 287.74, 493.23, 339.51, "414 × 51.7 mm"),
     ],
     tear=(79.21, 233.30, 412.20), tear_label_left=True,
     facts=[
@@ -317,7 +317,7 @@ KUBWA = dict(
         ("Papers per box", "每盒张数", "2,500"),
         ("Booklet", "内册尺寸", "80 × 26.2 × 4.15 mm, on page 2 of the same file"),
         ("Wall band", "围板高度", "54.44 mm; walls 126 · 81 · 126 · 81 mm round the box"),
-        ("Flat sheet", "展开尺寸", "the die measures 446 × 289 mm on a 549 × 436 mm file"),
+        ("Flat sheet", "展开尺寸", "the die measures 429 × 272 mm on a 549 × 436 mm file"),
         ("QR codes", "二维码",
          "Front panel, back panel, and the booklet's outside and inside cover (page 2) — "
          "four codes, all read HTTPS://WWW.ZELAB.SITE/P2"),
@@ -405,11 +405,11 @@ def dieline_page(deck, design, box):
     ya = table(d, M, y, left, half, label_w=round(half * 0.52))
     yb = table(d, M + half + round(8 * MM), y, right, half, label_w=round(half * 0.52))
     y = max(ya, yb) + round(4 * MM)
-    para(d, (M, y), "Measured off this file at 300 dpi: every figure above is the distance between "
-                    "its own fold or cut lines, not a figure typed from a previous version. Where a "
-                    "fold is not drawn on the file, the note on the last page says so and gives the "
-                    "position we took.",
-         F(9), SOFT, PW - 2 * M)
+    y = para(d, (M, y), "Measured off the die-line: every figure above is the distance between its own "
+                        "fold or cut lines. Where a line is hidden under the artwork, the note on the last "
+                        "page says so and gives its position.", F(9), SOFT, PW - 2 * M)
+    para(d, (M, y), "以上尺寸均按刀版上各自的压痕线或裁切线量取。若某条线被图案遮盖，最后一页的说明会注明其位置。",
+         Z(8.5), SOFT, PW - 2 * M)
 
 def cover_page(deck, design, box):
     img, d, y = deck.page()
@@ -436,7 +436,7 @@ def cover_page(deck, design, box):
     y += round(4 * MM)
     y = table(d, M, y, box["facts"], PW - 2 * M)
     y += round(3 * MM)
-    d.rectangle([M, y, PW - M, y + round(20 * MM)], fill=PANEL)
+    d.rectangle([M, y, PW - M, y + round(24 * MM)], fill=PANEL)
     ty = y + round(4 * MM)
     d.text((M + round(4 * MM), ty), "Pepa is made for ZELab", font=F(10, True), fill=INK)
     d.text((M + round(4 * MM), ty + round(5.5 * MM)),
@@ -444,6 +444,7 @@ def cover_page(deck, design, box):
            font=F(10), fill=INK)
     d.text((M + round(4 * MM), ty + round(11 * MM)),
            "Questions on any measurement here come back to this number.", font=F(9), fill=SOFT)
+    d.text((M + round(4 * MM), ty + round(15.5 * MM)), "如对任何尺寸有疑问，请拨打此号码。", font=Z(8.5), fill=SOFT)
 
 def faces_page(deck, design, box):
     img, d, y = deck.page("The box closed, face by face", "闭合状态·各面")
@@ -459,8 +460,8 @@ def faces_page(deck, design, box):
     rows = [(p[0], p[2], f"{p[7]}  ·  {p[1]}") for p in box["panels"][:6]]
     y = table(d, M, y, rows, PW - 2 * M, label_w=round((PW - 2 * M) * 0.34))
     y += round(2 * MM)
-    para(d, (M, y), "Every face also carries the background pattern and the kanga band. The lines "
-                    "above name what else is printed on it.", F(9), SOFT, PW - 2 * M)
+    y = para(d, (M, y), "The lines above name the main things printed on each face.", F(9), SOFT, PW - 2 * M)
+    para(d, (M, y), "上表列出各面印刷的主要内容。", Z(8.5), SOFT, PW - 2 * M)
 
 def display_page(deck, design, box):
     img, d, y = deck.page("Open, as a counter display", "开盒展示状态")
@@ -487,7 +488,7 @@ def sizes_page(deck, design, box):
     # Bound by the paper in BOTH directions. A scale chosen on width alone put
     # the small box's third drawing, the scale note and the facts table off the
     # bottom of the page, under the footer.
-    room_mm = (PH - M - round(52 * MM) - y) / MM     # 52 mm holds the sentence,
+    room_mm = (PH - M - round(60 * MM) - y) / MM     # 60 mm holds the sentence (EN + CN),
     # Each drawing also costs 23 mm of caption under it, and there are two rows.
     s = min(0.92, (avail_mm - 46) / (bw + bd),        # the three fact rows and
             (room_mm - 52) / (bh + bd))               # the footer
@@ -502,6 +503,7 @@ def sizes_page(deck, design, box):
     y = para(d, (M, y), f"Drawn to scale 1 : {1/s:.2f} off the die-line. The box assembles to "
                         f"{box['size_text']}; board thickness is not in these figures.",
              F(9), SOFT, PW - 2 * M)
+    y = para(d, (M, y), f"按刀版 1 : {1/s:.2f} 比例绘制，图中尺寸未计纸板厚度。", Z(8.5), SOFT, PW - 2 * M)
     y += round(3 * MM)
     y = table(d, M, y, box["facts"][:3], PW - 2 * M)
 
@@ -518,7 +520,8 @@ def booklet_page(deck, design, box):
         crop = (84.0, 78.0, 174.0, 184.0)
         rows = [("Assembled", "成品", "80 × 26.2 × 4.15 mm, as the die block states"),
                 ("Cover panels", "封面各折段",
-                 "9 / 3.5 / 25.5 / 3.9 / 26.0 / 4.15 / 26.2 mm across the folds, tuck flap first"),
+                 "9.35 / 3.5 / 25.5 / 3.9 / 26.0 / 4.15 / 25.8 mm as drawn, tuck flap first "
+                 "(the die's own labels say 9 and 26.2 for the first and last)"),
                 ("Leaves", "张数", "50 leaves of 77 × 44 mm paper (die sheet allows up to 60)"),
                 ("Printed", "印刷内容", "Scene, 50 LEAVES, NATURAL UNREFINED ROLLING PAPERS, Pepa, QR")]
     else:
@@ -547,20 +550,23 @@ def booklet_page(deck, design, box):
 SHARED_NOTES = [
     # First, because it is the mistake that costs the most: the factory made these die-lines and may
     # still hold its own .ai of them, with the old codes inside.
-    ("Print from the die-line PDF sent with this pack, exactly as it is. Do not use any older .ai or "
-     "PDF of these boxes: the QR codes in older files open an address that no longer works.",
-     "请严格按随本文件发送的刀版 PDF 印刷。请勿使用这两款盒子的任何旧版 AI 或 PDF 文件：旧文件中的二维码所指网址已失效。"),
+    ("Print from the die-line PDF sent with this pack. Do not rebuild it from any older .ai or PDF "
+     "of these boxes: the QR codes in older files open an address that no longer works.",
+     "请使用随本说明一起发送的刀版 PDF 印刷。请勿用这两款盒子的任何旧版 AI 或 PDF 文件重新制作：旧文件中的二维码所指网址已失效。"),
     ("QR codes: print them exactly as supplied — do not move, resize, redraw or recolour them. Each "
-     "is pure black (K 100 only). The 70 × 36 file carries three codes, all HTTPS://WWW.ZELAB.SITE/P; "
-     "the 77 × 44 file carries four, all HTTPS://WWW.ZELAB.SITE/P2. Every code was scanned off these "
-     "files. The capitals are deliberate; do not change them. Print one proof and scan every code "
+     "is pure black (K 100 only). The 70 × 36 die-line carries three codes, all HTTPS://WWW.ZELAB.SITE/P; "
+     "the 77 × 44 die-line carries four, all HTTPS://WWW.ZELAB.SITE/P2. Every code was scanned off the "
+     "die-line PDFs. The capitals are deliberate; do not change them. Print one proof and scan every code "
      "with a phone before the run.",
      "二维码：请完全按原文件印刷，不得移动、缩放、重绘或改色。所有二维码均为单色黑（仅 K100）。"
-     "70 × 36 文件共三个码，均为 HTTPS://WWW.ZELAB.SITE/P；77 × 44 文件共四个码，均为 HTTPS://WWW.ZELAB.SITE/P2。"
-     "所有二维码均已从本文件扫描校验。网址中的大写字母为刻意设定，请勿更改。正式开机前请先打一份样，并用手机逐一扫描每个二维码。"),
-    ("No bleed anywhere on this file: the artwork stops exactly on the cut. Extend it 3 mm past "
-     "every outer cut, or a 1 mm drift on the guillotine shows as a white edge on the box.",
-     "本文件未留出血：图案正好止于裁切线。所有外轮廓裁切线处图案需向外延伸 3 mm 出血，否则裁切误差 1 mm 就会在盒边留出白边。"),
+     "70 × 36 刀版共三个码，均为 HTTPS://WWW.ZELAB.SITE/P；77 × 44 刀版共四个码，均为 HTTPS://WWW.ZELAB.SITE/P2。"
+     "所有二维码均已从刀版 PDF 扫描校验。网址中的大写字母为刻意设定，请勿更改。正式开机前请先打一份样，并用手机逐一扫描每个二维码。"),
+    ("No bleed on the die-line PDF: the artwork stops exactly on the cut. Add 3 mm of bleed by "
+     "extending the background of this PDF past every outer cut — never by going back to an older "
+     "file — and send the bled file back to us for approval before the run. Without bleed, a 1 mm "
+     "drift in die-cutting shows as a white edge on the box.",
+     "刀版 PDF 未留出血：图案正好止于裁切线。请在此刀版 PDF 上将背景向外延伸 3 mm 出血（切勿改用任何旧文件），"
+     "并在开机前将出血后的文件发回给我们确认。若不加出血，模切偏差 1 mm 就会在盒边留出白边。"),
     ("On both booklets the Pepa logo, the 50 and the QR sit under 2 mm from a crease — some under "
      "1 mm. Do not move or resize them. If your folding cannot keep the creases off them, tell us "
      "before the run.",
@@ -569,19 +575,19 @@ SHARED_NOTES = [
 ]
 BOX_NOTES = {
     "small": [
-        ("The fold between the top and the front is not drawn on this file. We take it at 269.57 mm "
-         "down the sheet — 48 mm from the back fold, which is the box's own depth, and 1.85 mm past "
-         "where the dust flaps are cut short. The flaps at the bottom end stop 1.6 mm short of the "
-         "edge in the same way. Please confirm the scoring position before the run.",
-         "顶面与正面之间的压痕线在本文件中未绘制。我们按自刀版顶边向下 269.57 mm 处取值 —— 距背面压痕 48 mm，即该盒的盒深，"
-         "且比防尘舌片的切口多出 1.85 mm；盒底一端的舌片同样比盒边短 1.6 mm，做法完全一致。开机前请确认压痕位置。"),
-        ("The line across the front at 346.54 mm is drawn exactly like every crease and cut on this "
-         "file, and the file has no line legend. Confirm it is perforated, not scored — the box "
+        ("The fold between the top and the front is covered by the artwork on the die-line, so it "
+         "does not show: it lies 269.57 mm down the sheet — 48 mm from the back fold, which is the "
+         "box's own depth, and 1.85 mm past where the dust flaps are cut short. Please confirm the "
+         "scoring position before the run.",
+         "顶面与正面之间的压痕线在刀版中被图案覆盖，因此看不到：它位于自刀版顶边向下 269.57 mm 处 —— 距背面压痕 48 mm，"
+         "即该盒的盒深，且比防尘舌片的切口多出 1.85 mm。开机前请确认压痕位置。"),
+        ("The line across the front at 346.54 mm is drawn exactly like every crease and cut on the "
+         "die-line, and the die-line has no line legend. Confirm it is perforated, not scored — the box "
          "opens as a display along it.",
-         "正面 346.54 mm 处的线条与本文件其他压痕、裁切线画法完全相同，且文件无线型图例。请确认该线为齿线（打孔）而非压痕 —— 展示开盒即沿此线撕开。"),
-        ("This file carries no specification block — board, colours and finish are not stated on it. "
+         "正面 346.54 mm 处的线条与刀版中其他压痕、裁切线画法完全相同，且文件无线型图例。请确认该线为齿线（打孔）而非压痕 —— 展示开盒即沿此线撕开。"),
+        ("The die-line carries no specification block — board, colours and finish are not stated on it. "
          "Confirm them in writing before the run.",
-         "本文件没有工艺说明框：纸板、颜色、表面处理均未注明，开机前请书面确认。"),
+         "刀版文件没有工艺说明框：纸板、颜色、表面处理均未注明，开机前请书面确认。"),
     ],
     "kubwa": [
         ("At 233.30 mm — the top edge of the box — the three line types differ by panel, and "
@@ -592,8 +598,9 @@ BOX_NOTES = {
          "233.30 mm 处（盒口位置）三种线型按面区分，这正是该盒的结构：两个 126 mm 侧面板画为齿线，"
          "81 mm 正面板在半圆缺口两侧画为裁切线，盒盖一列画为压痕折线，使盒盖始终与背面板相连。"
          "请确认侧面板为齿线（打孔）而非普通裁切。"),
-        ("The die block reads SPECIFICATIONS 50 BOOKELES; it should read 50 BOOKLETS.",
-         "刀版规格框 SPECIFICATIONS 一栏写作 50 BOOKELES，应为 50 BOOKLETS。"),
+        ("The die block reads SPECIFICATIONS 50 BOOKELES; it means 50 BOOKLETS. The block is not "
+         "printed, so nothing needs changing.",
+         "刀版规格框 SPECIFICATIONS 一栏写作 50 BOOKELES，应理解为 50 BOOKLETS。该规格框不印刷，无需修改。"),
         ("The booklet die block says 60 leaves max. That is the die's ceiling; we are running 50 "
          "leaves, as the artwork says.",
          "内册刀版工艺框写“60 leaves max”，那是刀版上限；我们按图案所印的 50 LEAVES 生产。"),

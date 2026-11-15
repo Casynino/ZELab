@@ -123,7 +123,7 @@ sheet = Image.new("RGB", (PAD * 2 + cols * tw + (cols - 1) * GAP,
                           PAD * 2 + HEAD + rows * th + (rows - 1) * GAP), BG)
 d = ImageDraw.Draw(sheet)
 d.text((PAD, PAD), "Pepa Ndogo Kubwa (Brown) Bila Filter", font=FT(38, True), fill=INK)
-d.text((PAD, PAD + 70), "77 × 44 · every angle · 81 × 126 × 55 mm hook-bottom box · 50 booklets of 50 leaves",
+d.text((PAD, PAD + 84), "77 × 44 · every angle · 81 × 126 × 55 mm hook-bottom box · 50 booklets of 50 leaves",
        font=FT(22), fill=SOFT)
 for i, (label, im) in enumerate(frames):
     r, c = divmod(i, cols)

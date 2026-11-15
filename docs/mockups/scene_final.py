@@ -86,7 +86,7 @@ def grid(frames, title, sub, fw, fh, cols, out):
     Ht = PAD + HEAD + rows * th + (rows - 1) * GAP + PAD
     sheet = Image.new("RGB", (Wd, Ht), BG); d = ImageDraw.Draw(sheet)
     d.text((PAD, PAD), title, font=FT(38, True), fill=INK)
-    d.text((PAD, PAD + 70), sub, font=FT(22), fill=SOFT)
+    d.text((PAD, PAD + 84), sub, font=FT(22), fill=SOFT)
     for i, (label, img) in enumerate(frames):
         r, c = divmod(i, cols)
         x, y = PAD + c * (tw + GAP), PAD + HEAD + r * (th + GAP)

@@ -20,12 +20,16 @@ What it does, and why each step is there:
 Then check the result: decode every placement and every image object, and compare a
 render with the factory file pixel by pixel outside the codes (must be 0 changed).
 """
+import hashlib
+import os
 import re
 import sys
 
 import numpy as np
 import pymupdf
 import segno
+
+STAMP = "D:20261115120000+03'00'"
 
 BOXES = {
     # image xref, encoded text, original picture size (px), code box inside it (x0, y0, x1, y1 inclusive)
@@ -67,6 +71,16 @@ def main(src, out, box):
                       "subject": "Print file. QR codes open " + text,
                       "creator": doc.metadata.get("creator", ""), "producer": doc.metadata.get("producer", "")})
     doc.save(out, garbage=1, deflate=False)                       # garbage=1 drops the orphaned private data
+    # Today's dates and a new file ID, so File > Properties never shows the factory's October file.
+    doc = pymupdf.open(out)
+    md = doc.metadata
+    md.update({"creationDate": STAMP, "modDate": STAMP})
+    doc.set_metadata(md)
+    fid = hashlib.md5(("zelab-pepa-print-15nov2026-" + box + " die-line.pdf").encode()).hexdigest().upper()
+    doc.xref_set_key(-1, "ID", f"[<{fid}><{fid}>]")
+    doc.save(out + ".tmp", garbage=1, deflate=False)
+    doc.close()
+    os.replace(out + ".tmp", out)
     print(out, "->", text)
 
 if __name__ == "__main__":

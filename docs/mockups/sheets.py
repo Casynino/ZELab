@@ -22,7 +22,7 @@ def sheet(title, sub, hero, hero_label, tiles, out, WIDTH=2400):
     H = PAD + HEAD + heroi.height + LAB + GAP * 2 + th + LAB + PAD
     s = Image.new("RGB", (WIDTH, H), BG); d = ImageDraw.Draw(s)
     d.text((PAD, PAD), title, font=FT(46, True), fill=INK)
-    d.text((PAD, PAD + 86), sub, font=FT(24), fill=SOFT)
+    d.text((PAD, PAD + 102), sub, font=FT(24), fill=SOFT)
     y = PAD + HEAD
     s.paste(heroi, ((WIDTH - heroi.width) // 2, y))
     d.text((PAD, y + heroi.height + 10), hero_label, font=FT(22, True), fill=SOFT)
