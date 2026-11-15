@@ -63,7 +63,8 @@ function POModal({ onClose, editing }) {
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const sending = useRef(false);
 
-  const supplierId = supplierPick || (!editing && suppliers.some((s) => s.id === lastSupplier) ? lastSupplier : '');
+  // A deleted (switched-off) supplier is never picked for a new order, even if it was the last one used.
+  const supplierId = supplierPick || (!editing && suppliers.some((s) => s.id === lastSupplier && s.isActive !== false) ? lastSupplier : '');
   const supplier = suppliers.find((s) => s.id === supplierId) || (editing && editing.supplierId === supplierId ? editing.supplier : null);
   // A new order names no warehouse unless one is picked here (the server then uses the primary, as before).
   const warehouseId = whPick;
@@ -139,8 +140,9 @@ function POModal({ onClose, editing }) {
   // The toggle only shows or hides the costs: closing it never changes a figure, and the closed toggle shows their sum.
   const toggleExtras = () => setExtras((x) => !x);
 
-  // A switched-off supplier still shows (an old order may name it), marked as such (audit money-flows-8).
-  const supplierOptions = suppliers.map((s) => ({
+  // A deleted (switched-off) supplier is offered only on an old order that already names it, marked as such
+  // (audit money-flows-8); new orders never list it.
+  const supplierOptions = suppliers.filter((s) => s.isActive !== false || s.id === supplierId).map((s) => ({
     value: s.id, label: s.name,
     sub: [s.isActive === false ? 'switched off' : null, s.country].filter(Boolean).join(' · ') || undefined,
   }));
@@ -564,7 +566,12 @@ function PurchaseOrders() {
 
 function Suppliers() {
   const [modal, setModal] = useState({ open: false, editing: null });
+  const [showRemoved, setShowRemoved] = useState(false);
   const { data, isLoading, isError, refetch } = useQuery({ queryKey: ['suppliers'], queryFn: async () => unwrap(await api.get('/suppliers', { params: { limit: 100 } })) });
+  // Deleted suppliers are switched off, never erased (their orders stay), so they are hidden here until asked for.
+  const all = data?.data || [];
+  const removed = all.filter((s) => s.isActive === false);
+  const rows = showRemoved ? all : all.filter((s) => s.isActive !== false);
   return (
     <Card>
       <div className="flex items-center justify-between border-b border-border p-4">
@@ -574,7 +581,7 @@ function Suppliers() {
       {isLoading ? <PageSpinner /> : isError && !data ? <LoadError what="the suppliers" onRetry={refetch} /> : !data?.data?.length ? <EmptyState title="No suppliers" /> : (
         <Table stack>
           <THead><TR><TH>Name</TH><TH>Country</TH><TH>Contact</TH><TH>Phone</TH><TH>POs</TH><TH /></TR></THead>
-          <TBody>{data.data.map((s) => (
+          <TBody>{rows.map((s) => (
             <TR key={s.id}><TD className="font-medium">
               {s.name}
               {/* Switched off (a supplier with history is never deleted): said here, not hidden (money-flows-8). */}
@@ -583,6 +590,12 @@ function Suppliers() {
               <TD><button className="btn-ghost px-2 py-1" onClick={() => setModal({ open: true, editing: s })}><Pencil className="h-4 w-4" /></button></TD></TR>
           ))}</TBody>
         </Table>
+      )}
+      {removed.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border px-4 py-3 text-xs text-faint">
+          <span>{removed.length === 1 ? `1 deleted supplier (${removed[0].name}) is` : `${removed.length} deleted suppliers are`} {showRemoved ? 'shown' : 'hidden'}. Their orders stay in your records.</span>
+          <button type="button" className="btn-ghost px-2 py-1 text-xs" onClick={() => setShowRemoved((v) => !v)}>{showRemoved ? 'Hide' : 'Show'}</button>
+        </div>
       )}
       {modal.open && <SupplierModal editing={modal.editing} onClose={() => setModal({ open: false, editing: null })} />}
     </Card>

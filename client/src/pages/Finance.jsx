@@ -2762,11 +2762,32 @@ function SupplierDetailModal({ supplierId, accounts, onClose }) {
     qc.invalidateQueries({ queryKey: ['purchase-orders'] });
   };
   const s = data?.supplier;
+  // Delete = switch off: a supplier with history is never erased (its orders explain the stock and the money), it
+  // leaves the lists. Owner only, and only once nothing is owed either way, so a debt can never be hidden.
+  const settled = data && Math.abs(data.totals.outstanding) < 0.5;
+  const del = useMutation({
+    mutationFn: async () => unwrap(await api.delete(`/suppliers/${supplierId}`)).data,
+    onSuccess: (r) => {
+      toast.success(r?.deleted ? `${s.name} deleted` : `${s.name} deleted. Their orders, payments and stock stay in your records.`);
+      invalidateFinance(qc);
+      qc.invalidateQueries({ queryKey: ['suppliers'] });
+      onClose();
+    },
+    onError: (e) => toast.error(apiError(e)),
+  });
+  const askDelete = () => {
+    const n = data.orders.length;
+    const kept = n ? ` Their ${n} ${n === 1 ? 'order' : 'orders'}, payments and the stock they brought stay in your records.` : '';
+    if (confirm(`Delete ${s.name}? They leave your supplier lists.${kept}`)) del.mutate();
+  };
   return (
     <>
       <Modal open onClose={onClose} size="xl" title={s ? s.name : 'Supplier'}
         footer={data && (
           <>
+            {isAdmin && settled && s.isActive !== false && (
+              <Button variant="secondary" loading={del.isPending} onClick={askDelete}><Trash2 className="h-4 w-4" /> Delete supplier</Button>
+            )}
             <Button variant="secondary" onClick={onClose}>Close</Button>
             <Button variant="secondary" onClick={() => setPurchasing(true)}><Package className="h-4 w-4" /> New purchase</Button>
             {isAdmin && data.totals.outstanding > 0 && (
@@ -2951,6 +2972,7 @@ function ReturnGoodsModal({ supplier, outstanding, onClose, onDone }) {
 function SuppliersTab({ accounts }) {
   const [addOpen, setAddOpen] = useState(false);
   const [viewing, setViewing] = useState(null);
+  const [showRemoved, setShowRemoved] = useState(false);
   const suppliersQ = useQuery(pageQueries.financeSuppliers());
   const suppliers = suppliersQ.data || [];
   if (suppliersQ.isLoading) return <PageSpinner />;
@@ -2968,6 +2990,10 @@ function SuppliersTab({ accounts }) {
   // for it than you are.
   const netPurchased = totals.purchased - totals.returned;
   const anyReturns = totals.returned > 0;
+  // A deleted supplier is switched off, never erased: the stock and payments are real, so they stay in the totals
+  // above. Its row is hidden only once nothing is owed either way — a supplier you still owe never disappears.
+  const removed = suppliers.filter((s) => s.isActive === false && Math.abs(s.outstanding) < 0.5);
+  const shown = showRemoved ? suppliers : suppliers.filter((s) => !removed.includes(s));
 
   return (
     <div className="space-y-4">
@@ -2975,7 +3001,7 @@ function SuppliersTab({ accounts }) {
           business that has never returned stock sees the four cards it always
           saw. */}
       <div className={anyReturns ? 'grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-5' : 'grid grid-cols-2 gap-3 xl:grid-cols-4'}>
-        <TintCard label="Suppliers" value={formatNumber(suppliers.length)} icon={Factory} tone="slate" sub="who you buy from" />
+        <TintCard label="Suppliers" value={formatNumber(suppliers.length - removed.length)} icon={Factory} tone="slate" sub="who you buy from" />
         <TintCard label="Total purchased" value={formatCurrency(totals.purchased)} icon={Package} tone="slate" sub="all stock ever bought" />
         {anyReturns && (
           <TintCard label="Goods returned" value={formatCurrency(totals.returned)} icon={Undo2} tone="amber"
@@ -2995,7 +3021,7 @@ function SuppliersTab({ accounts }) {
           <Table stack="wide">
             <THead><TR><TH>Supplier</TH><TH className="hidden xl:table-cell">Brand</TH><TH className="hidden xl:table-cell">Country</TH><TH>Orders</TH><TH>Purchased</TH>{anyReturns && <TH>Returned</TH>}<TH>Paid</TH><TH>Outstanding</TH></TR></THead>
             <TBody>
-              {suppliers.map((s) => {
+              {shown.map((s) => {
                 // Measured against the bill after returns, not against
                 // everything ever ordered — otherwise sending stock back makes
                 // the bar go backwards on money already paid.
@@ -3033,6 +3059,12 @@ function SuppliersTab({ accounts }) {
               })}
             </TBody>
           </Table>
+        )}
+        {removed.length > 0 && (
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border px-4 py-3 text-xs text-faint">
+            <span>{removed.length === 1 ? `1 deleted supplier (${removed[0].name}) is` : `${removed.length} deleted suppliers are`} {showRemoved ? 'shown' : 'hidden'}. What you bought from and paid them still counts in the totals above.</span>
+            <button type="button" className="btn-ghost px-2 py-1 text-xs" onClick={() => setShowRemoved((v) => !v)}>{showRemoved ? 'Hide' : 'Show'}</button>
+          </div>
         )}
       </Card>
       {addOpen && <AddSupplierModal onClose={() => setAddOpen(false)} />}
