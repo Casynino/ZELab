@@ -611,7 +611,7 @@ export default function ProductLabel() {
                 <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_260px]">
                   <Field label="Name">
                     <Input
-                      className="font-medium" placeholder="Pepa Ndogo" value={p.name}
+                      className="font-medium" placeholder="Pepa Ndogo (Brown) Bila Filter" value={p.name}
                       onChange={(e) => setProduct(openBox, { name: e.target.value })}
                     />
                   </Field>

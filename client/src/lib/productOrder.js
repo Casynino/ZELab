@@ -16,8 +16,8 @@
 
 const CANONICAL = [
   // ── Pepa (listed first, 15 Nov 2026) ──
-  'Pepa Ndogo',
-  'Pepa Ndogo Kubwa',
+  'Pepa Ndogo (Brown) Bila Filter',
+  'Pepa Ndogo Kubwa (Brown) Bila Filter',
   // ── OHIS ──
   'OHIS Ndogo (Brown) Bila Filter',
   'OHIS Ndogo (White) Bila Filter',

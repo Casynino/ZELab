@@ -29,10 +29,11 @@ const page = require('../src/services/productPage.service');
 const clone = (o) => JSON.parse(JSON.stringify(o));
 const keys = (c) => c.products.map((p) => `${p.key}:${p.name}`);
 const pictures = (html) => [...html.matchAll(/<img class="shot" src="\/pepa\/([a-z-]+)-/g)].map((m) => m[1]);
-const NDOGO = ['ndogo:Pepa Ndogo'];
+// The boxes carry their full product names since v9 (15 Nov 2026).
+const NDOGO = ['ndogo:Pepa Ndogo (Brown) Bila Filter'];
 // The settings row carries every product; which of them a page shows is
 // forPath's job, tested separately below.
-const BOTH = ['ndogo:Pepa Ndogo', 'ndogo77:Pepa Ndogo Kubwa'];
+const BOTH = ['ndogo:Pepa Ndogo (Brown) Bila Filter', 'ndogo77:Pepa Ndogo Kubwa (Brown) Bila Filter'];
 // What the 70 x 36 carton's code reaches — the assertion most of these tests
 // are really making.
 const onP = (c) => page.forPath(c, 'p');
@@ -98,6 +99,17 @@ test('a maker typed by hand is left exactly as typed', async () => {
 test('a row already saved as v8 is not touched again', async () => {
   seed({ ...clone(V2_ROW), v: page.CONTENT_VERSION, maker: 'Hao Labs', products: [{ key: 'ndogo', name: 'Pepa Ndogo' }] });
   assert.equal((await page.readContent()).maker, 'Hao Labs');   // saved as current: whatever it says is what he chose
+});
+
+// ── Full product names on the boxes (v9) ─────────────────────────────────────
+test('an older row with the short box names gets the full names; a name typed by hand is kept', async () => {
+  seed({ ...clone(V2_ROW), v: 8, products: [
+    { key: 'ndogo', name: 'Pepa Ndogo', note: 'x', intro: '', facts: [] },
+    { key: 'ndogo77', name: 'Pepa Ndogo Kubwa', note: 'y', intro: '', facts: [] },
+  ] });
+  assert.deepEqual(keys(await page.readContent()), BOTH);
+  seed({ ...clone(V2_ROW), v: 8, products: [{ key: 'ndogo', name: 'Pepa Small Brown', note: 'x', intro: '', facts: [] }] });
+  assert.equal((await page.readContent()).products.find((p) => p.key === 'ndogo').name, 'Pepa Small Brown');
 });
 
 test('a v1 row gains its key, keeps its own wording, and gets Slow burn Unfiltered', async () => {
@@ -188,7 +200,7 @@ test('Type becomes "Slow burn Unfiltered" only where a v1 row said exactly "Unfi
 
 test('an empty "Add a paper" card does not confuse the upgrade', () => {
   assert.deepEqual(keys(page.shape(page.upgrade({ products: [{ name: 'Pepa Brown' }, { name: '', facts: [] }] }))),
-    ['ndogo:Pepa Brown', 'ndogo77:Pepa Ndogo Kubwa']);
+    ['ndogo:Pepa Brown', 'ndogo77:Pepa Ndogo Kubwa (Brown) Bila Filter']);
 });
 
 test('no key is ever given to two products', () => {
@@ -252,8 +264,8 @@ test('the page references only pictures that ship, and carries no script', async
 test('each page shows its own box, and only its own', async () => {
   store.row = null;
   const c = await page.getContent();
-  assert.deepEqual(keys(page.forPath(c, 'p')), ['ndogo:Pepa Ndogo']);
-  assert.deepEqual(keys(page.forPath(c, 'p2')), ['ndogo77:Pepa Ndogo Kubwa']);
+  assert.deepEqual(keys(page.forPath(c, 'p')), ['ndogo:Pepa Ndogo (Brown) Bila Filter']);
+  assert.deepEqual(keys(page.forPath(c, 'p2')), ['ndogo77:Pepa Ndogo Kubwa (Brown) Bila Filter']);
 });
 
 test('the 70 x 36 page is untouched by the second box', async () => {
@@ -286,9 +298,9 @@ test('a scan never lands on an empty page', async () => {
   store.row = null;
   const c = await page.getContent();
   assert.deepEqual(keys(page.forPath(c, 'p9')), BOTH);
-  assert.deepEqual(keys(page.forPath(c, '')), ['ndogo:Pepa Ndogo']);   // empty means the original page
+  assert.deepEqual(keys(page.forPath(c, '')), ['ndogo:Pepa Ndogo (Brown) Bila Filter']);   // empty means the original page
   const stripped = { ...c, products: c.products.filter((p) => p.key !== 'ndogo77') };
-  assert.deepEqual(keys(page.forPath(stripped, 'p2')), ['ndogo:Pepa Ndogo']);
+  assert.deepEqual(keys(page.forPath(stripped, 'p2')), ['ndogo:Pepa Ndogo (Brown) Bila Filter']);
 });
 
 test('each page names itself in the link preview', async () => {
@@ -303,7 +315,7 @@ test('each page names itself in the link preview', async () => {
 test('a saved row that predates the second box gains it', async () => {
   seed(V2_ROW);                                   // a production row from before this change
   const c = await page.readContent();
-  assert.deepEqual(keys(page.forPath(c, 'p2')), ['ndogo77:Pepa Ndogo Kubwa']);
+  assert.deepEqual(keys(page.forPath(c, 'p2')), ['ndogo77:Pepa Ndogo Kubwa (Brown) Bila Filter']);
   assert.equal(c.products[0].intro, 'Edited in v2');   // and keeps what the owner typed
 });
 
@@ -311,6 +323,7 @@ test('a second-box card the owner deleted does not come back', async () => {
   seed({ ...clone(V2_ROW), v: page.CONTENT_VERSION, products: [{ key: 'ndogo', name: 'Pepa Ndogo' }] });
   await page.saveContent({ v: page.CONTENT_VERSION, products: [{ key: 'ndogo', name: 'Pepa Ndogo' }] }, 'admin');
   const c = await page.readContent();
+  // Saved under the current version, so the name stays as he saved it.
   assert.deepEqual(keys(c), ['ndogo:Pepa Ndogo']);
   // ...and its page then falls back rather than going blank.
   assert.deepEqual(keys(page.forPath(c, 'p2')), ['ndogo:Pepa Ndogo']);
@@ -346,8 +359,8 @@ test('a count the owner typed himself is never overwritten', async () => {
 test('a scan in capitals shows one box, the way a scan in lower case does', async () => {
   store.row = null;
   const c = await page.getContent();
-  for (const [path, want] of [['P', NDOGO], ['P2', ['ndogo77:Pepa Ndogo Kubwa']],
-                              ['/P/', NDOGO], ['/P2/', ['ndogo77:Pepa Ndogo Kubwa']]]) {
+  for (const [path, want] of [['P', NDOGO], ['P2', ['ndogo77:Pepa Ndogo Kubwa (Brown) Bila Filter']],
+                              ['/P/', NDOGO], ['/P2/', ['ndogo77:Pepa Ndogo Kubwa (Brown) Bila Filter']]]) {
     assert.deepEqual(keys(page.forPath(c, path)), want, `path ${path}`);
   }
 });

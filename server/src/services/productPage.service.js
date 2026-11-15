@@ -108,8 +108,12 @@ const DEFAULT_PATH = 'p';
 // page of its own; v6 corrected that box to 77 x 44, the size its own die
 // pattern carries; v7 filled that box's counts, which its own artwork states;
 // v8 renamed the maker from Hǎo-Labs to ZELab (the business changed its name,
-// 10 Nov 2026) — where the saved row still says the old name. See upgrade().
-const CONTENT_VERSION = 8;
+// 10 Nov 2026) — where the saved row still says the old name; v9 gave the two boxes their full product names,
+// "Pepa Ndogo (Brown) Bila Filter" and "Pepa Ndogo Kubwa (Brown) Bila Filter" (15 Nov 2026), where they still
+// carry the short ones. See upgrade().
+const CONTENT_VERSION = 9;
+// The short names the boxes carried before v9, so older rows are still recognised and renamed.
+const OLD_BOX_NAMES = { ndogo: 'Pepa Ndogo', ndogo77: 'Pepa Ndogo Kubwa' };
 const NDOGO_NOTE = 'Brown • Slow burn Unfiltered';
 
 // The frozen fallback. These are also the starting values in the editor.
@@ -125,7 +129,7 @@ const DEFAULTS = {
   products: [
     {
       key: 'ndogo',
-      name: 'Pepa Ndogo',
+      name: 'Pepa Ndogo (Brown) Bila Filter',
       note: NDOGO_NOTE,
       intro: 'Made from quality raw materials and designed for a slow, smooth and even burn, '
         + 'Pepa Ndogo delivers a consistent rolling experience every time.',
@@ -151,7 +155,7 @@ const DEFAULTS = {
       // cannot be corrected afterwards. The editor shows the empty rows; the
       // page simply leaves them out.
       key: 'ndogo77',
-      name: 'Pepa Ndogo Kubwa',
+      name: 'Pepa Ndogo Kubwa (Brown) Bila Filter',
       note: 'Brown • Slow burn Unfiltered • 77 × 44',
       // No mention of the other box's size: a customer scanning this carton
       // should read about this box and nothing else.
@@ -188,7 +192,8 @@ function keyProducts(products) {
   const taken = new Set();
   const list = products.filter((p) => p && typeof p === 'object' && String(p.name || '').trim());
   for (const p of list) {
-    const d = DEFAULTS.products.find((x) => sameName(x.name, p.name));
+    // By its name today, or the short name it had before v9 — either way it gets its pictures back.
+    const d = DEFAULTS.products.find((x) => sameName(x.name, p.name) || sameName(OLD_BOX_NAMES[x.key], p.name));
     if (d && !taken.has(d.key)) { out.set(p, d.key); taken.add(d.key); }
   }
   for (const p of list) {
@@ -266,7 +271,7 @@ function upgrade(raw, { append = true } = {}) {
     : [];
   if (from < 2) {
     for (const p of products) {
-      const d = !p.key && DEFAULTS.products.find((x) => sameName(x.name, p.name));
+      const d = !p.key && DEFAULTS.products.find((x) => sameName(x.name, p.name) || sameName(OLD_BOX_NAMES[x.key], p.name));
       if (d && !products.some((q) => q.key === d.key)) p.key = d.key;
     }
     if (products.length === 1 && !products[0].key) products[0].key = 'ndogo';
@@ -325,8 +330,16 @@ function upgrade(raw, { append = true } = {}) {
     }
   }
 
+  // v9: the boxes carry their full product names — only where they still have the short name this file wrote.
+  if (from < 9) {
+    for (const pr of kept) {
+      const full = DEFAULTS.products.find((d) => d.key === pr.key);
+      if (full && sameName(pr.name, OLD_BOX_NAMES[pr.key])) pr.name = full.name;
+    }
+  }
+
   for (const d of DEFAULTS.products) {
-    if (append && !kept.some((p) => p.key === d.key || sameName(p.name, d.name))) kept.push(d);
+    if (append && !kept.some((p) => p.key === d.key || sameName(p.name, d.name) || sameName(p.name, OLD_BOX_NAMES[d.key]))) kept.push(d);
   }
   // v8: the business is ZELab now (10 Nov 2026: "the brand has changed, everything
   // has to change to ZELab"). The maker line is the distributor, the trademark

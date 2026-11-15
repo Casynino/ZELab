@@ -8,7 +8,8 @@ const { productCreate, productUpdate } = require('../src/validators/catalog.vali
 
 test('the fixed product order knows the names without the dash, and the old dashed names in the same place', () => {
   // Pepa is listed first (15 Nov 2026); the old long name "OHIS Pepa Ndogo …" still finds OHIS Ndogo.
-  assert.equal(productRank('Pepa Ndogo'), 0);
+  assert.equal(productRank('Pepa Ndogo (Brown) Bila Filter'), 0);
+  assert.equal(productRank('Pepa Ndogo Kubwa (Brown) Bila Filter'), 1);
   assert.equal(productRank('OHIS Ndogo (Brown) Bila Filter'), 2);
   assert.equal(productRank('OHIS Ndogo (Brown) – Bila Filter'), 2);
   assert.equal(productRank('OHIS Pepa Ndogo (Brown) – Bila Filter'), 2);

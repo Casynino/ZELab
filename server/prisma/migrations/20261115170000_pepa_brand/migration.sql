@@ -22,8 +22,8 @@ WHERE NOT EXISTS (SELECT 1 FROM "categories" WHERE lower("name") = 'pepa');
 INSERT INTO "products" ("id", "name", "sku", "brandId", "categoryId", "baseUnitName", "purchasePrice", "sellingPrice", "minStockLevel", "reorderQuantity", "isActive", "createdAt", "updatedAt")
 SELECT v.id, v.name, v.sku, b."id", c."id", 'Box', 0, v.price, 50, 50, true, now(), now()
 FROM (VALUES
-  ('prod_pepa_ndogo_20261115', 'Pepa Ndogo', 'PEPA-NDOGO', 30000),
-  ('prod_pepa_ndogo_kubwa_20261115', 'Pepa Ndogo Kubwa', 'PEPA-NDOGO-KUBWA', 35000)
+  ('prod_pepa_ndogo_20261115', 'Pepa Ndogo (Brown) Bila Filter', 'PEP-PN-BF', 30000),
+  ('prod_pepa_ndogo_kubwa_20261115', 'Pepa Ndogo Kubwa (Brown) Bila Filter', 'PEP-PNK-BF', 35000)
 ) AS v(id, name, sku, price)
 JOIN "brands" b ON lower(b."name") = 'pepa'
 JOIN "categories" c ON lower(c."name") = 'pepa'
