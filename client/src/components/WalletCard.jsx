@@ -51,7 +51,7 @@ export default function WalletCard({
     <section
       role={onOpen ? 'button' : undefined}
       tabIndex={onOpen ? 0 : undefined}
-      aria-label={onOpen ? 'Open my wallet: every transaction' : undefined}
+      aria-label={onOpen ? 'Open my wallet history' : undefined}
       onClick={onOpen ? onClick : undefined}
       onTouchStart={onOpen ? onTouchStart : undefined}
       onTouchEnd={onOpen ? onTouchEnd : undefined}
@@ -116,7 +116,7 @@ export default function WalletCard({
           {onOpen && (
             <p className="mt-2 flex items-center gap-1 text-[11px] font-medium text-white/55">
               <ChevronsRight className="wallet-nudge h-3.5 w-3.5 shrink-0" strokeWidth={2.4} aria-hidden="true" />
-              Swipe to view details
+              Swipe for history
             </p>
           )}
         </div>
