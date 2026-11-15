@@ -12,7 +12,8 @@
 // for capitals and digits, which holds this address at 25 modules instead of
 // 29. Addresses are not case-sensitive, so it opens the very same page. The
 // quiet zone (4 modules) is inside the file, so whoever places it needs no
-// margin of their own.
+// margin of their own. Error level Q (15 Nov 2026, the print run): at this
+// length it costs no extra modules over M and survives more scuffing.
 
 const path = require('path');
 const fs = require('fs');
@@ -40,7 +41,7 @@ const CODES = {
   for (const [name, text] of Object.entries(CODES)) {
     const file = path.join(OUT, name + '.png');
     await QRCode.toFile(file, text, {
-      errorCorrectionLevel: 'M',
+      errorCorrectionLevel: 'Q',
       margin: 4,
       scale: 12,
       color: { dark: '#000000', light: '#ffffff' },

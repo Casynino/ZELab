@@ -100,7 +100,7 @@ q = pack(); frames = []
 for az, el, label in views:
     frames.append((label, shoot(q, [PACK_SH()], (0, 72 if el < 40 else 60, 0), 560 if el < 40 else 600,
                                 az, el, 26, (820, 1000), turn_light=True)))
-grid(frames, "Pepa 70 × 36 — every angle", "Small box · 74 × 155 × 48 mm · final design", 820, 1000, 3,
+grid(frames, "Pepa Ndogo (Brown) Bila Filter", "70 × 36 · every angle · small box 74 × 155 × 48 mm", 820, 1000, 3,
      OUT + "Pepa-small-every-angle.png")
 
 if KSS:

@@ -206,7 +206,7 @@ KSS_SIZE_TEXT = "112 × 126 × 55 mm (width × depth × height)"
 
 SMALL = dict(
     key="small", folder="n70", sheet_page=1,
-    name="Pepa Ndogo — 70 × 36 box", short="70 × 36 box", zh="小盒 70 × 36 mm",
+    name="Pepa Ndogo (Brown) Bila Filter — 70 × 36 box", short="70 × 36 box", zh="小盒 70 × 36 mm",
     box=(74, 155, 48), size_text=SMALL_SIZE_TEXT,
     sheet=(264, 464), scale=0.80,
     panels=[
@@ -230,7 +230,8 @@ SMALL = dict(
         ("Papers per box", "每盒张数", "2,500"),
         ("Booklet", "内册尺寸", "73 × 22.5 × 5 mm assembled, from a 73 × 93 mm blank"),
         ("Flat sheet", "展开尺寸", "264 × 464 mm, one box plus one booklet per sheet"),
-        ("QR codes", "二维码", "Top panel, bottom panel and booklet — three codes, all https://www.zelab.site/p"),
+        ("QR codes", "二维码", "Top panel, bottom panel and booklet — three codes, all read "
+                                "HTTPS://WWW.ZELAB.SITE/P"),
     ],
     opening=[
         ("Tear along the perforation across the front: 77 mm below the top fold, 78 mm above the "
@@ -289,7 +290,7 @@ KUBWA_SIZE_TEXT = "81 × 126 × 55 mm (width × depth × height)"
 # glue flap and the hook bottom.
 KUBWA = dict(
     key="kubwa", folder="n77", sheet_page=1,
-    name="Pepa Ndogo Kubwa — 77 × 44 box", short="77 × 44 box", zh="大盒 77 × 44 mm",
+    name="Pepa Ndogo Kubwa (Brown) Bila Filter — 77 × 44 box", short="77 × 44 box", zh="大盒 77 × 44 mm",
     box=(81, 55, 126), size_text=KUBWA_SIZE_TEXT,
     sheet=(446, 289), scale=0.62,
     # No display render: how this carton stands open is the one thing its die
@@ -309,7 +310,7 @@ KUBWA = dict(
     tear=(79.21, 233.30, 412.20),
     facts=[
         ("Assembled box", "成盒尺寸", KUBWA_SIZE_TEXT),
-        ("Paper size", "纸张尺寸", "77 × 44 mm, brown, slow burn"),
+        ("Paper size", "纸张尺寸", "77 × 44 mm, brown, unfiltered, slow burn"),
         ("Leaves per booklet", "每本张数", "50 printed on the art (die sheet allows up to 60)"),
         ("Booklets per box", "每盒本数", "50"),
         ("Papers per box", "每盒张数", "2,500"),
@@ -317,8 +318,8 @@ KUBWA = dict(
         ("Wall band", "围板高度", "54.44 mm; walls 126 · 81 · 126 · 81 mm round the box"),
         ("Flat sheet", "展开尺寸", "the die measures 446 × 289 mm on a 549 × 436 mm file"),
         ("QR codes", "二维码",
-         "Front panel, back panel and booklet. All three read "
-         "HTTPS://WWW.ZELAB.SITE/P2"),
+         "Front panel, back panel, and the booklet's outside and inside cover (page 2) — "
+         "four codes, all read HTTPS://WWW.ZELAB.SITE/P2"),
     ],
     opening=[],
 )
@@ -368,7 +369,8 @@ def dieline_page(deck, design, box):
     """The flat sheet with every panel called out by number."""
     img, d, y = deck.page("The die-line, panel by panel", "展开刀版图·各面标注")
     sheet = sheet_image(design, box)
-    avail_w, avail_h = PW - 2 * M, round(150 * MM)
+    # 138 mm, not 150: at 150 the tall 70 x 36 sheet pushed the closing note into the footer.
+    avail_w, avail_h = PW - 2 * M, round(138 * MM)
     view = fit(sheet, avail_w, avail_h)
     sx = view.width / sheet.width * K          # page px per mm of sheet
     ox, oy = M + (avail_w - view.width) // 2, y
@@ -409,7 +411,10 @@ def cover_page(deck, design, box):
     img, d, y = deck.page()
     d.text((M, y), "Pepa", font=F(40, True), fill=INK)
     y += round(40 * DPI / 72 * 1.1)
-    d.text((M, y), box["name"], font=F(20, True), fill=ACCENT)
+    size = 20
+    while d.textlength(box["name"], font=F(size, True)) > PW - 2 * M:
+        size -= 0.5
+    d.text((M, y), box["name"], font=F(size, True), fill=ACCENT)
     y += round(20 * DPI / 72 * 1.25)
     d.text((M, y), box["zh"], font=Z(13), fill=SOFT)
     y += round(13 * DPI / 72 * 1.6)
@@ -430,10 +435,10 @@ def cover_page(deck, design, box):
     ty = y + round(4 * MM)
     d.text((M + round(4 * MM), ty), "Pepa is made for ZELab", font=F(10, True), fill=INK)
     d.text((M + round(4 * MM), ty + round(5.5 * MM)),
-           "Mbezi Goigi, Dar es Salaam, Tanzania · 0788 734 003 · haodealtz@gmail.com",
+           "Mbezi Goigi, Dar es Salaam, Tanzania · 0788 734 003",
            font=F(10), fill=INK)
     d.text((M + round(4 * MM), ty + round(11 * MM)),
-           "Questions on any measurement here come back to this address.", font=F(9), fill=SOFT)
+           "Questions on any measurement here come back to this number.", font=F(9), fill=SOFT)
 
 def faces_page(deck, design, box):
     img, d, y = deck.page("The box closed, face by face", "闭合状态·各面")
@@ -541,10 +546,10 @@ SHARED_NOTES = [
     ("No QR code on these files has a proper quiet zone: the white stops within a module of the "
      "code. Add 4 modules of white around each — about 3 mm on a box panel, about 1.3 mm on a "
      "booklet. Every code was scanned before this deck was written; the address each one carries "
-     "is listed under that box's own checks. The capitals are deliberate and must not be tidied: "
+     "is in the QR codes row on the first page. The capitals are deliberate and must not be tidied: "
      "a QR has a cheaper mode for capitals and digits, and addresses are not case-sensitive.",
      "本文件各二维码均无足够静区：白底在码边缘即止。请在每个码四周补足 4 个模块宽的空白 —— 盒面约 3 mm，"
-     "内册约 1.3 mm。所有二维码在编写本文件前均已扫描校验，各盒所含网址见该盒专有确认事项。"
+     "内册约 1.3 mm。所有二维码在编写本文件前均已扫描校验，各码所含网址见第一页“二维码”一栏。"
      "大写为刻意设定，请勿改为小写：二维码对大写字母与数字有更省空间的编码模式，且网址不区分大小写。"),
     ("On both booklets the Pepa logo, the 50 and the QR sit under 2 mm from a crease — some under "
      "1 mm. Move them 2–3 mm clear before the run, so a fold does not press through the artwork. "
@@ -703,7 +708,8 @@ DESIGNS = [
     # One artwork, two cartons. The deck titles come from the box, so the design
     # label stays the brand rather than naming one of its boxes.
     dict(dir="d1", slug="pepa", label="Pepa", zh="Pepa",
-         small_file="70×36刀版 0 3.pdf", kubwa_file="77x44 50入勾底 120310.pdf",
+         small_file="Pepa 70x36 die-line - PRINT FILE (15 Nov 2026).pdf",
+         kubwa_file="Pepa 77x44 die-line - PRINT FILE (15 Nov 2026).pdf",
          big_file="【7244】册子KSS本色13g无水印 OHIS棕色-- 4.pdf"),
 ]
 

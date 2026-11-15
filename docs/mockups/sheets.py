@@ -33,7 +33,7 @@ def sheet(title, sub, hero, hero_label, tiles, out, WIDTH=2400):
         d.text((PAD + i * (tw + GAP), y + th + 10), lab, font=FT(22, True), fill=SOFT)
     s.save(out, optimize=True); print(out.split("/")[-1], s.size)
 
-sheet("Pepa 70 × 36 — small box", "Pepa Ndogo · 74 × 155 × 48 mm · 50 booklets of 50 leaves · final design",
+sheet("Pepa Ndogo (Brown) Bila Filter — 70 × 36", "Small box · 74 × 155 × 48 mm · 50 booklets of 50 leaves · final design",
       "small-open-display", "Open as a display, with booklets",
       [("small-front", "Front"), ("small-back", "Back"), ("small-with-booklets", "With booklets"), ("small-top", "Top, seen from the front")],
       O + "Pepa-small-box-sheet.png")
