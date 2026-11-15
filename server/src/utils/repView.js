@@ -9,20 +9,35 @@ const COST_KEYS = new Set([
   'cost', 'landedUnitCost', 'cogs', 'costOfSold', 'inventoryValue', 'grossMargin', 'netProfit',
 ]);
 
-function stripCosts(value) {
-  if (Array.isArray(value)) return value.map(stripCosts);
+// CallMeBot keys (audit ui-r02 / perm02): anyone holding a rep's key and number can send his phone WhatsApp
+// messages that look like ZELab's alerts. Every rep row a service includes carries it, so it went to warehouse
+// staff (every rep's) and to each rep (his own) in ordinary lists. Only the owner sets and reads them — on the
+// rep's profile and in Settings — so they leave every other answer here.
+const SECRET_KEYS = new Set(['whatsappApiKey', 'apiKey', 'apikey', 'toApiKey']);
+const REP_HIDDEN = new Set([...COST_KEYS, ...SECRET_KEYS]);
+
+function stripKeys(value, keys) {
+  if (Array.isArray(value)) return value.map((v) => stripKeys(v, keys));
   if (value && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
     const out = {};
     for (const [k, v] of Object.entries(value)) {
-      if (COST_KEYS.has(k)) continue;
-      out[k] = stripCosts(v);
+      if (keys.has(k)) continue;
+      out[k] = stripKeys(v, keys);
     }
     return out;
   }
   return value;
 }
 
-const forRole = (req, data) => (req.user && req.user.role === 'SALES_REP' ? stripCosts(data) : data);
+const stripCosts = (value) => stripKeys(value, COST_KEYS);
+const stripSecrets = (value) => stripKeys(value, SECRET_KEYS);
+
+// A rep loses costs and keys, staff lose keys, the owner (ADMIN) sees everything.
+const forRole = (req, data) => {
+  const role = req.user && req.user.role;
+  if (!role || role === 'ADMIN') return data;
+  return stripKeys(data, role === 'SALES_REP' ? REP_HIDDEN : SECRET_KEYS);
+};
 
 // What a sales rep must not see on a product (audit 11 Nov 2026, rep-app-2): how many boxes the
 // warehouses hold, the minimum and reorder levels, and which other reps hold boxes of it and how many.
@@ -40,4 +55,4 @@ function stripProductStock(product) {
 
 const productsForRole = (req, data) => (req.user && req.user.role === 'SALES_REP' ? stripProductStock(data) : data);
 
-module.exports = { stripCosts, forRole, COST_KEYS, stripProductStock, productsForRole, PRODUCT_STOCK_KEYS };
+module.exports = { stripCosts, stripSecrets, forRole, COST_KEYS, SECRET_KEYS, stripProductStock, productsForRole, PRODUCT_STOCK_KEYS };
