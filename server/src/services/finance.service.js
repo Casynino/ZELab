@@ -1916,6 +1916,9 @@ async function paySupplier({ purchaseOrderId, accountId, amount, notes, occurred
 // roughly 7.18M of it across 73 overdue accounts, so this is not a rounding
 // choice — it is the difference between a figure the owner can trust and one
 // that argues with him.
+// 15 Nov 2026: collections DO post cash now (sales.recordSalePayment — a credit payment or the rest of a part-paid
+// sale is received into a chosen account). It stays a memo all the same: most of what is owed is old, overdue
+// credit, and money not yet in hand is not counted as the owner's capital until it is.
 // What one supplier is owed RIGHT NOW: the cost of what has already SOLD, less
 // what he has been paid — never more than he is actually invoiced for.
 // Over-payment shows as zero due, not as a negative.
