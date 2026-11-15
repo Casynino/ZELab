@@ -99,10 +99,17 @@ const linesOf = (body) => (body.items || [{ productId: body.productId, packaging
 
 // One adjustment or damage entry, every product in ONE transaction: a line that cannot be taken (not enough at
 // the place, or boxes an open order still owes) refuses the whole entry, so nothing half-moves.
+// With a `clientKey` (one per press of the form) the entry is saved once: a double tap or a retry after a lost answer
+// waits on the first press here, then finds its rows (the key is their referenceId) and moves nothing (audit reps-02).
 async function moveLines(req, { type, increase }) {
-  const { location, reason, occurredAt } = req.body;
+  const { location, reason, occurredAt, clientKey } = req.body;
   const lines = linesOf(req.body);
   return prisma.$transaction(async (tx) => {
+    if (clientKey) {
+      if (typeof tx.$executeRaw === 'function') await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`adjust:${clientKey}`}))`;
+      const done = await tx.inventoryTransaction.findFirst({ where: { referenceType: 'ADJUSTMENT', referenceId: clientKey }, select: { id: true } });
+      if (done) throw ApiError.conflict('This entry was already saved — it is in the ledger.', { alreadySaved: true });
+    }
     const products = await tx.product.findMany({ where: { id: { in: lines.map((l) => l.productId) } }, select: { id: true, purchasePrice: true } });
     const price = new Map(products.map((p) => [p.id, p.purchasePrice]));
     const movements = [];
@@ -117,6 +124,7 @@ async function moveLines(req, { type, increase }) {
         location,
         unitCost: toNumber(price.get(line.productId)),
         referenceType: 'ADJUSTMENT',
+        referenceId: clientKey || null,
         userId: req.user.id,
         notes: reason,
         occurredAt: occurredAt ? new Date(occurredAt) : undefined,
@@ -130,8 +138,16 @@ async function moveLines(req, { type, increase }) {
 }
 
 // Manual signed adjustment with a mandatory reason.
+// Adding boxes is the owner's (audit reps-02, 15 Nov 2026), as opening stock is (purc05): staff added stock outside
+// the purchase orders here — into the warehouse, or to a rep so he held boxes no order owed — and a double tap added
+// it twice. An INCREASE is admin-only and needs its clientKey. Staff still take boxes off (a count that came up
+// short, a mistake) and record damage, with their reason.
 const adjust = asyncHandler(async (req, res) => {
   const { direction, reason } = req.body;
+  if (direction === 'INCREASE') {
+    if (req.user?.role !== 'ADMIN') throw ApiError.forbidden('Only the owner adds stock. Bought stock comes in by receiving its purchase order.');
+    if (!req.body.clientKey) throw ApiError.badRequest('Refresh the page and try again.');
+  }
   const { lines, movements } = await moveLines(req, { type: 'ADJUSTMENT', increase: direction === 'INCREASE' });
   for (const l of lines) {
     await audit.record(req, { action: 'ADJUSTMENT', entityType: 'Product', entityId: l.productId, newValues: { direction, quantity: l.quantity, reason, ...(lines.length > 1 ? { products: lines.length } : {}) } });

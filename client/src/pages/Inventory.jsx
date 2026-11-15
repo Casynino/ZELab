@@ -145,6 +145,10 @@ function AdjustModal({ mode, onClose }) {
   const [reason, setReason] = useState('');
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const sending = useRef(false);
+  // One per opening of the window: a double tap or a retry after a lost answer is saved once (audit reps-02).
+  const key = useRef(newKey());
+  // Adding boxes is the owner's, as opening stock is (the server refuses anyone else): staff only take boxes off.
+  const canAdd = useAuth().user?.role === ROLES.ADMIN;
 
   const loc = place || (home ? { type: 'WAREHOUSE', id: home.id } : null);
   const warehouse = loc?.type === 'WAREHOUSE' ? active.find((w) => w.id === loc.id) : null;
@@ -174,7 +178,7 @@ function AdjustModal({ mode, onClose }) {
 
   const save = useMutation({
     mutationFn: () => {
-      const body = { location: buildLocation(), items, reason };
+      const body = { location: buildLocation(), items, reason, clientKey: key.current };
       if (mode === 'adjust') return api.post('/inventory/adjustments', { ...body, direction });
       return api.post('/inventory/damage', body);
     },
@@ -185,7 +189,14 @@ function AdjustModal({ mode, onClose }) {
       refreshAfter(qc, 'stock'); // the Dashboard's stock alerts and a rep's boxes too (audit freshness-4)
       onClose();
     },
-    onError: (e) => { toast.error(apiError(e)); stock.refetch(); },
+    onError: (e) => {
+      // This press already went through (a double tap, or a retry after a lost answer): done, not an error. Only that
+      // 409 — "not enough stock" is a 409 too, and is a real refusal.
+      if (wentThrough(e) && e?.response?.data?.error?.details?.alreadySaved) {
+        toast.success('Already saved — it is in the ledger'); refreshAfter(qc, 'stock'); onClose(); return;
+      }
+      toast.error(apiError(e)); stock.refetch();
+    },
     onSettled: () => { sending.current = false; },
   });
 
@@ -263,9 +274,12 @@ function AdjustModal({ mode, onClose }) {
           </div>
         </PlaceLine>
 
-        {isAdjust && (
+        {isAdjust && canAdd && (
           <Segmented label="Direction" value={direction} onChange={setDirection}
             options={[{ value: 'DECREASE', label: 'Remove boxes' }, { value: 'INCREASE', label: 'Add boxes' }]} />
+        )}
+        {isAdjust && !canAdd && (
+          <p className="text-xs text-faint">This takes boxes off. Only the owner adds boxes — bought stock comes in on its purchase order.</p>
         )}
 
         <ProductPicker rows={rows} value={qty} onChange={pick} cap={removing} stock={loc ? stock : null}

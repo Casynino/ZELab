@@ -47,7 +47,12 @@ const install = (path, exports) => {
 };
 install('../src/config/prisma', prismaStub);
 install('../src/services/audit.service', { record: async () => {} });
-install('../src/services/inventory.service', { recomputeAllCaches: async () => {}, LOCATION: {}, });
+install('../src/services/inventory.service', {
+  recomputeAllCaches: async () => {},
+  LOCATION: {},
+  // The wipe reads what the rep holds, product by product (audit reps-03).
+  repBalances: async () => (boxesHeld ? [{ productId: 'p1', salesRepId: 'rep-1', baseQuantity: boxesHeld }] : []),
+});
 install('../src/services/commission.service', { computeForRep: async () => ({ earned: 20000, available: 20000 }) });
 
 const ctrl = require('../src/controllers/salesReps.controller');
@@ -115,4 +120,25 @@ test('and told why not, when boxes are still out', async () => {
   const out = await run(ctrl.deletionPreview);
   assert.equal(out.data.canDelete, false);
   assert.match(out.data.blockedReason, /19 boxes/);
+});
+
+// Audit reps-03 (15 Nov 2026): "Reset data" had no boxes check, so it deleted the rep's ledger rows while the
+// warehouse's TRANSFER_OUT stayed, and the boxes left stock with no record.
+test('Reset data on a rep still holding boxes is refused before anything is deleted', async () => {
+  boxesHeld = 2;
+  let wiped = 0;
+  const realDelete = prismaStub.inventoryTransaction.deleteMany;
+  prismaStub.inventoryTransaction.deleteMany = async (...a) => { wiped += 1; return realDelete(...a); };
+  try {
+    await assert.rejects(
+      () => run(ctrl.resetData, { body: { confirm: 'REP-007' } }),
+      (e) => /still holding 2 boxes\. Take the boxes back first/.test(e.message),
+    );
+    assert.equal(wiped, 0, 'no ledger row deleted');
+    boxesHeld = 0;
+    const out = await run(ctrl.resetData, { body: { confirm: 'REP-007' } });
+    assert.equal(out.data.reset, true, 'with the boxes back it resets as before');
+  } finally {
+    prismaStub.inventoryTransaction.deleteMany = realDelete;
+  }
 });
