@@ -1,12 +1,12 @@
 'use strict';
 
 const { z } = require('zod');
-const { id, paginationFields, dateRangeFields, money } = require('./common.validator');
+const { id, paginationFields, dateRangeFields, money, lineQuantity } = require('./common.validator');
 
 const saleItem = z.object({
   productId: id,
   packagingUnitId: id,
-  quantity: z.number().int().positive(),
+  quantity: lineQuantity,
   unitPrice: money.optional(), // price per chosen packaging unit; defaults to product/packaging price
   lineDiscount: money.optional(),
 });
@@ -25,7 +25,8 @@ const saleCreate = {
       dueDate: z.string().datetime().optional(),
       region: z.string().max(120).optional(),
       notes: z.string().max(500).optional(),
-      soldAt: z.string().datetime().optional(),
+      // No soldAt (audit sale15): a sale is dated when it is made. A typed date let a closed day's revenue and
+      // money in change after the fact; the app never sent one, so it is dropped here.
       accountId: id.optional().nullable(), // payment account the money went to
     })
     .refine((d) => d.salesRepId || d.warehouseId, {
@@ -61,7 +62,7 @@ const cancelSale = {
 // sale's updatedAt as the window saw it — one refund per look, so a double tap cannot send two.
 const refundSale = {
   body: z.object({
-    items: z.array(z.object({ saleItemId: id, quantity: z.number().int().positive() })).min(1, 'Pick at least one box').max(100),
+    items: z.array(z.object({ saleItemId: id, quantity: lineQuantity })).min(1, 'Pick at least one box').max(100),
     reason: z.string().trim().max(500).optional(),
     version: z.string().datetime(),
   }),

@@ -684,8 +684,31 @@ const whatsappTest = asyncHandler(async (req, res) => {
 //
 // Rep-side ledger only: warehouse entries stay exactly as they are, so the
 // warehouse count never moves because somebody removed a person.
+// Money in the books that came from this rep's records: the money-in of his settled sales and the payouts of his
+// withdrawals. Wiping his sales or withdrawals while these rows stay leaves money in the accounts with no sale or
+// payout behind it (audit sale06: 490,500 of income with no sale after three reps were deleted), and the ledger is
+// never deleted. So a rep with money in the books is suspended, never wiped.
+async function repMoneyInBooks(db, repId) {
+  const settlementIds = (await db.settlement.findMany({ where: { salesRepId: repId }, select: { id: true } })).map((s) => s.id);
+  const [sales, withdrawals] = await Promise.all([
+    db.sale.findMany({ where: { OR: [{ salesRepId: repId }, { settlementId: { in: settlementIds } }] }, select: { id: true } }),
+    db.commissionWithdrawal.findMany({ where: { salesRepId: repId }, select: { id: true } }),
+  ]);
+  const or = [];
+  if (sales.length) or.push({ refType: 'Sale', refId: { in: sales.map((s) => s.id) } });
+  if (withdrawals.length) or.push({ refType: 'CommissionWithdrawal', refId: { in: withdrawals.map((w) => w.id) } });
+  if (!or.length) return 0;
+  return db.financeTransaction.count({ where: { OR: or } });
+}
+
+const moneyInBooksReason = (name, rows) => `${name} has ${rows} money ${rows === 1 ? 'entry' : 'entries'} in the books from settled sales or payouts. `
+  + 'Deleting would leave that money in the accounts with no sale or payout behind it, and recorded money is never deleted. Suspend the rep instead — the history stays.';
+
 async function wipeRepActivity(repId, userId) {
   return prisma.$transaction(async (tx) => {
+    // Checked inside the wipe as well as on the delete screen, so "reset data" cannot do it either.
+    const inBooks = await repMoneyInBooks(tx, repId);
+    if (inBooks > 0) throw ApiError.badRequest(moneyInBooksReason('This rep', inBooks));
     const settlements = await tx.settlement.findMany({ where: { salesRepId: repId }, select: { id: true } });
     const settlementIds = settlements.map((s) => s.id);
     const transfers = await tx.stockTransfer.findMany({ where: { OR: [{ toRepId: repId }, { fromRepId: repId }] }, select: { id: true } });
@@ -759,6 +782,8 @@ async function deletionCheck(repId) {
   return {
     rep,
     boxesHeld,
+    // Deleting for good (purge) also needs no money in the books from this rep (audit sale06).
+    moneyInBooks: await repMoneyInBooks(prisma, repId),
     canDelete: boxesHeld <= 0,
     blockedReason: boxesHeld > 0
       ? `${rep.user?.name || rep.code} is still holding ${boxesHeld} box${boxesHeld === 1 ? '' : 'es'}. Take the boxes back — settle them or record a return — and the rep can then be deleted.`
@@ -778,8 +803,16 @@ async function deletionCheck(repId) {
 // GET /sales-reps/:id/deletion-check — what the delete screen shows BEFORE the
 // owner commits: whether it is allowed, and exactly what goes with it.
 const deletionPreview = asyncHandler(async (req, res) => {
-  const { rep, boxesHeld, canDelete, blockedReason, willDestroy } = await deletionCheck(req.params.id);
-  return ok(res, { id: rep.id, code: rep.code, name: rep.user?.name || null, boxesHeld, canDelete, blockedReason, willDestroy });
+  const { rep, boxesHeld, canDelete, blockedReason, willDestroy, moneyInBooks } = await deletionCheck(req.params.id);
+  // The delete screen deletes for good (purge), so it is refused here too while money from this rep is in the books.
+  const purgeBlocked = canDelete && moneyInBooks > 0;
+  return ok(res, {
+    id: rep.id, code: rep.code, name: rep.user?.name || null, boxesHeld,
+    canDelete: canDelete && !purgeBlocked,
+    blockedReason: purgeBlocked ? moneyInBooksReason(rep.user?.name || rep.code, moneyInBooks) : blockedReason,
+    moneyInBooks,
+    willDestroy,
+  });
 });
 
 // DELETE /sales-reps/:id
@@ -796,7 +829,7 @@ const deletionPreview = asyncHandler(async (req, res) => {
 const remove = asyncHandler(async (req, res) => {
   const repId = req.params.id;
   const purge = req.body?.purge === true || req.body?.purge === 'true';
-  const { rep, boxesHeld, canDelete, blockedReason, willDestroy } = await deletionCheck(repId);
+  const { rep, boxesHeld, canDelete, blockedReason, willDestroy, moneyInBooks } = await deletionCheck(repId);
   if (!canDelete) throw ApiError.badRequest(blockedReason);
 
   if (!purge) {
@@ -811,6 +844,7 @@ const remove = asyncHandler(async (req, res) => {
     return ok(res, { id: repId, deleted: true });
   }
 
+  if (moneyInBooks > 0) throw ApiError.badRequest(moneyInBooksReason(rep.user?.name || rep.code, moneyInBooks));
   // Typing the rep's own code is the confirmation — the same guard the reset
   // has always used, so a mis-click can never erase a rep.
   if (req.body?.confirm !== rep.code) {

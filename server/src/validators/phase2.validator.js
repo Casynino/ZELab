@@ -1,7 +1,7 @@
 'use strict';
 
 const { z } = require('zod');
-const { id, paginationFields, dateRangeFields, boolQuery, money } = require('./common.validator');
+const { id, paginationFields, dateRangeFields, boolQuery, money, lineQuantity } = require('./common.validator');
 
 // Lenient date string (accepts "2026-06-16" or full ISO); services wrap in Date.
 const dateStr = z.string().min(4).optional().nullable();
@@ -28,7 +28,7 @@ const PO_STATUSES = ['DRAFT', 'ORDERED', 'PURCHASED', 'IN_TRANSIT', 'PARTLY_RECE
 const poItem = z.object({
   productId: id,
   packagingUnitId: id,
-  quantity: z.number().int().positive(),
+  quantity: lineQuantity,
   unitCost: money.optional(),
 });
 const poCreate = {
@@ -121,7 +121,7 @@ const stockRequestCreate = {
     warehouseId: id.optional().nullable(),
     notes: z.string().max(500).optional().nullable(),
     region: z.string().max(80).optional().nullable(),
-    items: z.array(z.object({ productId: id, packagingUnitId: id, quantity: z.number().int().positive(), region: z.string().max(80).optional().nullable() })).min(1),
+    items: z.array(z.object({ productId: id, packagingUnitId: id, quantity: lineQuantity, region: z.string().max(80).optional().nullable() })).min(1),
   }),
 };
 const stockRequestUpdate = {
@@ -129,7 +129,7 @@ const stockRequestUpdate = {
     warehouseId: id.optional().nullable(),
     notes: z.string().max(500).optional().nullable(),
     region: z.string().max(80).optional().nullable(),
-    items: z.array(z.object({ productId: id, packagingUnitId: id, quantity: z.number().int().positive(), region: z.string().max(80).optional().nullable() })).min(1),
+    items: z.array(z.object({ productId: id, packagingUnitId: id, quantity: lineQuantity, region: z.string().max(80).optional().nullable() })).min(1),
   }),
 };
 const stockRequestApprove = {
