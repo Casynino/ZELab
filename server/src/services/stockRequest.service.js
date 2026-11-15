@@ -9,7 +9,7 @@ const { nextDocNumber, withDocNumberRetry } = require('../utils/numbering');
 const { toNumber, round2, formatCurrency } = require('../utils/money');
 const { requestItemRegions } = require('../constants/regions');
 const { dateTime, boxes: unitCount } = require('./whatsappText'); // "3 Boxes", "1 Carton"
-const { keyedId, isIdClash } = require('../utils/clientKey');
+const { keyedId, isUniqueClash } = require('../utils/clientKey');
 
 // A product switched off in Products cannot be requested or issued any more (audit, 11 Nov 2026): the
 // app hid it, but the API took it, and an approved order for it could never be settled.
@@ -165,7 +165,7 @@ async function create(salesRepId, payload) {
     });
   })).catch(async (err) => {
     // Both presses ran at the very same moment and the other one saved first: hand that one back.
-    const seen = keyed && isIdClash(err) ? await seenAs(prisma) : null;
+    const seen = keyed && isUniqueClash(err) ? await seenAs(prisma) : null;
     if (!seen) throw err;
     return seen;
   });

@@ -125,8 +125,11 @@ function SettleOneModal({ order, onClose, onDone }) {
   const key = useRef(newClientKey());
   const settle = useMutation({
     mutationFn: () => api.post(`/settlements/${order.id}/settle-boxes`, { productId, boxes: Number(boxes), accountId: accountId || undefined, clientKey: key.current }),
-    onSuccess: () => {
-      setSent({ amount: value, boxes: Number(boxes), productName: line?.name });
+    // The receipt quotes what the server recorded: the same as typed, except when this was a repeat of a press
+    // already saved (same window key), which hands back that first settlement.
+    onSuccess: (res) => {
+      const d = res?.data?.data;
+      setSent({ amount: d?.amount != null ? Number(d.amount) : value, boxes: d?.boxes ?? Number(boxes), productName: d?.productName || line?.name });
       onDone();
     },
     // A lost answer may still have gone through: reload the order so the sheet shows what is left (audit
@@ -313,8 +316,16 @@ function SettleManyModal({ order, onClose, onDone }) {
       items: chosen.map((l) => ({ productId: l.productId, boxes: cart[l.productId], accountId: accountFor(l.brandId || '') || undefined })),
       clientKey: key.current,
     }),
-    onSuccess: () => {
-      setSent({ amount: total, boxes: totalBoxes, productName: chosen.length > 1 ? `${chosen.length} products` : chosen[0]?.name });
+    onSuccess: (res) => {
+      // What the server recorded (a repeated press gets the first one's lines back), else what was typed.
+      const rows = Array.isArray(res?.data?.data) && res.data.data.length ? res.data.data : null;
+      setSent(rows
+        ? {
+          amount: rows.reduce((n, r) => n + Number(r.amount || 0), 0),
+          boxes: rows.reduce((n, r) => n + Number(r.boxes || 0), 0),
+          productName: rows.length > 1 ? `${rows.length} products` : rows[0].productName,
+        }
+        : { amount: total, boxes: totalBoxes, productName: chosen.length > 1 ? `${chosen.length} products` : chosen[0]?.name });
       onDone();
     },
     // A lost answer may still have gone through: reload the order (audit backend-integrity-5).

@@ -14,7 +14,7 @@ const finance = require('./finance.service');
 const notification = require('./notification.service');
 const { nextDocNumber } = require('../utils/numbering');
 const { toNumber, round2, formatCurrency } = require('../utils/money');
-const { keyedId, isIdClash } = require('../utils/clientKey');
+const { keyedId, isUniqueClash } = require('../utils/clientKey');
 
 // ── Submit (PENDING — no Sale, no impact) ────────────────────────────────────
 
@@ -168,7 +168,7 @@ async function keyedRun(settlementId, ids, actor, run) {
   try {
     return await run();
   } catch (err) {
-    if (ids.length && isIdClash(err)) {
+    if (ids.length && isUniqueClash(err)) {
       const seen = await alreadySent(prisma, settlementId, ids, actor);
       if (seen) return { replay: seen };
     }

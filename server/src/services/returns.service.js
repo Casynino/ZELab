@@ -9,7 +9,7 @@ const { nextDocNumber } = require('../utils/numbering');
 const { toNumber } = require('../utils/money');
 const { eatDayBounds } = require('../utils/dates');
 const { rearmedReminderStage } = require('../utils/reminders');
-const { keyedId, isIdClash } = require('../utils/clientKey');
+const { keyedId, isUniqueClash } = require('../utils/clientKey');
 
 const RETURN_INCLUDE = {
   items: { include: { product: { include: { brand: { select: { name: true } } } }, packagingUnit: true } },
@@ -297,7 +297,7 @@ async function createReturn(payload, actor) {
     return [await makeReturn(settlementId, lines, null)];
   }, { timeout: 30000 }).catch(async (err) => {
     // Both presses ran at the very same moment and the other one saved first: hand those back.
-    const seen = keyedIds.length && isIdClash(err) ? await seenReturns(prisma) : null;
+    const seen = keyedIds.length && isUniqueClash(err) ? await seenReturns(prisma) : null;
     if (!seen) throw err;
     return seen;
   });

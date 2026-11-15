@@ -20,12 +20,12 @@ function keyedId(kind, ownerId, clientKey, part = 0) {
   return `k${digest.slice(0, 24)}`;
 }
 
-// True when a write failed only because a row with this id already exists: two presses with the same key
-// that ran at the very same moment, where the first commit won. The caller then reads that row back.
-function isIdClash(err) {
-  if (!err || err.code !== 'P2002') return false;
-  const target = Array.isArray(err.meta?.target) ? err.meta.target.join(',') : String(err.meta?.target || '');
-  return target === 'id' || target.endsWith('_pkey') || /(^|,)\s*id\s*(,|$)/.test(target);
+// True when a write failed on a unique key: two presses with the same key that ran at the very same moment,
+// where the first commit won. The second copy can trip over the id itself or over the document number both
+// copies picked (RET-…, REQ-…), whichever index Postgres checks first, so any unique clash counts. The caller
+// then reads back the row(s) this key made and hands them back only if they exist; otherwise the error stands.
+function isUniqueClash(err) {
+  return Boolean(err) && err.code === 'P2002';
 }
 
-module.exports = { keyedId, isIdClash };
+module.exports = { keyedId, isUniqueClash };
