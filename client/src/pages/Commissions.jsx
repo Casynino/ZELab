@@ -1029,8 +1029,8 @@ function RepView() {
               word for what happened. The date says PAID when it was paid — the one thing a rep opens
               this list to check. */}
           <section className="px-1">
-            <h3 className="text-sm font-semibold text-foreground">My withdrawals</h3>
-            <p className="mt-0.5 text-xs text-muted">Minimum {formatCurrency(c.minWithdrawal)}</p>
+            {/* Just the name (Nino, 15 Nov 2026): no minimum written here. */}
+            <h3 className="text-sm font-semibold text-foreground">Withdrawal history</h3>
             {wdQ.isError && !wd ? (
               <LoadError what="your withdrawals" onRetry={wdQ.refetch} />
             ) : !wd ? (
