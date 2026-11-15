@@ -110,8 +110,11 @@ const DEFAULT_PATH = 'p';
 // v8 renamed the maker from Hǎo-Labs to ZELab (the business changed its name,
 // 10 Nov 2026) — where the saved row still says the old name; v9 gave the two boxes their full product names,
 // "Pepa Ndogo (Brown) Bila Filter" and "Pepa Ndogo Kubwa (Brown) Bila Filter" (15 Nov 2026), where they still
-// carry the short ones. See upgrade().
-const CONTENT_VERSION = 9;
+// carry the short ones; v10 took the old Haodeals email off the page (15 Nov 2026: phone only, as on the
+// factory packs) — only where the saved row still shows that address. See upgrade().
+const CONTENT_VERSION = 10;
+// The email the page carried before v10. It belongs to the old shop, not to ZELab.
+const OLD_EMAIL = 'haodealtz@gmail.com';
 // The short names the boxes carried before v9, so older rows are still recognised and renamed.
 const OLD_BOX_NAMES = { ndogo: 'Pepa Ndogo', ndogo77: 'Pepa Ndogo Kubwa' };
 const NDOGO_NOTE = 'Brown • Slow burn Unfiltered';
@@ -125,7 +128,7 @@ const DEFAULTS = {
   tagline: 'Natural unrefined rolling papers',
   maker: 'ZELab',
   city: 'Mbezi Goigi, Dar es Salaam',
-  email: 'haodealtz@gmail.com',
+  email: '',              // phone only (15 Nov 2026); an address typed in the editor is shown
   products: [
     {
       key: 'ndogo',
@@ -348,6 +351,8 @@ function upgrade(raw, { append = true } = {}) {
   // himself is left exactly as typed.
   const out = { ...raw, v: CONTENT_VERSION, products: kept };
   if (from < 8 && /^\s*h[aǎ]o[\s-]*labs?\s*$/i.test(String(raw.maker || ''))) out.maker = DEFAULTS.maker;
+  // v10: the old shop's email comes off; any other address he typed stays.
+  if (from < 10 && String(raw.email || '').trim().toLowerCase() === OLD_EMAIL) out.email = '';
   return out;
 }
 

@@ -112,6 +112,21 @@ test('an older row with the short box names gets the full names; a name typed by
   assert.equal((await page.readContent()).products.find((p) => p.key === 'ndogo').name, 'Pepa Small Brown');
 });
 
+// ── No old email on the page (v10) ─────────────────────────────────────────────
+test('the old shop email comes off the page; an address typed by hand stays; the phone stays', async () => {
+  seed({ ...clone(V2_ROW), v: 9, email: 'haodealtz@gmail.com', products: [{ key: 'ndogo', name: 'Pepa Ndogo (Brown) Bila Filter' }] });
+  const c = await page.readContent();
+  assert.equal(c.email, '');
+  const html = page.renderHtml(page.forPath(c, 'p'));
+  assert.ok(!/haodealtz|mailto:/i.test(html), 'no email on the page');
+  assert.match(html, /0788|788 734 003/, 'the phone is still there');
+  seed({ ...clone(V2_ROW), v: 9, email: 'sales@zelab.site', products: [{ key: 'ndogo', name: 'Pepa Ndogo (Brown) Bila Filter' }] });
+  assert.equal((await page.readContent()).email, 'sales@zelab.site');
+  // With no saved row there is no email either.
+  store.row = null;
+  assert.equal((await page.readContent()).email, '');
+});
+
 test('a v1 row gains its key, keeps its own wording, and gets Slow burn Unfiltered', async () => {
   seed(V1_ROW);
   const c = await page.readContent();
