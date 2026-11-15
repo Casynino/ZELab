@@ -626,6 +626,8 @@ model Sale {
   @@index([customerId])
   @@index([soldAt])
   @@index([region])
+  // Every order screen, sweep and commission read filters sales by their order (15 Nov 2026).
+  @@index([settlementId])
   @@map("sales")
 }
 
@@ -804,6 +806,9 @@ model Return {
   @@index([type])
   @@index([status])
   @@index([processedAt])
+  // Returns are read per order (breakdowns, the fine sweep) and per rep (15 Nov 2026).
+  @@index([settlementId])
+  @@index([salesRepId])
   @@map("returns")
 }
 
@@ -1613,6 +1618,8 @@ model FinanceTransaction {
   @@index([type])
   @@index([brandId])
   @@index([occurredAt])
+  // Ledger rows are looked up by what they record (a sale, a withdrawal, a purchase order) — 15 Nov 2026.
+  @@index([refType, refId])
   @@map("finance_transactions")
 }
 
