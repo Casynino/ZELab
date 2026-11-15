@@ -1457,32 +1457,6 @@ function AccountWalletCard({ account, tint, hex, light, sharePct, hidden, onTogg
   );
 }
 
-// The Commission account is a record, not a wallet: the same card, quiet grey — no colour light — with what was
-// paid to reps big and one short line saying what it is.
-function RecordWalletCard({ account, hidden, onToggleHide, onOpen }) {
-  return (
-    <button type="button" onClick={onOpen} className={WALLET_FRAME} style={walletStyle(RECORD_TINT)}
-      aria-label={`${account.name}: open every payout`}>
-      <div aria-hidden="true" className="pointer-events-none absolute -right-12 -top-20 -z-10 h-56 w-56 rounded-full"
-        style={{ background: 'radial-gradient(closest-side, rgba(255,255,255,.09), transparent)' }} />
-      <WalletArcs />
-      <WalletTop label={`${account.name} paid`} hidden={hidden} onToggleHide={onToggleHide}
-        chip={<span className="shrink-0 rounded-full bg-white/10 px-1.5 py-px text-[9.5px] font-semibold text-white/70">Record only</span>} />
-      <div className="-mt-0.5 flex flex-wrap items-center justify-between gap-x-3">
-        <p className={`min-w-0 whitespace-nowrap text-[27px] font-bold leading-none tabular-nums text-white/85 ${hidden ? 'tracking-[0.18em]' : ''}`}>
-          {hidden ? DOTS : formatCurrency(account.recorded)}
-        </p>
-        <span className="flex h-11 shrink-0 items-center gap-1 text-[15px] font-semibold text-white/80">
-          Payouts <ArrowUpRight className="h-[17px] w-[17px]" strokeWidth={2.4} />
-        </span>
-      </div>
-      <p className="text-[11px] text-white/50" title="Paid to reps from your own pocket — never from an account, never off your profit.">
-        Paid to reps from your own pocket.
-      </p>
-      <p className="mt-auto pt-3.5 text-[10.5px] tracking-wide text-white/40">No money is held here</p>
-    </button>
-  );
-}
 
 function Accounts({ onQuick, onNavigate }) {
   const [addOpen, setAddOpen] = useState(false);
@@ -1506,11 +1480,10 @@ function Accounts({ onQuick, onNavigate }) {
   if (accountsQ.isError && !accountsQ.data) return <LoadError what="the accounts" onRetry={accountsQ.refetch} />;
   // Saved-on-this-device balances read as a success until the server answers: not live (lib/freshness.js).
   const accountsLive = figuresAreLive(accountsQ);
-  // Wallets hold the money; the Commission account holds a record of money the
-  // owner paid out of his own hand. Adding a record into a cash total would
-  // claim the business is holding cash it has never held.
+  // Wallets hold the money. The Commission account is only the record of payouts made from the owner's pocket
+  // before 15 Nov 2026 — reps are paid from M-Pesa, Airtel Money or Cash now — so it is no longer shown as an
+  // account here; its rows stay in the Ledger.
   const held = wallets(accounts);
-  const records = accounts.filter((a) => a.isCommissionRecord);
   const total = held.reduce((s, a) => s + a.balance, 0);
   // The donut: every account above zero is a slice of what is held above zero. One at or below zero is not a
   // slice, but it is listed under the donut so the list adds up to the total cash position.
@@ -1548,7 +1521,7 @@ function Accounts({ onQuick, onNavigate }) {
       </div>
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
-        {/* The wallets, two to a row, then the record. */}
+        {/* The wallets, two to a row. */}
         <div className="grid grid-cols-1 content-start gap-4 sm:grid-cols-2 xl:col-span-2">
           {held.map((a) => (
             <AccountWalletCard key={a.id} account={a} tint={WALLET_TINT[colourIdx(a)]}
@@ -1556,7 +1529,6 @@ function Accounts({ onQuick, onNavigate }) {
               sharePct={a.balance > 0 && above > 0 ? pctOf(a) : null}
               hidden={hidden} onToggleHide={toggleHide} onOpen={() => setViewing(a)} />
           ))}
-          {records.map((a) => <RecordWalletCard key={a.id} account={a} hidden={hidden} onToggleHide={toggleHide} onOpen={() => setViewing(a)} />)}
         </div>
 
         {/* Which pocket holds the money: one big donut, each account in its own colour. */}
@@ -1731,7 +1703,7 @@ function Ledger({ expensesOnly }) {
             // payout rows in the list that are in neither total and has no way
             // to tell whether they were counted.
             ...(sums.fromPocket > 0
-              ? [{ label: 'Commission you paid', value: formatCurrency(sums.fromPocket), sub: 'your own money — in neither total above', tone: 'violet' }]
+              ? [{ label: 'Old pocket payouts', value: formatCurrency(sums.fromPocket), sub: 'reps paid from your own pocket before 15 Nov — in neither total above', tone: 'violet' }]
               : []),
           ]} />
         )
