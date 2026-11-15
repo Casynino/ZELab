@@ -82,7 +82,11 @@ const install = (path, exports) => {
   require.cache[filename] = { id: filename, filename, loaded: true, exports };
 };
 install('../src/config/prisma', prismaStub);
-install('../src/services/reports.service', { financeEpoch: async () => null, profitOverview: async (p) => profitFor(p) });
+install('../src/services/reports.service', {
+  financeEpoch: async () => null,
+  profitOverview: async (p) => profitFor(p),
+  stockLosses: async () => ({ total: 0, writtenOff: 0, receivingLoss: 0, byBrand: new Map() }),
+});
 install('../src/services/inventory.service', {
   valuation: async () => ({ items: [], totals: { totalValue: 0, warehouseValue: 0, repValue: 0, retailValue: 0, totalBaseUnits: 0 } }),
 });
