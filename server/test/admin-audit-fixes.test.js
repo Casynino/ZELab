@@ -15,7 +15,11 @@ const install = (path, exports) => {
 };
 
 // One database stand-in for the whole file; each test sets the tables it reads.
-const db = {};
+const db = {
+  // Purchase orders are changed under a row lock inside a transaction (15 Nov 2026).
+  $transaction: async (fn) => fn(db),
+  $queryRaw: async () => [{ id: 'locked' }],
+};
 install('../src/config/prisma', db);
 install('../src/config/env', { business: { reorderLookbackDays: 30, defaultCreditTermDays: 30 } });
 const notified = [];
@@ -144,6 +148,7 @@ test('a purchase order cannot be expected before it was ordered (same day is fin
 test('editing a purchase order checks a changed date against the stored one, and nothing else', async () => {
   const stored = { id: 'po1', status: 'ORDERED', orderedAt: new Date('2026-11-20'), expectedArrival: new Date('2026-11-01') };
   const updates = [];
+  db.$transaction = async (fn) => fn(db); // the test above swapped it for a counter; an edit runs inside one
   db.purchaseOrder = {
     findUnique: async () => stored,
     update: async ({ data }) => { updates.push(data); return { ...stored, ...data }; },

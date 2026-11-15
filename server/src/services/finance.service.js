@@ -1320,6 +1320,11 @@ async function report(opts = {}) {
 // one supplier, and a raw aggregate behind the Finance overview — so all of
 // them read the credits from here. Two subtractions written twice is how the
 // modal and the dashboard end up quoting different debt.
+// The orders a supplier counts as bought from (and so can be owed for): not cancelled, and not a draft — a
+// draft is a plan, paid for only when Confirm purchase pays it (cash-only, 15 Nov 2026). Every supplier figure
+// reads this one rule, so the Suppliers tab, a supplier's page and the Overview never disagree.
+const PAYABLE_PO = { status: { notIn: ['CANCELLED', 'DRAFT'] } };
+
 async function creditsBySupplier(supplierIds = null) {
   const rows = await prisma.supplierCredit.groupBy({
     by: ['supplierId'],
@@ -1335,7 +1340,7 @@ async function supplierSummaries() {
   const [suppliers, pos, brands] = await Promise.all([
     prisma.supplier.findMany({ orderBy: { name: 'asc' } }),
     prisma.purchaseOrder.findMany({
-      where: { status: { not: 'CANCELLED' } },
+      where: PAYABLE_PO, // a draft is not bought yet, so nobody is owed for it
       select: { id: true, supplierId: true, totalCost: true, receivedAt: true, createdAt: true },
     }),
     prisma.brand.findMany({ select: { id: true, name: true } }),
@@ -1434,11 +1439,11 @@ async function supplierDetail(id) {
   if (!s) throw ApiError.notFound('Supplier not found');
   const [pos, brand] = await Promise.all([
     prisma.purchaseOrder.findMany({
-      where: { supplierId: id, status: { not: 'CANCELLED' } },
+      where: { supplierId: id, ...PAYABLE_PO },
       orderBy: { createdAt: 'desc' },
       select: {
         id: true, poNumber: true, status: true, totalCost: true, receivedAt: true, createdAt: true,
-        items: { select: { quantity: true, product: { select: { name: true } } } },
+        items: { select: { quantity: true, baseQuantity: true, product: { select: { name: true } } } },
       },
     }),
     s.brandId ? prisma.brand.findUnique({ where: { id: s.brandId }, select: { name: true } }) : null,
@@ -1481,7 +1486,7 @@ async function supplierDetail(id) {
     return {
       id: p.id, poNumber: p.poNumber, status: p.status,
       totalCost: round2(toNumber(p.totalCost)), paid: f.paid, returned: f.returned, outstanding: f.outstanding,
-      boxes: p.items.reduce((n, it) => n + it.quantity, 0),
+      boxes: p.items.reduce((n, it) => n + (it.baseQuantity || 0), 0), // boxes, also for an order bought in cartons
       products: [...new Set(p.items.map((it) => it.product?.name).filter(Boolean))],
       receivedAt: p.receivedAt, createdAt: p.createdAt,
     };
@@ -1923,12 +1928,12 @@ async function overview(period = 'month', shared = {}) {
     // later cancelled, which drop out of the purchased side — understated the
     // debt here while the Suppliers tab (which excludes them) showed more.
     prisma.purchaseOrder.findMany({
-      where: { status: { not: 'CANCELLED' } },
+      where: PAYABLE_PO,
       select: { id: true },
     }).then((livePos) => {
       const livePoIds = livePos.map((x) => x.id);
       return Promise.all([
-        prisma.purchaseOrder.aggregate({ where: { status: { not: 'CANCELLED' } }, _sum: { totalCost: true } }),
+        prisma.purchaseOrder.aggregate({ where: PAYABLE_PO, _sum: { totalCost: true } }),
         prisma.supplierCredit.aggregate({ _sum: { amount: true } }),
         prisma.financeTransaction.aggregate({
           where: {

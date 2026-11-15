@@ -24,6 +24,7 @@ const supplierUpdate = { body: supplierCreate.body.partial() };
 const supplierQuery = { query: z.object({ ...paginationFields, isActive: boolQuery }) };
 
 // --- Purchase orders -------------------------------------------------------
+const PO_STATUSES = ['DRAFT', 'ORDERED', 'PURCHASED', 'IN_TRANSIT', 'PARTLY_RECEIVED', 'RECEIVED', 'CANCELLED'];
 const poItem = z.object({
   productId: id,
   packagingUnitId: id,
@@ -55,7 +56,7 @@ const poCreate = {
 };
 const poUpdate = {
   body: z.object({
-    status: z.enum(['DRAFT', 'ORDERED', 'IN_TRANSIT', 'RECEIVED', 'CANCELLED']).optional(),
+    status: z.enum(PO_STATUSES).optional(),
     currency: z.string().trim().max(8).optional(),
     notes: z.string().max(1000).optional().nullable(),
     warehouseId: id.optional().nullable(),
@@ -71,11 +72,44 @@ const poUpdate = {
   }),
 };
 const poReceive = { body: z.object({ actualArrival: dateStr, stockAlreadyCounted: z.boolean().optional() }) };
+const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use a date like 2026-11-15').optional();
 const poQuery = {
   query: z.object({
     ...paginationFields,
-    status: z.enum(['DRAFT', 'ORDERED', 'IN_TRANSIT', 'RECEIVED', 'CANCELLED']).optional(),
+    status: z.enum(PO_STATUSES).optional(),
     supplierId: id.optional(),
+    productId: id.optional(),
+    from: day,
+    to: day,
+  }),
+};
+// Cash-only purchasing (15 Nov 2026).
+const count = z.number().int().min(0).max(1000000);
+const poConfirmPurchase = { body: z.object({ accountId: id.optional(), occurredAt: dateStr, notes: z.string().max(500).optional().nullable() }) };
+const poDispatch = { body: z.object({ dispatchedAt: dateStr, expectedArrival: dateStr }) };
+const poReceiveCargo = {
+  body: z.object({
+    // One per press of the form (a uuid): a double tap or a retry is recognised and adds nothing.
+    clientKey: z.string().trim().min(8).max(80),
+    arrivedAt: dateStr,
+    notes: z.string().max(1000).optional().nullable(),
+    items: z.array(z.object({
+      itemId: id,
+      received: count.optional(),
+      damaged: count.optional(),
+      missing: count.optional(),
+      note: z.string().max(300).optional().nullable(),
+    })).min(1).max(100),
+  }),
+};
+const poLinesQuery = { query: z.object({ productId: id.optional(), from: day, to: day }) };
+const poAddCost = {
+  body: z.object({
+    kind: z.enum(['shipping', 'clearing', 'other']),
+    amount: money,
+    accountId: id,
+    occurredAt: dateStr,
+    notes: z.string().max(500).optional().nullable(),
   }),
 };
 
@@ -202,6 +236,7 @@ const dailyReportQuery = {
 module.exports = {
   supplierCreate, supplierUpdate, supplierQuery,
   poCreate, poUpdate, poReceive, poQuery,
+  poConfirmPurchase, poDispatch, poReceiveCargo, poLinesQuery, poAddCost,
   stockRequestCreate, stockRequestUpdate, stockRequestApprove, stockRequestReject, stockRequestQuery,
   settlementQuery, settlementSettle, settlementSettleBoxes, settlementSettleMany, settlementExtendDeadline,
   withdrawRequest, withdrawDecide, withdrawalQuery,

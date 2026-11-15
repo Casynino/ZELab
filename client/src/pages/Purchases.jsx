@@ -2,17 +2,18 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
-import { Plus, Ship, PackageCheck, Pencil, Trash2, Eye } from 'lucide-react';
+import { Plus, Ship, PackageCheck, Pencil, Trash2, Eye, Wallet } from 'lucide-react';
 import api, { unwrap, apiError } from '@/lib/api';
-import { keepOnPageTurn } from '@/lib/pageQueries';
+import { keepOnPageTurn, pageQueries } from '@/lib/pageQueries';
+import { useAuth } from '@/context/AuthContext';
 import { useProducts, useWarehouses, useBrands } from '@/lib/hooks';
 import { wentThrough } from '@/lib/once';
 import { refreshAfter } from '@/lib/afterWrite';
-import { PO_STATUS_META } from '@/lib/constants';
+import { PO_STATUS_META, ROLES } from '@/lib/constants';
 import { formatCurrency, formatDate, formatNumber, pluralizeUnit } from '@/lib/format';
 import { eatISODate } from '@/lib/tz';
 import ProductPicker, { useHomeWarehouse, PlaceLine, Chips, Caution, MoreToggle, DiscardFooter, changeBtn } from '@/components/ProductPicker';
-import { pickerRows, rowsWithSaved, pickedBoxes, primaryWarehouse, lineCost, boxWord, shortPlace, buttonPlace } from '@/lib/stockPick';
+import { pickerRows, cartonRows, rowsWithSaved, pickedBoxes, primaryWarehouse, lineCost, boxWord, shortPlace, buttonPlace } from '@/lib/stockPick';
 import {
   PageHeader, Card, PageSpinner, EmptyState, Badge, Button, Modal, Field, Input, NumberInput, Textarea, Select,
   Pagination, LoadError, Table, THead, TBody, TR, TH, TD,
@@ -47,6 +48,11 @@ function POModal({ onClose, editing }) {
   const [editWh, setEditWh] = useState(false);
   const [qty, setQty] = useState({});
   const [cost, setCost] = useState({});
+  // Bought by the carton (fixed boxes per carton) or by the box. A new order starts in cartons, as goods are
+  // bought from the factory (15 Nov 2026); an order being edited keeps the unit it was saved in.
+  const savedInCartons = !!editing?.items?.length && editing.items.every((i) => /^carton$/i.test(i.packagingUnit?.name || ''));
+  const [unit, setUnit] = useState(editing ? (savedInCartons ? 'carton' : 'box') : 'carton');
+  const inCartons = unit === 'carton';
   const [costs, setCosts] = useState({
     shippingCost: Number(editing?.shippingCost) || 0,
     clearingCost: Number(editing?.clearingCost) || 0,
@@ -71,13 +77,24 @@ function POModal({ onClose, editing }) {
   const into = warehouseId ? (active.find((w) => w.id === warehouseId) || (editing?.warehouseId === warehouseId ? editing.warehouse : null)) : primary;
   const intoAway = !!(warehouseId && primary && warehouseId !== primary.id);
 
-  // Every product in its box; an order being edited also gets a row for any saved line that is not that.
-  const baseRows = useMemo(() => pickerRows(products), [products]);
+  // Every product in its carton (or its box); an order being edited in boxes also gets a row for any saved
+  // line that is not that.
+  const baseRows = useMemo(() => (inCartons ? cartonRows(products) : pickerRows(products)), [products, inCartons]);
   const productsReady = !productsLoading;
-  const saved = useMemo(
-    () => (editing && productsReady ? rowsWithSaved(baseRows, editing.items, products) : null),
-    [editing, productsReady, baseRows, products],
-  );
+  const saved = useMemo(() => {
+    if (!editing || !productsReady) return null;
+    if (!inCartons) return rowsWithSaved(baseRows, editing.items, products);
+    // In cartons: each saved line on its product's carton row, at its price per carton.
+    const q = {};
+    const c = {};
+    editing.items.forEach((it) => {
+      const key = `${it.productId}:ct`;
+      const size = it.quantity ? Number(it.baseQuantity) / Number(it.quantity) : 1;
+      q[key] = Number(it.quantity) || 0;
+      c[key] = String(Math.round(Number(it.unitCost || 0) * size * 100) / 100);
+    });
+    return { rows: baseRows, qty: q, cost: c };
+  }, [editing, productsReady, baseRows, products, inCartons]);
   const rows = saved ? saved.rows : baseRows;
   const seeded = useRef(false);
   useEffect(() => {
@@ -93,7 +110,12 @@ function POModal({ onClose, editing }) {
     // Every figure on this form is in shillings (audit reversals-stock-8: new orders were saved as USD). Only
     // on a new order: an edit leaves an older order's stored label as it is.
     currency: editing ? undefined : 'TZS',
-    items: picked.map((r) => ({ productId: r.id, packagingUnitId: r.packagingUnitId, quantity: Number(qty[r.key]), unitCost: Number(lineCost(cost, r)) || 0 })),
+    // The server keeps the cost per box: a carton price is divided by the boxes in a carton, to six places, so
+    // qty × price rounds back to exactly what was typed (100,000 a carton of 24 is still 100,000).
+    items: picked.map((r) => ({
+      productId: r.id, packagingUnitId: r.packagingUnitId, quantity: Number(qty[r.key]),
+      unitCost: inCartons && r.unitName ? Math.round(((Number(lineCost(cost, r)) || 0) / (r.size || 1)) * 1e6) / 1e6 : Number(lineCost(cost, r)) || 0,
+    })),
     shippingCost: Number(costs.shippingCost) || 0,
     clearingCost: Number(costs.clearingCost) || 0,
     otherCost: Number(costs.otherCost) || 0,
@@ -109,7 +131,7 @@ function POModal({ onClose, editing }) {
       : api.post('/purchase-orders', payload())),
     onSuccess: () => {
       saveLastSupplier(supplierId);
-      toast.success(editing ? 'Purchase order updated' : 'Purchase order created');
+      toast.success(editing ? 'Purchase order updated' : 'Draft saved — confirm the purchase once you have paid for it');
       qc.invalidateQueries({ queryKey: ['purchase-orders'] });
       onClose();
     },
@@ -119,7 +141,7 @@ function POModal({ onClose, editing }) {
 
   // Same sums as before: boxes × cost per box, plus the extra costs.
   const boxes = pickedBoxes(rows, qty);
-  const goods = picked.reduce((n, r) => n + Number(qty[r.key]) * (r.size || 1) * (Number(lineCost(cost, r)) || 0), 0);
+  const goods = picked.reduce((n, r) => n + Number(qty[r.key]) * (inCartons && r.unitName ? 1 : (r.size || 1)) * (Number(lineCost(cost, r)) || 0), 0);
   const extraSum = (Number(costs.shippingCost) || 0) + (Number(costs.clearingCost) || 0) + (Number(costs.otherCost) || 0);
   const total = goods + extraSum;
 
@@ -179,7 +201,7 @@ function POModal({ onClose, editing }) {
           </div>
           <Button variant="secondary" className="hidden sm:inline-flex" onClick={requestClose}>Cancel</Button>
           <Button data-picker-submit="" className="h-12 w-full text-base sm:h-auto sm:w-auto sm:text-sm" loading={save.isPending} disabled={!valid} onClick={submit}>
-            {editing ? 'Save changes' : 'Create PO'}
+            {editing ? 'Save changes' : 'Save draft'}
             {picked.length > 0 && <span className="tabular-nums">· {formatCurrency(total)}</span>}
           </Button>
         </>
@@ -215,7 +237,23 @@ function POModal({ onClose, editing }) {
           </div>
         )}
 
-        <ProductPicker rows={rows} value={qty} onChange={pick} cost={cost} onCost={setRowCost}
+        <div className="flex items-center justify-between gap-3 px-1">
+          <span className="text-xs text-muted">Buy by the</span>
+          <div className="inline-flex rounded-lg bg-white/[0.04] p-0.5 ring-1 ring-white/[0.08]" role="radiogroup" aria-label="Unit">
+            {[['carton', 'Carton'], ['box', 'Box']].map(([k, label]) => (
+              <button key={k} type="button" role="radio" aria-checked={unit === k}
+                disabled={unit !== k && picked.length > 0}
+                title={unit !== k && picked.length > 0 ? 'Clear the list to switch' : undefined}
+                onClick={() => { if (unit !== k) { setUnit(k); setQty({}); setCost({}); seeded.current = true; } }}
+                className={clsx('min-h-[36px] cursor-pointer rounded-md px-3 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-40',
+                  unit === k ? 'bg-white/[0.12] text-foreground' : 'text-muted hover:text-foreground')}>
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <ProductPicker rows={rows} value={qty} onChange={pick} cost={cost} onCost={setRowCost} inUnits={inCartons}
           loading={productsLoading || (!!editing && !seeded.current)} emptyText="No products yet." />
 
         <div className="flex flex-col gap-1 [&>div]:mb-2">
@@ -300,114 +338,514 @@ function SupplierModal({ editing, onClose }) {
   );
 }
 
-// Open any order and see what was in it. A received order is history and
-// stays read-only — its boxes are on the shelf at a cost taken from these
-// lines — but history you cannot look at is not much of a record.
-function PODetailModal({ po, onClose, onEdit, onDelete, onReceive }) {
-  const landed = po.status === 'RECEIVED';
-  const boxes = (po.items || []).reduce((n, i) => n + (i.baseQuantity || 0), 0);
-  const goods = (po.items || []).reduce((n, i) => n + Number(i.unitCost || 0) * (i.baseQuantity || 0), 0);
-  const extras = Number(po.shippingCost || 0) + Number(po.clearingCost || 0) + Number(po.otherCost || 0);
+// ── Cash-only purchasing (15 Nov 2026) ─────────────────────────────────────────────────────────────────
+// Draft → Confirm purchase (paid from an account) → Dispatch → Receive (as many times as the cargo comes in
+// parts) → Completed. The admin does every step; other staff can look, without prices. Receiving follows the
+// SuperDrive pattern: per product what arrived (with "Arrived fine" to fill what is still to come), what of it is
+// damaged or rejected (with a reason), what is missing, and "Nothing more is coming" to close the rest.
+const NOT_YET_BOUGHT = ['DRAFT', 'ORDERED'];
+const ARRIVING = ['IN_TRANSIT', 'PARTLY_RECEIVED'];
+const sizeOf = (it) => (it.quantity ? Math.max(1, Math.round(it.baseQuantity / it.quantity)) : 1);
+const unitWord = (it, n) => {
+  const u = String(it.packagingUnit?.name || 'box').toLowerCase();
+  return n === 1 ? u : pluralizeUnit(u);
+};
+// Boxes shown in the line's own unit when they divide evenly ("4 cartons"), else as boxes.
+const inUnit = (it, base) => {
+  const size = sizeOf(it);
+  if (size > 1 && base % size === 0) return `${formatNumber(base / size)} ${unitWord(it, base / size)}`;
+  return `${formatNumber(base)} ${boxWord(base)}`;
+};
+const leftOf = (it) => Math.max(0, (it.baseQuantity || 0) - (it.receivedBase || 0) - (it.missingBase || 0));
+const orderBoxes = (po) => (po.items || []).reduce((n, i) => n + (i.baseQuantity || 0), 0);
+const orderInStock = (po) => (po.items || []).reduce((n, i) => n + (i.receivedBase || 0) - (i.damagedBase || 0), 0);
+const orderLeft = (po) => (po.items || []).reduce((n, i) => n + leftOf(i), 0);
+const paidOn = (po) => (po.payments || []).filter((t) => t.direction === 'OUT').reduce((n, t) => n + Number(t.amount || 0), 0);
+const newKey = () => (globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `k-${Date.now()}-${Math.round(Math.random() * 1e9)}`);
 
+// One order, fresh from the server (payments and who did each step come only with this read).
+const usePO = (id) => useQuery({
+  queryKey: ['purchase-orders', 'one', id],
+  queryFn: async () => unwrap(await api.get(`/purchase-orders/${id}`)).data,
+  enabled: !!id,
+});
+
+// After any step: the orders, the money and (on receiving) the stock everywhere.
+function useAfterStep() {
+  const qc = useQueryClient();
+  return (stock = false) => {
+    qc.invalidateQueries({ queryKey: ['purchase-orders'] });
+    qc.invalidateQueries({ queryKey: ['finance'] });
+    if (stock) refreshAfter(qc, 'stock');
+  };
+}
+
+function MoneyAccountSelect({ value, onChange, accounts }) {
   return (
-    <Modal open onClose={onClose} size="xl" title={po.poNumber}
-      footer={
-        <>
-          <Button variant="secondary" onClick={onClose}>Close</Button>
-          {!landed && po.status !== 'CANCELLED' && (
-            <>
-              <Button variant="secondary" onClick={() => { onClose(); onDelete(po); }}>
-                <Trash2 className="h-4 w-4" /> Delete
-              </Button>
-              <Button variant="secondary" onClick={() => { onClose(); onEdit(po); }}>
-                <Pencil className="h-4 w-4" /> Edit
-              </Button>
-              <Button onClick={() => { onClose(); onReceive(po); }}>
-                <PackageCheck className="h-4 w-4" /> Receive into warehouse
-              </Button>
-            </>
-          )}
-        </>
-      }>
-      <div className="space-y-5">
-        <div className="flex flex-wrap items-center gap-x-5 gap-y-2 rounded-xl border border-white/[0.08] bg-surface px-4 py-3">
-          <Badge className={PO_STATUS_META[po.status]?.cls}>{PO_STATUS_META[po.status]?.label}</Badge>
-          <span className="text-sm text-foreground">{po.supplier?.name}</span>
-          {po.warehouse?.name && <span className="text-xs text-faint">into {po.warehouse.name}</span>}
-          <span className="ml-auto text-xs text-faint">
-            {po.orderedAt && <>Ordered {formatDate(po.orderedAt)}</>}
-            {po.expectedArrival && <> · Expected {formatDate(po.expectedArrival)}</>}
-            {po.actualArrival && <> · Arrived {formatDate(po.actualArrival)}</>}
-          </span>
-        </div>
+    <Select value={value} onChange={(e) => onChange(e.target.value)}>
+      {accounts.map((a) => <option key={a.id} value={a.id}>{a.name} — {formatCurrency(a.balance)}</option>)}
+    </Select>
+  );
+}
 
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          {[
-            { label: 'Boxes', value: formatNumber(boxes), sub: landed ? 'on the shelf' : 'on the way' },
-            { label: 'Goods', value: formatCurrency(goods), sub: 'before shipping' },
-            { label: 'Shipping & clearing', value: formatCurrency(extras), sub: 'spread across the boxes' },
-            { label: 'Total cost', value: formatCurrency(po.totalCost), sub: boxes > 0 ? `${formatCurrency(Number(po.totalCost) / boxes)} a box` : '\u2014' },
-          ].map((c) => (
-            <div key={c.label} className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-3">
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted">{c.label}</p>
-              <p className="mt-1 text-base font-bold tabular-nums text-foreground">{c.value}</p>
-              <p className="text-[10px] text-faint">{c.sub}</p>
-            </div>
-          ))}
-        </div>
+// The accounts that can pay for this order. The commission account is a record of payouts, never a wallet; an
+// account reserved for one brand only pays for that brand's stock (OHIS and Civlily money never mix) — the
+// server refuses it too. The order's brand is its products' brand when they are all one brand.
+function useMoneyAccounts(po) {
+  const q = useQuery(pageQueries.financeAccounts());
+  const brands = [...new Set((po?.items || []).map((i) => i.product?.brandId).filter(Boolean))];
+  // A brand's own account only when every product is that brand; a mixed order is paid from a shared account.
+  return { ...q, accounts: (q.data || []).filter((a) => !a.isCommissionRecord && (!a.brandId || (brands.length === 1 && a.brandId === brands[0]))) };
+}
 
-        <div>
-          <div className="mb-2 text-sm font-semibold text-foreground">What was ordered</div>
-          <Table stack>
-            <THead>
-              <TR><TH>Product</TH><TH>Ordered</TH><TH>Boxes</TH><TH className="text-right">Cost / box</TH><TH className="text-right">Line total</TH></TR>
-            </THead>
-            <TBody>
-              {(po.items || []).map((i) => (
-                <TR key={i.id}>
-                  <TD className="stack-full font-medium text-foreground">
-                    {i.product?.name}
-                    {i.product?.sku && <span className="ml-1.5 text-[11px] text-faint">{i.product.sku}</span>}
-                  </TD>
-                  <TD>{formatNumber(i.quantity)} {i.quantity === 1 ? (i.packagingUnit?.name || 'unit') : pluralizeUnit(i.packagingUnit?.name || 'unit')}</TD>
-                  <TD className="font-semibold tabular-nums text-foreground">{formatNumber(i.baseQuantity)}</TD>
-                  <TD className="text-right tabular-nums">{formatCurrency(i.unitCost)}</TD>
-                  <TD className="text-right font-semibold tabular-nums">{formatCurrency(Number(i.unitCost || 0) * (i.baseQuantity || 0))}</TD>
-                </TR>
-              ))}
-            </TBody>
-          </Table>
-        </div>
-
-        {po.notes && (
-          <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-3">
-            <p className="text-[10px] font-semibold uppercase tracking-wider text-muted">Notes</p>
-            <p className="mt-1 text-sm text-muted">{po.notes}</p>
+// Confirm purchase: the goods were bought with cash. Pays the whole order from one account, once.
+function ConfirmPurchaseModal({ poId, onClose }) {
+  const { data: po } = usePO(poId);
+  const { accounts, isLoading } = useMoneyAccounts(po);
+  const [accountId, setAccountId] = useState('');
+  const [date, setDate] = useState(eatISODate());
+  const [notes, setNotes] = useState('');
+  const after = useAfterStep();
+  const account = accounts.find((a) => a.id === (accountId || accounts.find((x) => x.isDefault)?.id || accounts[0]?.id));
+  // What the server would take now: an older order may already be paid through the supplier's balance.
+  const due = po ? Math.max(0, Number(po.toPay ?? (Number(po.totalCost || 0) - paidOn(po)))) : 0;
+  const short = account && due > 0 ? Math.max(0, due - Number(account.balance || 0)) : 0;
+  const noPrice = (po?.items || []).some((i) => !(Number(i.unitCost) > 0));
+  const done = () => { after(); onClose(); };
+  const save = useMutation({
+    mutationFn: () => api.post(`/purchase-orders/${poId}/purchase`, { accountId: due > 0 ? account?.id : undefined, occurredAt: date, notes: notes.trim() || undefined }),
+    onSuccess: () => { toast.success(due > 0 ? `${po.poNumber} purchased — ${formatCurrency(due)} paid from ${account?.name}` : `${po.poNumber} purchased — it was already paid`); done(); },
+    onError: (e) => { if (wentThrough(e)) { toast.success(`${po.poNumber} is already purchased`); done(); return; } toast.error(apiError(e), { duration: 9000 }); },
+  });
+  return (
+    <Modal open onClose={onClose} title={po ? `Confirm purchase · ${po.poNumber}` : 'Confirm purchase'}
+      footer={<>
+        <Button variant="secondary" onClick={onClose}>Cancel</Button>
+        <Button loading={save.isPending} disabled={!po || (due > 0 && (!account || short > 0)) || noPrice} onClick={() => save.mutate()}>
+          <Wallet className="h-4 w-4" /> {due > 0 ? `Pay ${formatCurrency(due)} and confirm` : 'Confirm — already paid'}
+        </Button>
+      </>}>
+      {!po || isLoading ? <PageSpinner /> : (
+        <div className="space-y-4">
+          <p className="text-sm text-muted">You bought these in China with cash. The money leaves the account you choose, once, and the order is locked.</p>
+          <div className="divide-y divide-white/[0.06] rounded-xl ring-1 ring-white/[0.08]">
+            {po.items.map((i) => (
+              <div key={i.id} className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
+                <span className="min-w-0 truncate text-foreground">{i.product?.name}</span>
+                <span className="shrink-0 tabular-nums text-muted">
+                  {formatNumber(i.quantity)} {unitWord(i, i.quantity)} × {formatNumber(Number(i.unitCost || 0) * sizeOf(i))} = <span className="font-semibold text-foreground">{formatCurrency(Number(i.unitCost || 0) * i.baseQuantity)}</span>
+                </span>
+              </div>
+            ))}
           </div>
-        )}
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field label="Paid from"><MoneyAccountSelect value={account?.id || ''} onChange={setAccountId} accounts={accounts} /></Field>
+            <Field label="Date paid"><Input type="date" max={eatISODate()} value={date} onChange={(e) => setDate(e.target.value)} /></Field>
+          </div>
+          {noPrice && <p className="rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-300 ring-1 ring-amber-500/20">A product has no buying price. Edit the order and fill it in first.</p>}
+          {short > 0 && (
+            <p className="rounded-lg bg-rose-500/10 px-3 py-2 text-xs text-rose-300 ring-1 ring-rose-500/20">
+              {account.name} holds {formatCurrency(account.balance)}. You need {formatCurrency(due)}, so {formatCurrency(short)} is missing. Put money into {account.name} or choose another account.
+            </p>
+          )}
+          <Field label="Notes"><Input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional — e.g. paid at the factory" /></Field>
+        </div>
+      )}
+    </Modal>
+  );
+}
 
-        <p className="text-[11px] leading-relaxed text-faint">
-          {landed
-            ? 'This order has been received — its boxes are in the warehouse and its cost is already counted, so it can no longer be changed.'
-            : 'These boxes are not in Inventory yet. Receiving the order is what puts them on the shelf and spreads the shipping and clearing across them as landed cost.'}
-        </p>
+function DispatchModal({ po, onClose }) {
+  const [date, setDate] = useState(eatISODate());
+  const [expected, setExpected] = useState(po.expectedArrival ? String(po.expectedArrival).slice(0, 10) : '');
+  const after = useAfterStep();
+  const done = () => { after(); onClose(); };
+  const save = useMutation({
+    mutationFn: () => api.post(`/purchase-orders/${po.id}/dispatch`, { dispatchedAt: date, expectedArrival: expected || undefined }),
+    onSuccess: () => { toast.success(`${po.poNumber} is on its way`); done(); },
+    onError: (e) => { if (wentThrough(e)) { toast.success(`${po.poNumber} is already on its way`); done(); return; } toast.error(apiError(e)); },
+  });
+  return (
+    <Modal open onClose={onClose} title={`Dispatch · ${po.poNumber}`}
+      footer={<><Button variant="secondary" onClick={onClose}>Cancel</Button><Button loading={save.isPending} onClick={() => save.mutate()}><Ship className="h-4 w-4" /> Mark as in transit</Button></>}>
+      <div className="space-y-4">
+        <p className="text-sm text-muted">The goods left China. Nothing enters stock until you receive them here.</p>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Dispatched"><Input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field>
+          <Field label="Expected arrival"><Input type="date" min={date} value={expected} onChange={(e) => setExpected(e.target.value)} /></Field>
+        </div>
       </div>
     </Modal>
   );
 }
 
-function PurchaseOrders() {
+// Shipping, clearing or other cost on a bought order — paid in cash as it is recorded.
+function AddCostModal({ po, onClose }) {
+  const { accounts } = useMoneyAccounts(po);
+  const [kind, setKind] = useState('shipping');
+  const [amount, setAmount] = useState('');
+  const [accountId, setAccountId] = useState('');
+  const [date, setDate] = useState(eatISODate());
+  const [notes, setNotes] = useState('');
+  const after = useAfterStep();
+  const account = accounts.find((a) => a.id === (accountId || accounts.find((x) => x.isDefault)?.id || accounts[0]?.id));
+  const amt = Number(amount) || 0;
+  const short = account ? Math.max(0, amt - Number(account.balance || 0)) : 0;
+  const save = useMutation({
+    mutationFn: () => api.post(`/purchase-orders/${po.id}/costs`, { kind, amount: amt, accountId: account?.id, occurredAt: date, notes: notes.trim() || undefined }),
+    onSuccess: () => { toast.success(`${formatCurrency(amt)} added to ${po.poNumber}`); after(); onClose(); },
+    onError: (e) => toast.error(apiError(e), { duration: 9000 }),
+  });
+  return (
+    <Modal open onClose={onClose} title={`Add cost · ${po.poNumber}`}
+      footer={<><Button variant="secondary" onClick={onClose}>Cancel</Button><Button loading={save.isPending} disabled={!(amt > 0) || !account || short > 0} onClick={() => save.mutate()}>Pay {formatCurrency(amt)}</Button></>}>
+      <div className="space-y-4">
+        <Chips label="Cost" value={kind} onChange={setKind} options={[{ value: 'shipping', label: 'Shipping' }, { value: 'clearing', label: 'Clearing' }, { value: 'other', label: 'Other' }]} />
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <Field label="Amount (TZS)"><NumberInput min="0" value={amount} onChange={(e) => setAmount(e.target.value)} /></Field>
+          <Field label="Paid from"><MoneyAccountSelect value={account?.id || ''} onChange={setAccountId} accounts={accounts} /></Field>
+        </div>
+        {short > 0 && <p className="text-xs text-rose-300">{account.name} holds {formatCurrency(account.balance)} — {formatCurrency(short)} short.</p>}
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <Field label="Date paid"><Input type="date" max={eatISODate()} value={date} onChange={(e) => setDate(e.target.value)} /></Field>
+          <Field label="Notes"><Input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional" /></Field>
+        </div>
+        <p className="text-xs text-faint">Spread over the boxes received from now on as landed cost. Boxes already in stock keep the cost they came in at.</p>
+      </div>
+    </Modal>
+  );
+}
+
+// Receive cargo — one step: what arrived goes into stock as you confirm (damaged and missing never do).
+function ReceiveModal({ poId, onClose }) {
+  const { data: po } = usePO(poId);
+  const after = useAfterStep();
+  const key = useRef(newKey());
+  const [rows, setRows] = useState({}); // itemId → { received, damaged, missing, note, open }
+  const [noMore, setNoMore] = useState(false);
+  const [arrivedAt, setArrivedAt] = useState(eatISODate());
+  const [notes, setNotes] = useState('');
+  const open = (po?.items || []).filter((i) => leftOf(i) > 0);
+  const get = (id) => rows[id] || {};
+  const setRow = (id, patch) => setRows((r) => ({ ...r, [id]: { ...r[id], ...patch } }));
+  const leftUnits = (i) => Math.floor(leftOf(i) / sizeOf(i));
+  const num = (v) => Math.max(0, Math.floor(Number(v) || 0));
+  const line = (i) => {
+    const r = get(i.id);
+    const received = num(r.received);
+    const damaged = num(r.damaged);
+    const missing = noMore ? Math.max(0, leftUnits(i) - received) : num(r.missing);
+    let error = '';
+    if (received + missing > leftUnits(i)) error = `Only ${formatNumber(leftUnits(i))} ${unitWord(i, leftUnits(i))} still to come`;
+    else if (damaged > received) error = 'More damaged than arrived';
+    else if (damaged > 0 && !String(r.note || '').trim()) error = 'Say what is wrong with the damaged';
+    return { i, received, damaged, missing, note: String(r.note || '').trim(), error };
+  };
+  const lines = open.map(line);
+  const entered = lines.filter((l) => l.received || l.damaged || l.missing);
+  const errors = lines.filter((l) => l.error);
+  const sum = (f) => lines.reduce((n, l) => n + f(l) * sizeOf(l.i), 0);
+  const intoStock = sum((l) => l.received - l.damaged);
+  const damagedBoxes = sum((l) => l.damaged);
+  const missingBoxes = sum((l) => l.missing);
+  const stillToCome = lines.reduce((n, l) => n + Math.max(0, leftOf(l.i) - (l.received + l.missing) * sizeOf(l.i)), 0);
+  const done = () => { after(true); onClose(); };
+  const save = useMutation({
+    mutationFn: () => api.post(`/purchase-orders/${poId}/receive-cargo`, {
+      clientKey: key.current,
+      arrivedAt,
+      notes: notes.trim() || undefined,
+      items: entered.map((l) => ({ itemId: l.i.id, received: l.received, damaged: l.damaged, missing: l.missing, note: l.note || undefined })),
+    }),
+    onSuccess: (r) => {
+      const now = r.data?.data;
+      toast.success(`${formatNumber(intoStock)} ${boxWord(intoStock)} added to stock${now?.status === 'RECEIVED' ? ` — ${po.poNumber} is complete` : ''}`);
+      done();
+    },
+    onError: (e) => { if (wentThrough(e)) { toast.success('Already received — the boxes are in stock'); done(); return; } toast.error(apiError(e), { duration: 9000 }); },
+  });
+  const allFine = () => setRows((r) => Object.fromEntries(open.map((i) => [i.id, { ...r[i.id], received: String(leftUnits(i)) }])));
+
+  return (
+    <Modal open onClose={onClose} size="xl" title={po ? `Receive · ${po.poNumber}` : 'Receive'}
+      footer={po && (
+        <>
+          <div className="mr-auto hidden text-xs text-muted sm:block">
+            <span className="font-semibold text-foreground">{formatNumber(intoStock)}</span> into stock
+            {damagedBoxes > 0 && <> · <span className="text-amber-300">{formatNumber(damagedBoxes)} damaged</span></>}
+            {missingBoxes > 0 && <> · <span className="text-rose-300">{formatNumber(missingBoxes)} missing</span></>}
+            {' · '}{formatNumber(stillToCome)} still to come <span className="text-faint">(boxes)</span>
+          </div>
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button loading={save.isPending} disabled={!entered.length || errors.length > 0} onClick={() => save.mutate()}>
+            <PackageCheck className="h-4 w-4" /> Confirm and add to stock
+          </Button>
+        </>
+      )}>
+      {!po ? <PageSpinner /> : (
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <p className="max-w-md text-sm text-muted">Count what arrived. Only good boxes go into stock; anything not yet here stays open for the next delivery.</p>
+            <Button variant="secondary" className="px-3 py-1.5 text-xs" onClick={allFine}>Everything arrived fine</Button>
+          </div>
+          <ul className="divide-y divide-white/[0.06] rounded-xl ring-1 ring-white/[0.08]">
+            {lines.map((l) => {
+              const { i } = l;
+              const r = get(i.id);
+              const before = (i.receivedBase || 0) + (i.missingBase || 0);
+              const left = leftUnits(i);
+              return (
+                <li key={i.id} className="space-y-2 px-3 py-3">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-medium text-foreground">{i.product?.name}</div>
+                      <div className="text-xs text-faint">
+                        {i.product?.sku && <>{i.product.sku} · </>}Bought {formatNumber(i.quantity)} {unitWord(i, i.quantity)}
+                        {sizeOf(i) > 1 && <> ({formatNumber(i.baseQuantity)} boxes)</>}
+                        {before > 0 && <> · {inUnit(i, before)} done before</>}
+                      </div>
+                    </div>
+                    <Badge className="bg-amber-500/15 text-amber-300">{formatNumber(left)} {unitWord(i, left)} to come</Badge>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <label className="flex items-center gap-2 text-xs text-muted">
+                      Arrived
+                      <NumberInput min="0" value={r.received ?? ''} onChange={(e) => setRow(i.id, { received: e.target.value })} className="h-10 w-24 text-right tabular-nums" aria-label={`${unitWord(i, 2)} of ${i.product?.name} that arrived`} />
+                      <span>{unitWord(i, 2)}</span>
+                    </label>
+                    <button type="button" onClick={() => setRow(i.id, { received: String(left) })} className={clsx(changeBtn, 'min-h-[40px] px-2')}>Arrived fine</button>
+                    <button type="button" onClick={() => setRow(i.id, { open: !r.open })} className={clsx(changeBtn, 'min-h-[40px] px-2')}>{r.open ? 'Hide' : 'Damaged, missing or note'}</button>
+                  </div>
+                  {r.open && (
+                    <div className="grid grid-cols-1 gap-2 rounded-lg bg-white/[0.03] p-2 sm:grid-cols-3">
+                      <Field label={`Of these, damaged or rejected (${unitWord(i, 2)})`}><NumberInput min="0" value={r.damaged ?? ''} onChange={(e) => setRow(i.id, { damaged: e.target.value })} /></Field>
+                      <Field label={`Missing — will not come (${unitWord(i, 2)})`}><NumberInput min="0" disabled={noMore} value={noMore ? String(l.missing) : (r.missing ?? '')} onChange={(e) => setRow(i.id, { missing: e.target.value })} /></Field>
+                      <Field label="Note"><Input value={r.note ?? ''} onChange={(e) => setRow(i.id, { note: e.target.value })} placeholder="What is wrong, and why" /></Field>
+                    </div>
+                  )}
+                  {(l.damaged > 0 || l.missing > 0) && !r.open && (
+                    <p className="text-xs text-muted">{l.damaged > 0 && <span className="text-amber-300">{l.damaged} damaged </span>}{l.missing > 0 && <span className="text-rose-300">{l.missing} missing</span>}</p>
+                  )}
+                  {l.error && <p className="text-xs font-medium text-rose-300">{l.error}</p>}
+                </li>
+              );
+            })}
+          </ul>
+          <label className="flex cursor-pointer items-start gap-2 rounded-lg bg-white/[0.03] p-3 text-sm text-foreground ring-1 ring-white/[0.08]">
+            <input type="checkbox" checked={noMore} onChange={(e) => setNoMore(e.target.checked)} className="mt-0.5 h-4 w-4 rounded accent-zinc-300" />
+            <span><b>Nothing more is coming.</b> <span className="text-muted">Anything still not here is recorded as missing and the order is completed.</span></span>
+          </label>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <Field label="Arrived on"><Input type="date" max={eatISODate()} value={arrivedAt} onChange={(e) => setArrivedAt(e.target.value)} /></Field>
+            <div className="sm:col-span-2"><Field label="Notes about this delivery"><Input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional" /></Field></div>
+          </div>
+          <p className="text-xs text-muted sm:hidden">
+            {formatNumber(intoStock)} into stock · {formatNumber(damagedBoxes)} damaged · {formatNumber(missingBoxes)} missing · {formatNumber(stillToCome)} still to come (boxes)
+          </p>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+// Open any order: what was bought and for how much, what came in and when, what is still to come, the money.
+function PODetailModal({ poId, isAdmin, onClose, onEdit, onDelete, onStep }) {
+  const { data: po, isLoading, isError, refetch } = usePO(poId);
+  const boxes = po ? orderBoxes(po) : 0;
+  const goods = (po?.items || []).reduce((n, i) => n + Number(i.unitCost || 0) * (i.baseQuantity || 0), 0);
+  const extras = po ? Number(po.shippingCost || 0) + Number(po.clearingCost || 0) + Number(po.otherCost || 0) : 0;
+  const itemName = new Map((po?.items || []).map((i) => [i.id, i]));
+  const when = po && [
+    po.createdAt && `Created ${formatDate(po.createdAt)}`,
+    po.purchasedAt && `Purchased ${formatDate(po.purchasedAt)}${po.purchasedBy ? ` by ${po.purchasedBy}` : ''}`,
+    po.dispatchedAt && `Dispatched ${formatDate(po.dispatchedAt)}`,
+    po.expectedArrival && !po.receivedAt && `Expected ${formatDate(po.expectedArrival)}`,
+    po.receivedAt && `Completed ${formatDate(po.receivedAt)}`,
+  ].filter(Boolean).join(' · ');
+  const go = (kind) => { onClose(); onStep(kind, po); };
+
+  return (
+    <Modal open onClose={onClose} size="xl" title={po?.poNumber || 'Purchase order'}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>Close</Button>
+          {po && isAdmin && NOT_YET_BOUGHT.includes(po.status) && (
+            <>
+              <Button variant="secondary" onClick={() => { onClose(); onDelete(po); }}><Trash2 className="h-4 w-4" /> Delete</Button>
+              <Button variant="secondary" onClick={() => { onClose(); onEdit(po); }}><Pencil className="h-4 w-4" /> Edit</Button>
+              <Button onClick={() => go('purchase')}><Wallet className="h-4 w-4" /> Confirm purchase</Button>
+            </>
+          )}
+          {po && isAdmin && po.status === 'PURCHASED' && (
+            <>
+              <Button variant="secondary" onClick={() => go('cost')}>Add cost</Button>
+              <Button onClick={() => go('dispatch')}><Ship className="h-4 w-4" /> Dispatch</Button>
+            </>
+          )}
+          {po && isAdmin && ARRIVING.includes(po.status) && (
+            <>
+              <Button variant="secondary" onClick={() => go('cost')}>Add cost</Button>
+              <Button onClick={() => go('receive')}><PackageCheck className="h-4 w-4" /> Receive</Button>
+            </>
+          )}
+        </>
+      }>
+      {isError && !po ? <LoadError what="this order" onRetry={refetch} /> : isLoading || !po ? <PageSpinner /> : (
+        <div className="space-y-5">
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-2 rounded-xl border border-white/[0.08] bg-surface px-4 py-3">
+            <Badge className={PO_STATUS_META[po.status]?.cls}>{PO_STATUS_META[po.status]?.label}</Badge>
+            <span className="text-sm text-foreground">{po.supplier?.name}</span>
+            {po.warehouse?.name && <span className="text-xs text-faint">into {po.warehouse.name}</span>}
+            <span className="text-xs text-faint sm:ml-auto">{when}</span>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            {(isAdmin ? [
+              { label: 'Goods', value: formatCurrency(goods), sub: `${formatNumber(boxes)} ${boxWord(boxes)} bought` },
+              { label: 'Shipping & clearing', value: formatCurrency(extras), sub: 'spread over the boxes' },
+              { label: 'Total cost', value: formatCurrency(po.totalCost), sub: boxes > 0 ? `${formatCurrency(Number(po.totalCost) / boxes)} a box` : '—' },
+              { label: 'Paid', value: formatCurrency(paidOn(po)), sub: NOT_YET_BOUGHT.includes(po.status) ? 'nothing until you confirm' : 'in cash' },
+            ] : [
+              { label: 'Bought', value: formatNumber(boxes), sub: boxWord(boxes) },
+              { label: 'In stock', value: formatNumber(orderInStock(po)), sub: 'good boxes received' },
+              { label: 'Still to come', value: formatNumber(orderLeft(po)), sub: 'boxes' },
+              { label: 'Deliveries', value: formatNumber(po.receipts?.length || 0), sub: 'received so far' },
+            ]).map((c) => (
+              <div key={c.label} className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-3">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted">{c.label}</p>
+                <p className="mt-1 text-base font-bold tabular-nums text-foreground">{c.value}</p>
+                <p className="text-[10px] text-faint">{c.sub}</p>
+              </div>
+            ))}
+          </div>
+
+          <div>
+            <div className="mb-2 text-sm font-semibold text-foreground">Products</div>
+            <Table stack>
+              <THead>
+                <TR><TH>Product</TH><TH>Bought</TH><TH>In stock</TH><TH>Damaged</TH><TH>Missing</TH><TH>To come</TH></TR>
+              </THead>
+              <TBody>
+                {po.items.map((i) => (
+                  <TR key={i.id}>
+                    <TD className="stack-full font-medium text-foreground">
+                      {i.product?.name}
+                      {i.product?.sku && <span className="ml-1.5 text-[11px] text-faint">{i.product.sku}</span>}
+                      {/* The price paid on THIS order: the same product keeps a different price on another order. */}
+                      {isAdmin && (
+                        <span className="block text-[11px] font-normal tabular-nums text-muted">
+                          {formatCurrency(Number(i.unitCost || 0) * sizeOf(i))} a {unitWord(i, 1)} · {formatCurrency(Number(i.unitCost || 0) * (i.baseQuantity || 0))}
+                        </span>
+                      )}
+                    </TD>
+                    <TD>{formatNumber(i.quantity)} {unitWord(i, i.quantity)}{sizeOf(i) > 1 && <span className="block text-[11px] text-faint">{formatNumber(i.baseQuantity)} boxes</span>}</TD>
+                    <TD className="font-semibold tabular-nums text-foreground">{formatNumber((i.receivedBase || 0) - (i.damagedBase || 0))}</TD>
+                    <TD className={i.damagedBase ? 'text-amber-300' : 'text-faint'}>{formatNumber(i.damagedBase || 0)}</TD>
+                    <TD className={i.missingBase ? 'text-rose-300' : 'text-faint'}>{formatNumber(i.missingBase || 0)}</TD>
+                    <TD className={leftOf(i) ? 'text-amber-300' : 'text-faint'}>{formatNumber(leftOf(i))}</TD>
+                  </TR>
+                ))}
+              </TBody>
+            </Table>
+            <p className="mt-1.5 text-[11px] text-faint">In stock, damaged, missing and to come are in boxes.</p>
+          </div>
+
+          {po.receipts?.length > 0 && (
+            <div>
+              <div className="mb-2 text-sm font-semibold text-foreground">Deliveries</div>
+              <ul className="space-y-2">
+                {po.receipts.map((r, n) => (
+                  <li key={r.id} className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-3 text-sm">
+                    <div className="flex flex-wrap justify-between gap-2 text-xs text-faint">
+                      <span className="font-semibold text-foreground">Delivery {n + 1} · {formatDate(r.arrivedAt)}</span>
+                      <span>{r.receivedBy ? `Received by ${r.receivedBy}` : ''}</span>
+                    </div>
+                    <ul className="mt-1.5 space-y-1">
+                      {r.items.map((ri) => {
+                        const it = itemName.get(ri.purchaseOrderItemId);
+                        return (
+                          <li key={ri.id} className="text-xs text-muted">
+                            <span className="text-foreground">{it?.product?.name || 'Product'}</span>
+                            {ri.receivedBase > 0 && <> · {it ? inUnit(it, ri.receivedBase) : `${ri.receivedBase} boxes`} arrived, {formatNumber(ri.acceptedBase)} into stock</>}
+                            {ri.damagedBase > 0 && <span className="text-amber-300"> · {formatNumber(ri.damagedBase)} damaged</span>}
+                            {ri.missingBase > 0 && <span className="text-rose-300"> · {it ? inUnit(it, ri.missingBase) : ri.missingBase} missing</span>}
+                            {ri.note && <span className="text-faint"> — {ri.note}</span>}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                    {r.notes && <p className="mt-1.5 text-xs text-faint">{r.notes}</p>}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {isAdmin && po.payments?.length > 0 && (
+            <div>
+              <div className="mb-2 text-sm font-semibold text-foreground">Money paid</div>
+              <ul className="divide-y divide-white/[0.06] rounded-xl ring-1 ring-white/[0.08]">
+                {po.payments.map((t) => (
+                  <li key={t.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-xs">
+                    <span className="text-muted"><span className="font-medium text-foreground">{t.txnNumber}</span> · {t.category || 'Stock Purchase'} · {t.account}</span>
+                    <span className="tabular-nums text-muted">{formatDate(t.occurredAt)} · <span className="font-semibold text-foreground">{formatCurrency(t.amount)}</span></span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {po.notes && (
+            <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-3">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted">Notes</p>
+              <p className="mt-1 text-sm text-muted">{po.notes}</p>
+            </div>
+          )}
+
+          <p className="text-[11px] leading-relaxed text-faint">
+            {NOT_YET_BOUGHT.includes(po.status)
+              ? 'A draft: no money has moved and nothing is in stock. Confirm the purchase once you have paid for it.'
+              : po.status === 'PURCHASED'
+                ? 'Paid for and locked. Dispatch it when the goods leave China.'
+                : ARRIVING.includes(po.status)
+                  ? 'On its way. Receive it when it arrives — in parts if it comes in parts. Only good boxes go into stock.'
+                  : po.status === 'RECEIVED'
+                    ? 'Completed: every box bought was received or recorded missing.'
+                    : 'Cancelled.'}
+          </p>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+const PO_TABS = [
+  ['', 'All'], ['DRAFT', 'Drafts'], ['PURCHASED', 'Purchased'], ['IN_TRANSIT', 'In transit'],
+  ['PARTLY_RECEIVED', 'Part received'], ['RECEIVED', 'Completed'],
+];
+
+function PurchaseOrders({ isAdmin }) {
   const qc = useQueryClient();
+  const { data: products = [] } = useProducts();
   const [page, setPage] = useState(1);
+  const [status, setStatus] = useState('');
+  const [productId, setProductId] = useState('');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
   const [open, setOpen] = useState(false);
-  const { data, isLoading, isError, refetch } = useQuery({ queryKey: ['purchase-orders', { page }], queryFn: async () => unwrap(await api.get('/purchase-orders', { params: { page, limit: 15 } })), placeholderData: keepOnPageTurn() });
+  const params = { page, limit: 15, status: status || undefined, productId: productId || undefined, from: from || undefined, to: to || undefined };
+  const { data, isLoading, isError, refetch } = useQuery({
+    queryKey: ['purchase-orders', params],
+    queryFn: async () => unwrap(await api.get('/purchase-orders', { params })),
+    placeholderData: keepOnPageTurn(),
+  });
   const [editing, setEditing] = useState(null);
   const [viewing, setViewing] = useState(null);
+  const [step, setStep] = useState(null); // { kind: 'purchase' | 'dispatch' | 'receive' | 'cost', po }
+  const onStep = (kind, po) => setStep({ kind, po });
+  const filter = (fn) => (v) => { fn(v); setPage(1); };
   const askDelete = (po) => {
-    if (confirm(`Delete ${po.poNumber}? The stock has not arrived, so nothing leaves your warehouse.`)) del.mutate(po.id);
-  };
-  const askReceive = (po) => {
-    if (confirm(`Receive ${po.poNumber} into the warehouse?`)) receive.mutate(po.id);
+    if (confirm(`Delete ${po.poNumber}? It is a draft: no money has moved and nothing is in stock.`)) del.mutate(po.id);
   };
   const del = useMutation({
     mutationFn: (id) => api.delete(`/purchase-orders/${id}`),
@@ -415,34 +853,15 @@ function PurchaseOrders() {
       toast.success(`${r.data?.data?.poNumber || 'Order'} deleted`);
       qc.invalidateQueries({ queryKey: ['purchase-orders'] });
     },
-    // The server refuses a delete that would leave the supplier overpaid, and says by how much.
     onError: (e) => { toast.error(apiError(e), { duration: 9000 }); qc.invalidateQueries({ queryKey: ['purchase-orders'] }); },
   });
-
-  // Stock in at a new cost: Inventory, the Dashboard's stock alerts and value, and Finance's suppliers too
-  // (audit freshness-4).
-  const afterReceive = () => {
-    qc.invalidateQueries({ queryKey: ['purchase-orders'] });
-    qc.invalidateQueries({ queryKey: ['finance'] });
-    refreshAfter(qc, 'stock');
-  };
-  const receive = useMutation({
-    mutationFn: (id) => api.post(`/purchase-orders/${id}/receive`, {}),
-    onSuccess: () => { toast.success('Received into warehouse'); afterReceive(); },
-    // 409: it was already received — a second press or a retry after a lost answer (audit reversals-stock-5).
-    onError: (e) => {
-      if (wentThrough(e)) { toast.success('Already received into the warehouse'); afterReceive(); return; }
-      toast.error(apiError(e));
-    },
-  });
   const otw = data?.meta?.onTheWay;
+  const counts = data?.meta?.counts || {};
+  const countOf = (k) => (k ? counts[k] || 0 : Object.values(counts).reduce((n, c) => n + c, 0));
 
   return (
     <div className="space-y-4">
-      {/* Stock bought but not landed. It is paid for or owed for and it is
-          coming, but it is not inventory yet — so until now it was invisible
-          between ordering it and it arriving, which is exactly the window
-          you need to plan around. */}
+      {/* Bought, not all in yet: real, paid for, coming — not inventory until it is received. */}
       {otw && (
         <div className="stat-glass p-5">
           <div className="relative flex flex-wrap items-center gap-x-8 gap-y-4">
@@ -455,94 +874,102 @@ function PurchaseOrders() {
                 {formatNumber(otw.boxes)} <span className="text-sm font-normal text-muted">boxes</span>
               </p>
               <p className="mt-1 text-[11px] text-faint">
-                {otw.orders > 0
-                  ? `${formatNumber(otw.orders)} order${otw.orders === 1 ? '' : 's'} ordered, not yet arrived`
-                  : 'nothing ordered that has not arrived'}
+                {otw.orders > 0 ? `${formatNumber(otw.orders)} order${otw.orders === 1 ? '' : 's'} bought, not all in yet` : 'nothing bought that has not arrived'}
               </p>
             </div>
             {otw.orders > 0 && (
               <>
-                <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-wider text-muted">Worth</p>
-                  <p className="mt-1.5 text-xl font-bold tabular-nums text-foreground">{formatCurrency(otw.value)}</p>
-                  <p className="text-[11px] text-faint">at landed cost</p>
-                </div>
+                {otw.value != null && (
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-wider text-muted">Worth</p>
+                    <p className="mt-1.5 text-xl font-bold tabular-nums text-foreground">{formatCurrency(otw.value)}</p>
+                    <p className="text-[11px] text-faint">what is still to come</p>
+                  </div>
+                )}
                 <div>
                   <p className="text-[11px] font-semibold uppercase tracking-wider text-muted">Next arrival</p>
-                  <p className="mt-1.5 text-xl font-bold tabular-nums text-foreground">
-                    {otw.nextArrival ? formatDate(otw.nextArrival) : '—'}
-                  </p>
+                  <p className="mt-1.5 text-xl font-bold tabular-nums text-foreground">{otw.nextArrival ? formatDate(otw.nextArrival) : '—'}</p>
                   <p className="text-[11px] text-faint">{otw.nextArrival ? 'expected' : 'no date set'}</p>
                 </div>
               </>
             )}
             <p className="ml-auto max-w-xs text-[11px] leading-relaxed text-faint">
-              These boxes are not in Inventory yet. They count the moment you press <b className="text-muted">Receive</b> on the order —
-              that is what puts them on the shelf and starts their cost.
+              These boxes are not in Inventory yet. They count when you press <b className="text-muted">Receive</b> on the order and confirm what arrived.
             </p>
           </div>
         </div>
       )}
 
     <Card>
-      <div className="flex items-center justify-between border-b border-border p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border p-4">
         <span className="text-sm font-semibold text-foreground">Purchase orders</span>
-        <Button onClick={() => setOpen(true)}><Plus className="h-4 w-4" /> New PO</Button>
+        {isAdmin && <Button onClick={() => setOpen(true)}><Plus className="h-4 w-4" /> New PO</Button>}
       </div>
-      {isLoading ? <PageSpinner /> : isError && !data ? <LoadError what="the purchase orders" onRetry={refetch} /> : !data?.data?.length ? <EmptyState title="No purchase orders" icon={Ship} /> : (
+      <div className="space-y-3 border-b border-border p-4">
+        <div className="-mx-1 flex gap-1.5 overflow-x-auto px-1 pb-1" role="tablist" aria-label="Order status">
+          {PO_TABS.map(([k, label]) => (
+            <button key={k || 'all'} type="button" role="tab" aria-selected={status === k} onClick={() => filter(setStatus)(k)}
+              className={clsx('flex shrink-0 cursor-pointer items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold ring-1 transition',
+                status === k ? 'bg-white/[0.12] text-foreground ring-white/20' : 'text-muted ring-white/[0.08] hover:text-foreground')}>
+              {label}<span className="tabular-nums text-faint">{formatNumber(countOf(k))}</span>
+            </button>
+          ))}
+        </div>
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto_auto]">
+          <Select value={productId} onChange={(e) => filter(setProductId)(e.target.value)} aria-label="Product">
+            <option value="">All products</option>
+            {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </Select>
+          <Input type="date" value={from} onChange={(e) => filter(setFrom)(e.target.value)} aria-label="Created from" />
+          <Input type="date" min={from || undefined} value={to} onChange={(e) => filter(setTo)(e.target.value)} aria-label="Created to" />
+        </div>
+      </div>
+      {isLoading ? <PageSpinner /> : isError && !data ? <LoadError what="the purchase orders" onRetry={refetch} /> : !data?.data?.length ? <EmptyState title={status || productId || from || to ? 'No orders match' : 'No purchase orders'} icon={Ship} /> : (
         <>
           <Table stack="wide">
-            <THead><TR><TH>PO</TH><TH>Supplier</TH><TH>Boxes</TH><TH>Products</TH><TH>Total cost</TH><TH>Expected</TH><TH>Status</TH><TH /></TR></THead>
+            <THead><TR><TH>PO</TH><TH>Supplier</TH><TH>Products</TH><TH>Boxes</TH>{isAdmin && <TH>Total cost</TH>}<TH>Status</TH><TH /></TR></THead>
             <TBody>
-              {data.data.map((po) => (
-                <TR key={po.id} className="cursor-pointer" onClick={() => setViewing(po)}>
-                  <TD className="font-medium text-foreground">{po.poNumber}</TD>
-                  <TD>{po.supplier?.name}</TD>
-                  {/* Boxes, not just how many product lines were on the form. */}
-                  <TD className="font-semibold tabular-nums text-foreground">{formatNumber(po.boxes ?? 0)}</TD>
-                  <TD className="text-muted">{po.items.length}</TD>
-                  <TD>{formatCurrency(po.totalCost)}</TD>
-                  <TD className="text-faint">{formatDate(po.expectedArrival)}</TD>
-                  <TD><Badge className={PO_STATUS_META[po.status]?.cls}>{PO_STATUS_META[po.status]?.label}</Badge></TD>
-                  {/* Edit and delete are offered only before the order lands.
-                      Once received its boxes are on the shelf at a cost taken
-                      from these lines, so changing or removing it would leave
-                      stock with no origin — the server refuses it too. */}
-                  <TD>
-                    <div className="flex items-center justify-end gap-2">
-                      <button
-                        title="Open this order"
-                        onClick={(e) => { e.stopPropagation(); setViewing(po); }}
-                        className="cursor-pointer text-faint transition hover:text-brand-600"
-                      >
-                        <Eye className="h-4 w-4" />
-                      </button>
-                      {po.status !== 'RECEIVED' && po.status !== 'CANCELLED' && (
-                        <>
-                          <button
-                            title="Edit this order"
-                            onClick={(e) => { e.stopPropagation(); setEditing(po); }}
-                            className="cursor-pointer text-faint transition hover:text-brand-600"
-                          >
-                            <Pencil className="h-4 w-4" />
-                          </button>
-                          <button
-                            title="Delete this order"
-                            onClick={(e) => { e.stopPropagation(); askDelete(po); }}
-                            className="cursor-pointer text-faint transition hover:text-rose-400"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </button>
-                          <Button variant="secondary" className="px-3 py-1 text-xs" onClick={(e) => { e.stopPropagation(); askReceive(po); }}><PackageCheck className="h-4 w-4" /> Receive</Button>
-                        </>
-                      )}
-                      {po.status === 'RECEIVED' && (
-                        <span className="text-[11px] text-faint">on the shelf</span>
-                      )}
-                    </div>
-                  </TD>
-                </TR>
-              ))}
+              {data.data.map((po) => {
+                const boxes = orderBoxes(po);
+                const left = orderLeft(po);
+                const started = po.status === 'PARTLY_RECEIVED' || po.status === 'RECEIVED';
+                return (
+                  <TR key={po.id} className="cursor-pointer" onClick={() => setViewing(po.id)}>
+                    <TD className="font-medium text-foreground">
+                      {po.poNumber}
+                      <span className="block text-[11px] font-normal text-faint">{formatDate(po.purchasedAt || po.createdAt)}</span>
+                    </TD>
+                    <TD>{po.supplier?.name}</TD>
+                    <TD className="text-muted">{po.items.length}</TD>
+                    <TD className="tabular-nums">
+                      <span className="font-semibold text-foreground">{formatNumber(boxes)}</span>
+                      {started && left > 0 && <span className="block text-[11px] text-amber-300">{formatNumber(left)} still to come</span>}
+                    </TD>
+                    {isAdmin && <TD>{formatCurrency(po.totalCost)}</TD>}
+                    <TD><Badge className={PO_STATUS_META[po.status]?.cls}>{PO_STATUS_META[po.status]?.label}</Badge></TD>
+                    <TD>
+                      <div className="flex items-center justify-end gap-2">
+                        <button title="Open this order" onClick={(e) => { e.stopPropagation(); setViewing(po.id); }} className="cursor-pointer text-faint transition hover:text-brand-600">
+                          <Eye className="h-4 w-4" />
+                        </button>
+                        {isAdmin && NOT_YET_BOUGHT.includes(po.status) && (
+                          <>
+                            <button title="Edit this order" onClick={(e) => { e.stopPropagation(); setEditing(po); }} className="cursor-pointer text-faint transition hover:text-brand-600"><Pencil className="h-4 w-4" /></button>
+                            <button title="Delete this draft" onClick={(e) => { e.stopPropagation(); askDelete(po); }} className="cursor-pointer text-faint transition hover:text-rose-400"><Trash2 className="h-4 w-4" /></button>
+                            <Button variant="secondary" className="px-3 py-1 text-xs" onClick={(e) => { e.stopPropagation(); onStep('purchase', po); }}><Wallet className="h-4 w-4" /> Confirm purchase</Button>
+                          </>
+                        )}
+                        {isAdmin && po.status === 'PURCHASED' && (
+                          <Button variant="secondary" className="px-3 py-1 text-xs" onClick={(e) => { e.stopPropagation(); onStep('dispatch', po); }}><Ship className="h-4 w-4" /> Dispatch</Button>
+                        )}
+                        {isAdmin && ARRIVING.includes(po.status) && (
+                          <Button variant="secondary" className="px-3 py-1 text-xs" onClick={(e) => { e.stopPropagation(); onStep('receive', po); }}><PackageCheck className="h-4 w-4" /> Receive</Button>
+                        )}
+                      </div>
+                    </TD>
+                  </TR>
+                );
+              })}
             </TBody>
           </Table>
           <Pagination page={page} totalPages={data.meta?.totalPages} total={data.meta?.total} onChange={setPage} />
@@ -550,17 +977,65 @@ function PurchaseOrders() {
       )}
       {open && <POModal onClose={() => setOpen(false)} />}
       {editing && <POModal editing={editing} onClose={() => setEditing(null)} />}
-      {viewing && (
-        <PODetailModal
-          po={viewing}
-          onClose={() => setViewing(null)}
-          onEdit={setEditing}
-          onDelete={askDelete}
-          onReceive={askReceive}
-        />
-      )}
+      {viewing && <PODetailModal poId={viewing} isAdmin={isAdmin} onClose={() => setViewing(null)} onEdit={setEditing} onDelete={askDelete} onStep={onStep} />}
+      {step?.kind === 'purchase' && <ConfirmPurchaseModal poId={step.po.id} onClose={() => setStep(null)} />}
+      {step?.kind === 'dispatch' && <DispatchModal po={step.po} onClose={() => setStep(null)} />}
+      {step?.kind === 'cost' && <AddCostModal po={step.po} onClose={() => setStep(null)} />}
+      {step?.kind === 'receive' && <ReceiveModal poId={step.po.id} onClose={() => setStep(null)} />}
     </Card>
     </div>
+  );
+}
+
+// Every price paid for a product, order by order — the same product keeps each price on its own order.
+function PriceHistory() {
+  const { data: products = [] } = useProducts();
+  const [productId, setProductId] = useState('');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
+  const params = { productId: productId || undefined, from: from || undefined, to: to || undefined };
+  const { data: lines = [], isLoading, isError, refetch } = useQuery({
+    queryKey: ['purchase-orders', 'lines', params],
+    queryFn: async () => unwrap(await api.get('/purchase-orders/lines', { params })).data,
+  });
+  return (
+    <Card>
+      <div className="space-y-3 border-b border-border p-4">
+        <span className="text-sm font-semibold text-foreground">Price history</span>
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto_auto]">
+          <Select value={productId} onChange={(e) => setProductId(e.target.value)} aria-label="Product">
+            <option value="">All products</option>
+            {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </Select>
+          <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} aria-label="Purchased from" />
+          <Input type="date" min={from || undefined} value={to} onChange={(e) => setTo(e.target.value)} aria-label="Purchased to" />
+        </div>
+      </div>
+      {isLoading ? <PageSpinner /> : isError ? <LoadError what="the price history" onRetry={refetch} /> : !lines.length ? <EmptyState title="Nothing bought yet" icon={Ship} /> : (
+        <Table stack="wide">
+          <THead><TR><TH>PO</TH><TH>Product</TH><TH>Bought</TH><TH className="text-right">Price</TH><TH className="text-right">Line total</TH><TH>In stock</TH><TH>Status</TH></TR></THead>
+          <TBody>
+            {lines.map((l) => (
+              <TR key={l.id}>
+                <TD className="font-medium text-foreground">
+                  {l.poNumber}
+                  <span className="block text-[11px] font-normal text-faint">{formatDate(l.purchasedAt || l.createdAt)}</span>
+                </TD>
+                <TD className="stack-full">{l.product?.name}</TD>
+                <TD>{formatNumber(l.quantity)} {l.quantity === 1 ? String(l.unit || 'box').toLowerCase() : pluralizeUnit(String(l.unit || 'box').toLowerCase())}</TD>
+                <TD className="text-right tabular-nums">{formatCurrency(l.unitPrice)}<span className="block text-[11px] text-faint">a {String(l.unit || 'box').toLowerCase()}</span></TD>
+                <TD className="text-right font-semibold tabular-nums">{formatCurrency(l.lineTotal)}</TD>
+                <TD className="tabular-nums">
+                  {formatNumber(l.accepted)}
+                  {(l.damaged > 0 || l.missing > 0) && <span className="block text-[11px] text-faint">{l.damaged > 0 ? `${l.damaged} damaged ` : ''}{l.missing > 0 ? `${l.missing} missing` : ''}</span>}
+                </TD>
+                <TD><Badge className={PO_STATUS_META[l.status]?.cls}>{PO_STATUS_META[l.status]?.label}</Badge></TD>
+              </TR>
+            ))}
+          </TBody>
+        </Table>
+      )}
+    </Card>
   );
 }
 
@@ -604,15 +1079,18 @@ function Suppliers() {
 
 export default function Purchases() {
   const [tab, setTab] = useState('orders');
+  // Buying, paying and receiving are the admin's; other staff see the orders without prices.
+  const isAdmin = useAuth().user?.role === ROLES.ADMIN;
+  const tabs = [['orders', 'Purchase orders'], ...(isAdmin ? [['prices', 'Price history']] : []), ['suppliers', 'Suppliers']];
   return (
     <div>
-      <PageHeader title="Imports & Purchase Orders" subtitle="Order stock from China, track costs, and receive into the warehouse." />
-      <div className="mb-4 flex gap-2">
-        {[['orders', 'Purchase orders'], ['suppliers', 'Suppliers']].map(([k, label]) => (
+      <PageHeader title="Imports & Purchase Orders" subtitle="Buy in China with cash, track the shipment, receive it into the warehouse." />
+      <div className="mb-4 flex flex-wrap gap-2">
+        {tabs.map(([k, label]) => (
           <button key={k} onClick={() => setTab(k)} className={`cursor-pointer rounded-full px-4 py-2 text-sm font-semibold ring-1 transition duration-200 ${tab === k ? 'bg-brand-500 text-white ring-brand-500' : 'bg-transparent text-muted ring-white/10 hover:bg-white/[0.05] hover:text-foreground'}`}>{label}</button>
         ))}
       </div>
-      {tab === 'orders' ? <PurchaseOrders /> : <Suppliers />}
+      {tab === 'orders' ? <PurchaseOrders isAdmin={isAdmin} /> : tab === 'prices' && isAdmin ? <PriceHistory /> : <Suppliers />}
     </div>
   );
 }

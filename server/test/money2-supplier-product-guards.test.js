@@ -36,7 +36,8 @@ function db(tables = {}) {
     get(_t, name) {
       if (name === 'then') return undefined;
       if (name === '$transaction') return (fn) => fn(proxy); // not serialised: the claims must hold alone
-      if (name === '$queryRaw' || name === '$executeRaw') return async () => [];
+      // A row lock answers with the row it locked (purchase orders are locked before every change).
+      if (name === '$queryRaw' || name === '$executeRaw') return async () => [{ id: 'locked' }];
       return { ...empty, ...(tables[name] || {}) };
     },
   });
@@ -183,7 +184,8 @@ test('a purchase order cannot be edited below what was paid against it', async (
 // ── reversals-stock-3 ────────────────────────────────────────────────────────────────────────────────
 test('deleting or cancelling an order is refused when a balance payment would leave the supplier overpaid', async () => {
   const setup = () => loadPurchase({
-    orders: [{ id: 'poA', poNumber: 'PO-9', totalCost: 10000, status: 'ORDERED' }, { id: 'poB', poNumber: 'PO-10', totalCost: 30000 }],
+    // Both count as bought (ORDERED): a draft is not, so dropping one can never overpay anybody.
+    orders: [{ id: 'poA', poNumber: 'PO-9', totalCost: 10000, status: 'ORDERED' }, { id: 'poB', poNumber: 'PO-10', totalCost: 30000, status: 'ORDERED' }],
     balancePaid: 40000,
   });
   const a = setup();

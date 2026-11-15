@@ -17,10 +17,12 @@ function loadPurchase() {
   const tx = {
     purchaseOrder: {
       findUnique: async () => ({ ...po, items: po.items }),
-      updateMany: async ({ where, data }) => { await tick(); if (where.status.notIn.includes(po.status)) return { count: 0 }; Object.assign(po, data); return { count: 1 }; },
+      updateMany: async ({ where, data }) => { await tick(); if (!where.status.in.includes(po.status)) return { count: 0 }; Object.assign(po, data); return { count: 1 }; },
       update: async ({ data }) => Object.assign(po, data),
     },
     purchaseOrderItem: { update: async () => ({}) },
+    purchaseReceipt: { count: async () => 0 }, // an older order with no deliveries recorded yet
+    $queryRaw: async () => [{ id: 'po1' }], // the order's row lock
     product: { update: async () => ({}) },
     warehouse: { findFirst: async () => ({ id: 'w1' }) },
   };

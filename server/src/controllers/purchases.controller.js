@@ -5,6 +5,18 @@ const { ok, created, paginated } = require('../utils/response');
 const { parsePagination } = require('../utils/pagination');
 const purchase = require('../services/purchase.service');
 const audit = require('../services/audit.service');
+const { ROLES } = require('../middleware/authorize');
+
+// The warehouse counts cargo; what it cost is the owner's (cash-only, 15 Nov 2026). Prices, totals and the
+// payments are taken off every order a non-owner is sent.
+const MONEY_KEYS = ['goodsCost', 'shippingCost', 'clearingCost', 'otherCost', 'totalCost', 'payments'];
+function forViewer(po, user) {
+  if (!po || user?.role === ROLES.ADMIN) return po;
+  const out = { ...po };
+  MONEY_KEYS.forEach((k) => delete out[k]);
+  out.items = (po.items || []).map(({ unitCost, landedUnitCost, ...rest }) => rest); // eslint-disable-line no-unused-vars
+  return out;
+}
 
 // --- Suppliers -------------------------------------------------------------
 const listSuppliers = asyncHandler(async (req, res) => {
@@ -39,11 +51,13 @@ const removeSupplier = asyncHandler(async (req, res) => {
 const listPOs = asyncHandler(async (req, res) => {
   const q = req.validatedQuery || req.query;
   const pagination = parsePagination(q, { defaultSortBy: 'createdAt', defaultSortDir: 'desc' });
-  const { items, total, onTheWay } = await purchase.listPurchaseOrders(q, pagination);
-  return paginated(res, items, { page: pagination.page, limit: pagination.limit, total, onTheWay });
+  const { items, total, onTheWay, counts } = await purchase.listPurchaseOrders(q, pagination);
+  const owner = req.user?.role === ROLES.ADMIN;
+  const way = owner ? onTheWay : { ...onTheWay, value: undefined, orders_: onTheWay.orders_.map(({ totalCost, ...o }) => o) }; // eslint-disable-line no-unused-vars
+  return paginated(res, items.map((po) => forViewer(po, req.user)), { page: pagination.page, limit: pagination.limit, total, onTheWay: way, counts });
 });
 
-const getPO = asyncHandler(async (req, res) => ok(res, await purchase.getPurchaseOrder(req.params.id)));
+const getPO = asyncHandler(async (req, res) => ok(res, forViewer(await purchase.getPurchaseOrder(req.params.id), req.user)));
 
 const deletePO = asyncHandler(async (req, res) => {
   const po = await purchase.deletePurchaseOrder(req.params.id);
@@ -74,4 +88,43 @@ const receivePO = asyncHandler(async (req, res) => {
   return ok(res, po);
 });
 
-module.exports = { listSuppliers, createSupplier, updateSupplier, removeSupplier, listPOs, getPO, deletePO, createPO, updatePO, receivePO };
+// --- Cash-only purchasing steps (15 Nov 2026) ------------------------------
+const confirmPurchase = asyncHandler(async (req, res) => {
+  const po = await purchase.confirmPurchase(req.params.id, req.body, req.user);
+  await audit.record(req, { action: 'PURCHASE_CONFIRMED', entityType: 'PurchaseOrder', entityId: po.id, newValues: { poNumber: po.poNumber, totalCost: po.totalCost, accountId: req.body.accountId || null } });
+  return ok(res, po);
+});
+
+const dispatchPO = asyncHandler(async (req, res) => {
+  const po = await purchase.dispatchOrder(req.params.id, req.body, req.user);
+  await audit.record(req, { action: 'DISPATCHED', entityType: 'PurchaseOrder', entityId: po.id, newValues: { poNumber: po.poNumber, dispatchedAt: po.dispatchedAt, expectedArrival: po.expectedArrival } });
+  return ok(res, po);
+});
+
+const addCost = asyncHandler(async (req, res) => {
+  const po = await purchase.addOrderCost(req.params.id, req.body, req.user);
+  await audit.record(req, { action: 'COST_ADDED', entityType: 'PurchaseOrder', entityId: po.id, newValues: { poNumber: po.poNumber, kind: req.body.kind, amount: req.body.amount, accountId: req.body.accountId } });
+  return ok(res, po);
+});
+
+const receiveCargo = asyncHandler(async (req, res) => {
+  const { order, receipt } = await purchase.receiveCargo(req.params.id, req.body, req.user);
+  await audit.record(req, {
+    action: 'CARGO_RECEIVED',
+    entityType: 'PurchaseOrder',
+    entityId: order.id,
+    newValues: {
+      poNumber: order.poNumber, receiptId: receipt.id, status: order.status,
+      lines: req.body.items.filter((i) => i.received || i.damaged || i.missing)
+        .map((i) => ({ itemId: i.itemId, received: i.received || 0, damaged: i.damaged || 0, missing: i.missing || 0 })),
+    },
+  });
+  return ok(res, order);
+});
+
+const listLines = asyncHandler(async (req, res) => ok(res, await purchase.listPurchaseLines(req.validatedQuery || req.query)));
+
+module.exports = {
+  listSuppliers, createSupplier, updateSupplier, removeSupplier, listPOs, getPO, deletePO, createPO, updatePO, receivePO,
+  confirmPurchase, dispatchPO, addCost, receiveCargo, listLines,
+};

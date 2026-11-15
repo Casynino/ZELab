@@ -1,16 +1,12 @@
 'use strict';
 
-// ── Stock bought with the cash in the drawer is not a debt ───────────────────
-// A purchase could only ever be recorded as money owed: the form said so out
-// loud — "No money moves now — pay later" — and the only way to show it had
-// been paid was a separate payment afterwards, dated whenever somebody got
-// round to it. So 3,300,000 of stock that was paid for in cash in September
-// sat under "owed to suppliers", and would have taken its money out of
-// October's books when it was finally cleared.
-//
-// A purchase may now carry its own payment. These tests hold the two things
-// that make that safe: the money is written in the SAME transaction as the
-// purchase, and it is dated the day of the purchase rather than today.
+// ── Cash-only purchasing: money moves at Confirm purchase, never at create ───
+// A purchase used to be able to carry its own payment at the moment it was
+// created (and before that could only be a debt). Since 15 Nov 2026 a new
+// order is always a draft: nothing is owed for it and no money moves until
+// Confirm purchase pays the whole order from one account (purchase.service
+// confirmPurchase — covered against a real database in po-cash-flow.db.test.js).
+// These tests hold the create side of that rule.
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -67,67 +63,19 @@ test.beforeEach(() => {
   txCalls = [];
 });
 
-const money = () => tables.financeTransaction[0];
-
-test('a purchase with no payment is money owed, exactly as before', async () => {
+test('a new order is a draft and moves no money, even with an order date', async () => {
   await purchase.createPurchaseOrder(payload(), { id: 'admin-1' });
   assert.equal(tables.financeTransaction.length, 0);
+  assert.equal(tables.purchaseOrder[0].status, 'DRAFT');
+  assert.equal(tables.purchaseOrder[0].totalCost, 700_000); // 50 boxes x 14,000
 });
 
-test('paid in full: the money leaves on the day of the purchase, not today', async () => {
-  await purchase.createPurchaseOrder(
-    payload({ payment: { accountId: 'acct-1' } }), // no amount: the whole bill
-    { id: 'admin-1' },
-  );
-
-  const t = money();
-  assert.ok(t, 'a payment was recorded');
-  assert.equal(t.amount, 700_000);              // 50 boxes x 14,000
-  assert.equal(t.direction, 'OUT');
-  assert.equal(t.type, 'STOCK_PURCHASE');
-  assert.equal(t.refType, 'PurchaseOrder');
-  assert.equal(t.refId, tables.purchaseOrder[0].id); // so the PO shows as settled
-  assert.equal(t.brandId, 'brand-ohis');             // the brand whose stock it is
-  assert.equal(new Date(t.occurredAt).toISOString().slice(0, 10), '2026-09-26');
-});
-
-test('the payment is written inside the purchase\'s own transaction', async () => {
-  // Not two round trips: a purchase that saved while its payment did not is
-  // the debt this feature exists to stop creating.
-  await purchase.createPurchaseOrder(payload({ payment: { accountId: 'acct-1' } }), { id: 'admin-1' });
-  assert.deepEqual(txCalls, ['purchaseOrder.create', 'financeTransaction.create']);
-});
-
-test('part payment leaves the rest owed', async () => {
-  await purchase.createPurchaseOrder(
-    payload({ payment: { accountId: 'acct-1', amount: 300_000 } }),
-    { id: 'admin-1' },
-  );
-  assert.equal(money().amount, 300_000);
-  assert.equal(tables.purchaseOrder[0].totalCost, 700_000); // the rest stands as owed
-});
-
-test('shipping and the other costs are part of what was paid', async () => {
-  await purchase.createPurchaseOrder(
-    payload({ shippingCost: 50_000, otherCost: 25_000, payment: { accountId: 'acct-1' } }),
-    { id: 'admin-1' },
-  );
-  assert.equal(money().amount, 775_000);
-});
-
-test('paying more than the purchase cost is refused, and nothing is written', async () => {
+test('a payment sent with a new order is refused, and nothing is written', async () => {
+  // An older screen (a cached page) may still send one: it is refused outright, not half-obeyed.
   await assert.rejects(
-    () => purchase.createPurchaseOrder(
-      payload({ payment: { accountId: 'acct-1', amount: 900_000 } }),
-      { id: 'admin-1' },
-    ),
-    (e) => /more than it cost/i.test(e.message),
+    purchase.createPurchaseOrder(payload({ payment: { accountId: 'acct-1' } }), { id: 'admin-1' }),
+    (e) => e.statusCode === 400 && /Confirm purchase/.test(e.message),
   );
-  // The throw is inside the transaction, so the order goes with it.
-  assert.equal(tables.financeTransaction.length, 0);
-});
-
-test('a payment of nothing is not a payment', async () => {
-  await purchase.createPurchaseOrder(payload({ payment: { accountId: 'acct-1', amount: 0 } }), { id: 'admin-1' });
+  assert.equal(tables.purchaseOrder.length, 0);
   assert.equal(tables.financeTransaction.length, 0);
 });

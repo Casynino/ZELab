@@ -1,8 +1,6 @@
 import { STEADY } from '@/lib/polling';
 import { Fragment, useState, useRef, useEffect, useMemo } from 'react';
 import ReportsArchive from '@/components/ReportsArchive';
-import ProductPicker, { MoreToggle, DiscardFooter } from '@/components/ProductPicker';
-import { pickerRows, lineCost, primaryWarehouse, shortPlace, buttonPlace } from '@/lib/stockPick';
 import { useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
@@ -14,7 +12,7 @@ import {
 } from 'lucide-react';
 import api, { unwrap, apiError } from '@/lib/api';
 import { pageQueries, keepOnPageTurn } from '@/lib/pageQueries';
-import { useProducts, useBrands, useWarehouses } from '@/lib/hooks';
+import { useBrands } from '@/lib/hooks';
 import { useAuth } from '@/context/AuthContext';
 import { ROLES } from '@/lib/constants';
 import ReportsPage from '@/pages/Reports';
@@ -2521,235 +2519,11 @@ function PayBalanceModal({ supplier, outstanding, accounts: all, onClose, onDone
   );
 }
 
-// Record receiving stock from a supplier: creates + receives the purchase in
-// one step — inventory goes up, the supplier's balance (what you owe) goes up.
-// No payment happens here; pay later in installments.
-function NewPurchaseModal({ supplier, accounts: all = [], onClose, onDone }) {
-  const { data: products = [], isLoading: productsLoading } = useProducts();
-  // Only to name where the boxes land: the request names no warehouse and the server receives into the primary.
-  const { data: warehouses = [] } = useWarehouses();
-  const into = primaryWarehouse(warehouses);
-  const accounts = wallets(all);
-  // Every product of this supplier's brand, each with a  −  boxes  +  and its cost per box filled in from the
-  // buying price (still editable) — the quick list from Record a sale, no "Add product" and no select.
-  const supplierBrand = supplier.brandId || null;
-  const rows = useMemo(() => pickerRows(products, { brandId: supplierBrand || undefined }), [products, supplierBrand]);
-  const [qty, setQty] = useState({});
-  const [cost, setCost] = useState({});
-  const [extras, setExtras] = useState(false);
-  const [shippingCost, setShippingCost] = useState('');
-  const [otherCost, setOtherCost] = useState('');
-  const [date, setDate] = useState(eatISODate());
-  const [notes, setNotes] = useState('');
-  const [confirmDiscard, setConfirmDiscard] = useState(false);
-  const sending = useRef(false);
-  // Stock bought with the cash in the drawer used to be recorded as a debt and
-  // nothing else, and the money then left the books on whatever day somebody
-  // came back to pay it off. So the form asks here, while the person who paid
-  // is still the one typing.
-  const [paidNow, setPaidNow] = useState(false);
-  const [payAccountId, setPayAccountId] = useState(accounts.find((a) => a.isDefault)?.id || accounts[0]?.id || '');
-  const [payAmount, setPayAmount] = useState('');
-
-  // The picked lines, as the old form held them: boxes and the cost per box.
-  const lines = rows
-    .filter((r) => Number(qty[r.key]) > 0)
-    .map((r) => ({ productId: r.id, packagingUnitId: r.packagingUnitId, quantity: qty[r.key], unitCost: lineCost(cost, r) }));
-  const boxes = lines.reduce((s, l) => s + (Number(l.quantity) || 0), 0);
-
-  const goods = lines.reduce((s, l) => s + (Number(l.quantity) || 0) * (Number(l.unitCost) || 0), 0);
-  const total = goods + (Number(shippingCost) || 0) + (Number(otherCost) || 0);
-  const validLines = lines.filter((l) => l.productId && Number(l.quantity) > 0 && Number(l.unitCost) >= 0);
-  // Empty means the whole bill — the common case, and it follows the total as
-  // the lines change instead of going stale at whatever it was first.
-  const paying = payAmount === '' ? total : Number(payAmount) || 0;
-  const overpaid = paidNow && paying > total + 0.001;
-  const valid = validLines.length > 0 && (!paidNow || (payAccountId && paying > 0 && !overpaid));
-
-  // The purchase once it is saved. Saving and receiving are two calls; if the receive fails, pressing
-  // Save again must only retry the receive — it used to create the whole purchase (and its payment) a
-  // second time, doubling what the supplier is owed (audit #20).
-  const createdPo = useRef(null);
-  const save = useMutation({
-    mutationFn: async () => {
-      let po = createdPo.current;
-      if (!po) {
-        const items = validLines.map((l) => (
-          { productId: l.productId, packagingUnitId: l.packagingUnitId, quantity: Number(l.quantity), unitCost: Number(l.unitCost) }
-        ));
-        try {
-          po = unwrap(await api.post('/purchase-orders', {
-            supplierId: supplier.id, currency: 'TZS', items,
-            shippingCost: Number(shippingCost) || 0, otherCost: Number(otherCost) || 0,
-            orderedAt: new Date(`${date}T12:00:00`).toISOString(), notes: notes.trim() || undefined,
-            // Paid as it was bought: the money leaves the account on the purchase
-            // date, not the day this was typed in.
-            payment: paidNow ? { accountId: payAccountId, amount: paying, occurredAt: date } : undefined,
-          })).data;
-        } catch (e) {
-          // No answer at all: the purchase may have been saved. Say so, and refresh the supplier's history so
-          // it can be checked before saving again (audit reversals-stock-5).
-          if (!e?.response) {
-            onDone();
-            throw new Error(`No answer from the app, so this purchase may have been saved. Check ${supplier.name}'s purchase history before pressing Save again.`);
-          }
-          throw e;
-        }
-        createdPo.current = po;
-      }
-      try {
-        await api.post(`/purchase-orders/${po.id}/receive`, { actualArrival: new Date(`${date}T12:00:00`).toISOString() });
-      } catch (e) {
-        // A receive that went through but whose answer was lost comes back as 409 "already received"; any
-        // other failure is checked against the order itself before the person is told it is not received
-        // (audit reversals-stock-5: a 400 "already received" was shown as "saved but not received yet").
-        if (e?.response?.status !== 409) {
-          const now = await api.get(`/purchase-orders/${po.id}`).then((r) => unwrap(r).data).catch(() => null);
-          if (now?.status !== 'RECEIVED') {
-            onDone();
-            throw new Error(e?.response
-              ? `${po.poNumber} is saved but not received yet: ${apiError(e)} Press Save again to receive it.`
-              : `${po.poNumber} is saved, but the app did not answer whether it was received. Press Save again: it checks first, and receives it only if it is not in yet.`);
-          }
-        }
-      }
-      return po;
-    },
-    onSuccess: (po) => {
-      const left = round2ui(total - (paidNow ? paying : 0));
-      toast.success(
-        !paidNow
-          ? `Purchase ${po.poNumber} received — stock added, you now owe ${supplier.name} ${formatCurrency(total)} more`
-          : left > 0
-            ? `Purchase ${po.poNumber} received — ${formatCurrency(paying)} paid, ${formatCurrency(left)} still owed to ${supplier.name}`
-            : `Purchase ${po.poNumber} received and paid in full — nothing owed to ${supplier.name} for it`,
-      );
-      onDone(); onClose();
-    },
-    onError: (e) => toast.error(e?.response ? apiError(e) : e.message),
-  });
-
-  // One purchase per press, however fast the taps come.
-  const submit = () => {
-    if (sending.current || save.isPending || !valid) return;
-    sending.current = true;
-    save.mutate(undefined, { onSettled: () => { sending.current = false; } });
-  };
-  const requestClose = () => {
-    if (save.isPending) return;
-    if (lines.length === 0 || confirmDiscard) onClose(); else setConfirmDiscard(true);
-  };
-  const pick = (next) => { setQty(next); setConfirmDiscard(false); };
-  // The toggle only shows or hides the costs: closing it never changes a figure, and the closed toggle shows their sum.
-  const toggleExtras = () => setExtras((x) => !x);
-  const extraSum = (Number(shippingCost) || 0) + (Number(otherCost) || 0);
-  // What the money side will be, in the footer, so it is never a screen away from the button.
-  const payFrom = accounts.find((a) => a.id === payAccountId);
-  const owedAfter = round2ui(total - (paidNow ? paying : 0));
-  const moneyLine = !paidNow ? `You will owe ${supplier.name} ${formatCurrency(total)} more`
-    : overpaid ? 'More paid than this purchase cost'
-      : owedAfter > 0 ? `Paid ${formatCurrency(paying)}${payFrom ? ` from ${payFrom.name}` : ''} · ${formatCurrency(owedAfter)} still owed`
-        : `Paid in full${payFrom ? ` from ${payFrom.name}` : ''}`;
-
-  return (
-    <Modal open onClose={requestClose} size="lg" title={`New purchase from ${supplier.name}`}
-      footer={confirmDiscard ? (
-        <DiscardFooter what="purchase" detail={`${formatNumber(boxes)} ${boxes === 1 ? 'box' : 'boxes'} picked will be lost.`} onDiscard={onClose} onKeep={() => setConfirmDiscard(false)} />
-      ) : (
-        <>
-          <div className="mr-auto min-w-0 flex-1 basis-0 text-sm">
-            {lines.length === 0 ? <span className="text-muted">Tap + on what you bought</span> : (
-              <>
-                <div className="truncate"><span className="text-muted">Total</span> <b className="tabular-nums">{formatCurrency(total)}</b></div>
-                <div className={clsx('truncate text-xs', paidNow && overpaid ? 'text-rose-300' : 'text-muted')}>{moneyLine}</div>
-              </>
-            )}
-          </div>
-          <Button variant="secondary" className="hidden sm:inline-flex" onClick={requestClose}>Cancel</Button>
-          <Button data-picker-submit="" className="h-12 w-full text-base sm:h-auto sm:w-auto sm:text-sm" loading={save.isPending} disabled={!valid} onClick={submit}>
-            <Package className="h-4 w-4" />
-            {boxes > 0 ? `Receive ${formatNumber(boxes)} ${boxes === 1 ? 'box' : 'boxes'}${into ? ` into ${buttonPlace(into.name)}` : ''}` : 'Receive stock'}
-          </Button>
-        </>
-      )}>
-      <div className="space-y-2.5 sm:space-y-4 max-sm:min-h-[calc(100dvh_-_17rem)]">
-        <p className="rounded-lg border border-border bg-elevated px-3 py-2 text-xs text-muted">
-          Stock from {supplier.name} goes into {into ? shortPlace(into.name) : 'the main warehouse'} now, and what you owe them goes up — unless you tick below that you paid.
-        </p>
-        <ProductPicker rows={rows} value={qty} onChange={pick} cost={cost} onCost={(key, v) => setCost((c) => ({ ...c, [key]: v }))}
-          loading={productsLoading} emptyText={supplierBrand ? 'No products of this supplier’s brand yet.' : 'No products yet.'} />
-        <div className="space-y-3">
-          <MoreToggle open={extras} onToggle={toggleExtras}>
-            Extra costs (shipping, other){!extras && extraSum > 0 ? ` · ${formatCurrency(extraSum)}` : ''}
-          </MoreToggle>
-          {extras && (
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="Shipping / transport (TZS)"><NumberInput min="0" value={shippingCost} onChange={(e) => setShippingCost(e.target.value)} placeholder="0" /></Field>
-              <Field label="Other costs (TZS)"><NumberInput min="0" value={otherCost} onChange={(e) => setOtherCost(e.target.value)} placeholder="0" /></Field>
-            </div>
-          )}
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Purchase date"><Input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field>
-          <Field label="Notes"><Input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional" /></Field>
-        </div>
-
-        {/* Paid, or owed. The question is asked here because this is where the
-            person who handed over the money is standing. */}
-        <div className={clsx('rounded-xl border p-3 transition', paidNow ? 'border-brand-500/40 bg-brand-500/[0.07]' : 'border-border bg-elevated')}>
-          <label className="flex cursor-pointer items-start gap-2.5">
-            <input
-              type="checkbox"
-              className="mt-0.5 h-4 w-4 shrink-0 accent-brand-500"
-              checked={paidNow}
-              onChange={(e) => setPaidNow(e.target.checked)}
-              disabled={!accounts.length}
-            />
-            <span>
-              <span className="block text-sm font-medium text-foreground">I paid for this</span>
-              <span className="block text-xs text-muted">
-                {accounts.length
-                  ? `Money out on ${formatDate(date)}. Leave it unticked if ${supplier.name} is being paid later.`
-                  : 'No account to pay from — add one under Accounts first.'}
-              </span>
-            </span>
-          </label>
-
-          {paidNow && (
-            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Field label="Paid from account" required>
-                <Select value={payAccountId} onChange={(e) => setPayAccountId(e.target.value)}>
-                  {accounts.map((a) => <option key={a.id} value={a.id}>{a.name} — {formatCurrency(a.balance)}</option>)}
-                </Select>
-              </Field>
-              <Field
-                label="Amount paid (TZS)"
-                error={overpaid ? 'More than this purchase cost'
-                  : (payAmount !== '' && paying <= 0) ? 'Untick "I paid for this" if nothing was paid'
-                    : undefined}
-              >
-                <NumberInput min="0" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} placeholder={String(total || 0)} />
-              </Field>
-              <p className="sm:col-span-2 text-xs text-faint">
-                {overpaid
-                  ? `This purchase is ${formatCurrency(total)}.`
-                  : paying >= total - 0.001
-                    ? `Paid in full — nothing will be owed for this purchase.`
-                    : `${formatCurrency(round2ui(total - paying))} will stay owed to ${supplier.name}.`}
-              </p>
-            </div>
-          )}
-        </div>
-      </div>
-    </Modal>
-  );
-}
 
 function SupplierDetailModal({ supplierId, accounts, onClose }) {
   const qc = useQueryClient();
   const [paying, setPaying] = useState(null); // PO row being paid
   const [payingBalance, setPayingBalance] = useState(false);
-  const [purchasing, setPurchasing] = useState(false);
   const [returning, setReturning] = useState(false);
   const isAdmin = useAuth().user?.role === ROLES.ADMIN; // returning goods lowers a bill: owner only, as on the server
   const { data, isLoading, isError, refetch } = useQuery({
@@ -2789,7 +2563,6 @@ function SupplierDetailModal({ supplierId, accounts, onClose }) {
               <Button variant="secondary" loading={del.isPending} onClick={askDelete}><Trash2 className="h-4 w-4" /> Delete supplier</Button>
             )}
             <Button variant="secondary" onClick={onClose}>Close</Button>
-            <Button variant="secondary" onClick={() => setPurchasing(true)}><Package className="h-4 w-4" /> New purchase</Button>
             {isAdmin && data.totals.outstanding > 0 && (
               <Button variant="secondary" onClick={() => setReturning(true)}><Undo2 className="h-4 w-4" /> Return goods</Button>
             )}
@@ -2830,7 +2603,7 @@ function SupplierDetailModal({ supplierId, accounts, onClose }) {
             {/* Purchases */}
             <div>
               <div className="mb-2 text-sm font-semibold text-foreground">Purchase history</div>
-              {!data.orders.length ? <p className="text-sm text-faint">No purchases yet — use "New purchase" when stock arrives from {s.name}.</p> : (
+              {!data.orders.length ? <p className="text-sm text-faint">No purchases yet. Orders from {s.name} are made in Inventory → Purchases, and show here once the purchase is confirmed.</p> : (
                 <Table stack>
                   <THead><TR><TH>PO</TH><TH>Date</TH><TH>Boxes</TH><TH>Total</TH><TH>Paid</TH><TH>Outstanding</TH><TH /></TR></THead>
                   <TBody>
@@ -2901,7 +2674,6 @@ function SupplierDetailModal({ supplierId, accounts, onClose }) {
       </Modal>
       {paying && <PaySupplierModal order={paying} supplierOutstanding={data?.totals?.outstanding} accounts={accounts} onClose={() => setPaying(null)} onDone={refresh} />}
       {payingBalance && s && <PayBalanceModal supplier={s} outstanding={data.totals.outstanding} accounts={accounts} onClose={() => setPayingBalance(false)} onDone={refresh} />}
-      {purchasing && s && <NewPurchaseModal supplier={s} accounts={accounts} onClose={() => setPurchasing(false)} onDone={refresh} />}
       {returning && s && <ReturnGoodsModal supplier={s} outstanding={data.totals.outstanding} onClose={() => setReturning(false)} onDone={refresh} />}
     </>
   );

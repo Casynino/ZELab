@@ -3,9 +3,13 @@
 const prisma = require('../config/prisma');
 const ApiError = require('../utils/ApiError');
 const inventory = require('./inventory.service');
-const { nextDocNumber } = require('../utils/numbering');
+const { nextDocNumber, withDocNumberRetry } = require('../utils/numbering');
 const { toNumber, round2, formatCurrency } = require('../utils/money');
 const env = require('../config/env');
+
+// Six places: a carton price divided by the boxes in a carton (e.g. 100,000 / 24) must multiply back to exactly
+// what was typed once the line total is rounded to shillings.
+const round6 = (n) => Math.round((Number(n) || 0) * 1e6) / 1e6;
 
 // --- Suppliers -------------------------------------------------------------
 
@@ -65,8 +69,24 @@ const PO_INCLUDE = {
   supplier: true,
   warehouse: { select: { id: true, name: true } },
   createdBy: { select: { id: true, name: true } },
-  items: { include: { product: { select: { id: true, name: true, sku: true, baseUnitName: true } }, packagingUnit: true } },
+  items: { include: { product: { select: { id: true, name: true, sku: true, baseUnitName: true, brandId: true } }, packagingUnit: true } },
+  receipts: { include: { items: true }, orderBy: { createdAt: 'asc' } },
 };
+
+// Where an order stands, in words, for the refusals below.
+const PO_STATE = {
+  DRAFT: 'still a draft',
+  ORDERED: 'ordered but not paid',
+  PURCHASED: 'already purchased',
+  IN_TRANSIT: 'already dispatched',
+  PARTLY_RECEIVED: 'partly received',
+  RECEIVED: 'already received',
+  CANCELLED: 'cancelled',
+};
+// Before the money is paid: the lines can still change, the order can be deleted or cancelled.
+const NOT_YET_BOUGHT = ['DRAFT', 'ORDERED'];
+// Cargo on its way (or partly in): it can be received.
+const ARRIVING = ['IN_TRANSIT', 'PARTLY_RECEIVED'];
 
 // Goods cannot be expected before they were ordered (a PO dated "ordered 20 Nov, arriving 1 Nov" was
 // accepted; audit, 11 Nov 2026). Compared by calendar day, so the same day is fine whatever the time.
@@ -83,6 +103,11 @@ async function createPurchaseOrder(payload, actor) {
   if (!payload.items || payload.items.length === 0) {
     throw ApiError.badRequest('A purchase order needs at least one item');
   }
+  // Cash-only (15 Nov 2026): a new order is a draft and no money moves until Confirm purchase. An older
+  // screen that still sends a payment with the order is refused outright rather than half-obeyed.
+  if (payload.payment) {
+    throw ApiError.badRequest('Money is paid with Confirm purchase, not when the order is created. Refresh the page and try again.');
+  }
   assertArrivalNotBeforeOrder(payload.orderedAt, payload.expectedArrival);
   return prisma.$transaction(async (tx) => {
     const lines = [];
@@ -93,7 +118,7 @@ async function createPurchaseOrder(payload, actor) {
         packagingUnitId: i.packagingUnitId,
         quantity: i.quantity,
         baseQuantity,
-        unitCost: round2(i.unitCost || 0), // goods cost per base unit
+        unitCost: round6(i.unitCost || 0), // goods cost per base unit, precise enough for a carton price / boxes
       });
     }
     const goodsCost = round2(lines.reduce((s, l) => s + l.unitCost * l.baseQuantity, 0));
@@ -107,7 +132,7 @@ async function createPurchaseOrder(payload, actor) {
       data: {
         poNumber,
         supplierId: payload.supplierId,
-        status: payload.orderedAt ? 'ORDERED' : 'DRAFT',
+        status: 'DRAFT', // bought only when Confirm purchase pays for it
         // Every figure on the form is in shillings (audit reversals-stock-8: a PO saved from Purchases was
         // labelled USD while Finance's were TZS).
         currency: payload.currency || env.business.currency || 'TZS',
@@ -125,48 +150,6 @@ async function createPurchaseOrder(payload, actor) {
       },
     });
 
-    // Paid at the counter, not owed.
-    //
-    // A purchase used to be a debt and nothing else: the only way to say it
-    // was paid was a separate payment afterwards, dated the day somebody
-    // remembered. Stock bought with the cash in the drawer then sat under
-    // "owed to suppliers" for weeks, and the money left the books in a month
-    // it was never spent in. So the payment is part of the purchase, recorded
-    // in the same transaction — both land, or neither does.
-    const pay = payload.payment;
-    if (pay && pay.accountId) {
-      const amount = pay.amount != null ? round2(toNumber(pay.amount)) : totalCost;
-      if (amount > 0) {
-        if (amount > totalCost + 0.001) {
-          throw ApiError.badRequest(
-            `This purchase is ${formatCurrency(totalCost)} — a payment of ${formatCurrency(amount)} is more than it cost.`,
-          );
-        }
-        const supplier = await tx.supplier.findUnique({ where: { id: payload.supplierId }, select: { name: true, brandId: true } });
-        const finance = require('./finance.service'); // lazy: avoids an import cycle
-        await finance.recordTransaction(
-          {
-            accountId: pay.accountId,
-            direction: 'OUT',
-            type: 'STOCK_PURCHASE',
-            amount,
-            brandId: supplier?.brandId || null,
-            category: 'Stock Purchase',
-            description: `${poNumber} — ${supplier?.name || 'supplier'}`,
-            reference: poNumber,
-            refType: 'PurchaseOrder',
-            refId: po.id,
-            notes: pay.notes || null,
-            // The day the money actually moved: the payment's own date, or the
-            // day the order was placed. Not the day it was typed in.
-            occurredAt: pay.occurredAt || payload.orderedAt || undefined,
-          },
-          actor,
-          tx,
-        );
-      }
-    }
-
     return tx.purchaseOrder.findUnique({ where: { id: po.id }, include: PO_INCLUDE });
   });
 }
@@ -175,44 +158,79 @@ async function listPurchaseOrders(filters, pagination) {
   const where = {};
   if (filters.status) where.status = filters.status;
   if (filters.supplierId) where.supplierId = filters.supplierId;
-  const [items, total, incoming] = await Promise.all([
+  if (filters.productId) where.items = { some: { productId: filters.productId } };
+  if (filters.from || filters.to) {
+    where.createdAt = {
+      ...(filters.from ? { gte: new Date(`${filters.from}T00:00:00+03:00`) } : {}),
+      ...(filters.to ? { lte: new Date(`${filters.to}T23:59:59.999+03:00`) } : {}),
+    };
+  }
+  // The tab counts ignore the status being viewed (each tab shows its own number), not the other filters.
+  const { status: _viewing, ...countWhere } = where; // eslint-disable-line no-unused-vars
+  const [items, total, incoming, byStatus] = await Promise.all([
     prisma.purchaseOrder.findMany({ where, include: PO_INCLUDE, skip: pagination.skip, take: pagination.take, orderBy: pagination.orderBy }),
     prisma.purchaseOrder.count({ where }),
     // Stock that is bought but has not landed: ordered or in transit, never
     // received or cancelled. It is real — it is paid for or owed for — but it
     // is not inventory yet, so it belongs in its own count rather than
     // silently missing from the page until the day it arrives.
+    // Bought and not all in yet. A draft is not bought, so it is not on the way (cash-only, 15 Nov 2026);
+    // ORDERED is an older order placed before Confirm purchase existed.
     prisma.purchaseOrder.findMany({
-      where: { status: { in: ['DRAFT', 'ORDERED', 'IN_TRANSIT'] } },
+      where: { status: { in: ['ORDERED', 'PURCHASED', ...ARRIVING] } },
       include: { items: true, supplier: { select: { name: true } } },
       orderBy: { expectedArrival: 'asc' },
     }),
+    prisma.purchaseOrder.groupBy({ by: ['status'], where: countWhere, _count: true }),
   ]);
+  const counts = Object.fromEntries(byStatus.map((r) => [r.status, r._count]));
 
   const boxesOf = (po) => (po.items || []).reduce((n, it) => n + (it.baseQuantity || 0), 0);
+  // Still to come: what was bought less what a confirmed check-in already brought in.
+  const leftOf = (po) => (po.items || []).reduce((n, it) => n + Math.max(0, (it.baseQuantity || 0) - (it.receivedBase || 0)), 0);
   const withBoxes = items.map((po) => ({ ...po, boxes: boxesOf(po) }));
   const onTheWay = {
     orders: incoming.length,
-    boxes: incoming.reduce((n, po) => n + boxesOf(po), 0),
-    value: round2(incoming.reduce((n, po) => n + toNumber(po.totalCost), 0)),
+    boxes: incoming.reduce((n, po) => n + leftOf(po), 0),
+    value: round2(incoming.reduce((n, po) => n + (boxesOf(po) > 0 ? toNumber(po.totalCost) * (leftOf(po) / boxesOf(po)) : 0), 0)),
     nextArrival: incoming.find((po) => po.expectedArrival)?.expectedArrival || null,
     orders_: incoming.map((po) => ({
       id: po.id,
       poNumber: po.poNumber,
       supplier: po.supplier?.name || null,
       status: po.status,
-      boxes: boxesOf(po),
+      boxes: leftOf(po),
       totalCost: round2(toNumber(po.totalCost)),
       expectedArrival: po.expectedArrival,
     })),
   };
-  return { items: withBoxes, total, onTheWay };
+  return { items: withBoxes, total, onTheWay, counts };
 }
 
 async function getPurchaseOrder(id) {
   const po = await prisma.purchaseOrder.findUnique({ where: { id }, include: PO_INCLUDE });
   if (!po) throw ApiError.notFound('Purchase order not found');
-  return po;
+  // The money and the people behind each step, so the order is traceable on its own page.
+  const [payments, people] = await Promise.all([
+    prisma.financeTransaction.findMany({
+      where: { refType: 'PurchaseOrder', refId: id },
+      select: { id: true, txnNumber: true, direction: true, amount: true, category: true, occurredAt: true, account: { select: { name: true } } },
+      orderBy: { occurredAt: 'asc' },
+    }),
+    prisma.user.findMany({
+      where: { id: { in: [po.purchasedById, ...po.receipts.map((r) => r.receivedById)].filter(Boolean) } },
+      select: { id: true, name: true },
+    }),
+  ]);
+  const nameOf = new Map(people.map((u) => [u.id, u.name]));
+  return {
+    ...po,
+    // What Confirm purchase would take now (older orders may already be paid through the supplier's balance).
+    toPay: NOT_YET_BOUGHT.includes(po.status) ? await stillToPay(prisma, po) : 0,
+    purchasedBy: nameOf.get(po.purchasedById) || null,
+    receipts: po.receipts.map((r) => ({ ...r, receivedBy: nameOf.get(r.receivedById) || null })),
+    payments: payments.map((t) => ({ ...t, amount: round2(toNumber(t.amount)), account: t.account?.name || null })),
+  };
 }
 
 // Money paid against one order (PO-level payments only).
@@ -241,7 +259,9 @@ function assertNotBelowPaid(paidOnThis, newTotal) {
 // with nothing said, and the next payment was refused with "You only owe … TZS -10,000".
 // `leaving` is true when the order and its own payments leave this supplier's books together.
 async function assertSupplierNotOverpaid(po, newTotal, { leaving = false, action }) {
-  if (po.status === 'CANCELLED' || !po.supplierId) return; // a cancelled order already counts nowhere
+  // A cancelled order already counts nowhere, and a draft is not bought yet (finance's PAYABLE_PO), so
+  // dropping either cannot leave the supplier overpaid.
+  if (po.status === 'CANCELLED' || po.status === 'DRAFT' || !po.supplierId) return;
   const drop = round2(toNumber(po.totalCost) - newTotal);
   if (!(drop > 0)) return;
   const paidOnThis = leaving ? await paidOnOrder(po.id) : 0;
@@ -263,14 +283,40 @@ async function assertSupplierNotOverpaid(po, newTotal, { leaving = false, action
   }
 }
 
+// Edit, cancel and delete lock the order row first, like every money step: an edit read as DRAFT while a
+// Confirm purchase was paying could otherwise write CANCELLED over a paid order (review, 15 Nov 2026).
 async function updatePurchaseOrder(id, payload) {
-  const po = await prisma.purchaseOrder.findUnique({ where: { id } });
+  return prisma.$transaction(async (tx) => {
+    await lockOrder(tx, id);
+    return updateLockedOrder(tx, id, payload);
+  }, { timeout: 20000 });
+}
+
+async function updateLockedOrder(tx, id, payload) {
+  const po = await tx.purchaseOrder.findUnique({ where: { id } });
   if (!po) throw ApiError.notFound('Purchase order not found');
   if (po.status === 'RECEIVED') throw ApiError.badRequest('A received purchase order cannot be edited');
   // Received is reached only by receiving (audit #40): marking it here left the order "received" with
   // no stock ever brought in, and Receive then refused it as already received.
   if (payload.status === 'RECEIVED') {
     throw ApiError.badRequest('Use Receive to mark it received — that is what brings the stock into the warehouse.');
+  }
+  // The steps have their own buttons (Confirm purchase, Dispatch, Check in): an edit can only cancel.
+  if (payload.status !== undefined && payload.status !== po.status && payload.status !== 'CANCELLED') {
+    throw ApiError.badRequest('Use the order\'s own buttons to move it on: Confirm purchase, Dispatch, Check in.');
+  }
+  // Once paid for, what was bought and what it cost are locked (cash-only, 15 Nov 2026). Notes and the
+  // expected arrival can still be updated; a wrong price or quantity is corrected through Finance (remove
+  // the payment, which reopens nothing on its own) — never silently here.
+  if (!NOT_YET_BOUGHT.includes(po.status) && po.status !== 'CANCELLED') {
+    const locked = ['items', 'supplierId', 'shippingCost', 'clearingCost', 'otherCost', 'warehouseId', 'orderedAt', 'currency']
+      .filter((k) => payload[k] !== undefined);
+    if (locked.length) {
+      throw ApiError.badRequest(`${po.poNumber} is ${PO_STATE[po.status]}: its products, quantities and prices are locked. Only the notes and the expected arrival can change. Add shipping or clearing with Add cost.`);
+    }
+    if (payload.status === 'CANCELLED' && ARRIVING.includes(po.status)) {
+      throw ApiError.badRequest(`${po.poNumber} has been dispatched — it cannot be cancelled. If cargo never arrives, close the order and mark the rest missing.`);
+    }
   }
 
   // A PO with money already paid against it cannot simply be cancelled:
@@ -332,7 +378,7 @@ async function updatePurchaseOrder(id, payload) {
   // received order never reaches here — it is refused above, because its
   // boxes are already on the shelf at a cost derived from these lines.
   if (payload.items) {
-    return prisma.$transaction(async (tx) => {
+    {
       const lines = [];
       for (const i of payload.items) {
         const { baseQuantity } = await inventory.convertToBase(tx, i.productId, i.packagingUnitId, i.quantity);
@@ -344,7 +390,7 @@ async function updatePurchaseOrder(id, payload) {
           packagingUnitId: i.packagingUnitId,
           quantity: i.quantity,
           baseQuantity,
-          unitCost: round2(i.unitCost || 0),
+          unitCost: round6(i.unitCost || 0),
         });
       }
       const goodsCost = round2(lines.reduce((sum, l) => sum + l.unitCost * l.baseQuantity, 0));
@@ -364,10 +410,10 @@ async function updatePurchaseOrder(id, payload) {
         },
         include: PO_INCLUDE,
       });
-    });
+    }
   }
 
-  return prisma.purchaseOrder.update({ where: { id }, data, include: PO_INCLUDE });
+  return tx.purchaseOrder.update({ where: { id }, data, include: PO_INCLUDE });
 }
 
 // Delete a purchase order outright. Only ever safe before it lands: once
@@ -375,10 +421,21 @@ async function updatePurchaseOrder(id, payload) {
 // figure, so removing the order would strand the stock with no origin. Money
 // paid against it blocks deletion too — the payment would survive its reason.
 async function deletePurchaseOrder(id) {
-  const po = await prisma.purchaseOrder.findUnique({ where: { id } });
+  return prisma.$transaction(async (tx) => {
+    await lockOrder(tx, id);
+    return deleteLockedOrder(tx, id);
+  }, { timeout: 20000 });
+}
+
+async function deleteLockedOrder(tx, id) {
+  const po = await tx.purchaseOrder.findUnique({ where: { id } });
   if (!po) throw ApiError.notFound('Purchase order not found');
   if (po.status === 'RECEIVED') {
     throw ApiError.badRequest('This order has already been received — its boxes are in the warehouse. Adjust the stock instead of deleting the order it came from.');
+  }
+  // Paid for, on its way or partly in: the money and the cargo both need it, so it stays.
+  if (!NOT_YET_BOUGHT.includes(po.status) && po.status !== 'CANCELLED') {
+    throw ApiError.badRequest(`${po.poNumber} is ${PO_STATE[po.status]} — it cannot be deleted. Only a draft can.`);
   }
   const paid = await paidOnOrder(id);
   if (paid > 0) {
@@ -388,7 +445,7 @@ async function deletePurchaseOrder(id) {
   }
   // Balance payments are the supplier's, not this order's: deleting it must not leave him overpaid.
   await assertSupplierNotOverpaid(po, 0, { leaving: true, action: `Deleting ${po.poNumber}` });
-  await prisma.purchaseOrder.delete({ where: { id } });
+  await tx.purchaseOrder.delete({ where: { id } });
   return po;
 }
 
@@ -408,11 +465,21 @@ async function receivePurchaseOrder(id, actor, { actualArrival, stockAlreadyCoun
     if (po.status === 'RECEIVED') throw ApiError.conflict('This purchase order was already received.');
     if (po.status === 'CANCELLED') throw ApiError.badRequest('Cancelled purchase order cannot be received');
     if (po.items.length === 0) throw ApiError.badRequest('Purchase order has no items');
+    // One-step receiving is kept only for orders made before the cash-only flow (15 Nov 2026). A draft has
+    // not been bought, and an order bought with Confirm purchase comes in through the warehouse check-in.
+    if (po.status === 'DRAFT' || po.purchasedAt || !['ORDERED', 'IN_TRANSIT'].includes(po.status)) {
+      throw ApiError.badRequest('Confirm the purchase, dispatch it, then receive the cargo when it arrives — that is what brings the boxes into stock.');
+    }
+    if (await tx.purchaseReceipt.count({ where: { purchaseOrderId: id } })) {
+      throw ApiError.badRequest('Part of this order has already been received — receive the rest the same way.');
+    }
     // Claim it before any stock moves (audit #41): two clicks on Receive used to both pass the check
     // above and both bring the stock in. The second one now waits for the first, finds it received,
     // and stops here with nothing written.
+    // Only the states one-step receiving may start from: when it waits behind a Receive cargo on the same order,
+    // Postgres re-checks this after that commits, finds PARTLY_RECEIVED, and nothing is brought in twice.
     const claimed = await tx.purchaseOrder.updateMany({
-      where: { id, status: { notIn: ['RECEIVED', 'CANCELLED'] } },
+      where: { id, status: { in: ['ORDERED', 'IN_TRANSIT'] }, purchasedAt: null },
       data: { status: 'RECEIVED' },
     });
     if (claimed.count !== 1) throw ApiError.conflict('This purchase order was already received.');
@@ -451,7 +518,7 @@ async function receivePurchaseOrder(id, actor, { actualArrival, stockAlreadyCoun
         });
       }
 
-      await tx.purchaseOrderItem.update({ where: { id: it.id }, data: { landedUnitCost } });
+      await tx.purchaseOrderItem.update({ where: { id: it.id }, data: { landedUnitCost, receivedBase: it.baseQuantity } });
       if (!stockAlreadyCounted) {
         // Latest landed cost becomes the product's current cost basis.
         await tx.product.update({ where: { id: it.productId }, data: { purchasePrice: landedUnitCost } });
@@ -471,6 +538,354 @@ async function receivePurchaseOrder(id, actor, { actualArrival, stockAlreadyCoun
   });
 }
 
+
+// --- Cash-only purchasing (15 Nov 2026) -------------------------------------
+// Draft → Confirm purchase (paid in full from an account, lines locked) → Dispatch (in transit) → warehouse
+// Check in (counted, damaged noted) → owner Confirms arrival (only accepted boxes enter stock) → all in, or
+// Close with the rest marked missing. Every step locks the order row first, so two presses — or two people —
+// queue up and the second finds the step already done instead of doing it twice.
+
+async function lockOrder(tx, id) {
+  // $queryRaw, not $executeRaw: it returns the locked row, which also says whether the order exists.
+  const rows = await tx.$queryRaw`SELECT id FROM "purchase_orders" WHERE id = ${id} FOR UPDATE`;
+  if (!rows.length) throw ApiError.notFound('Purchase order not found');
+}
+
+// Whose money it is: the brand of the products when they are all one brand, else the supplier's brand.
+function brandOfOrder(po) {
+  const brands = [...new Set((po.items || []).map((i) => i.product?.brandId).filter(Boolean))];
+  return brands.length === 1 ? brands[0] : po.supplier?.brandId || null;
+}
+
+// Pay `amount` for an order out of one account, inside the caller's transaction: the account row is locked,
+// its live balance read by the formula every screen uses, and a shortfall refused with the numbers.
+async function payForOrder(tx, po, { accountId, amount, occurredAt, notes, category, what }, actor) {
+  const finance = require('./finance.service'); // lazy: avoids an import cycle
+  if (!accountId) throw ApiError.badRequest('Choose the account the money was paid from.');
+  const locked = await tx.$queryRaw`SELECT id FROM "business_accounts" WHERE id = ${accountId} FOR UPDATE`;
+  if (!locked.length) throw ApiError.badRequest('Select a valid account');
+  const [acc] = await finance.accountBalances({ client: tx, accountId });
+  if (!acc) throw ApiError.badRequest('Select a valid account');
+  // An account reserved for one brand (M-Pesa = OHIS, Airtel = Civlily) pays only for an order whose products are
+  // all that brand — a mixed order would otherwise slip past (its brand falls back to the supplier's, often none).
+  if (acc.brandId && (po.items || []).some((i) => i.product?.brandId && i.product.brandId !== acc.brandId)) {
+    throw ApiError.badRequest(`${acc.name} only pays for its own brand's stock, and ${po.poNumber} has another brand's products. Pay it from an account that is not reserved for one brand, such as Cash.`);
+  }
+  if (acc.balance < amount - 0.001) {
+    throw ApiError.badRequest(
+      `Not enough money in ${acc.name}: it holds ${formatCurrency(acc.balance)} and ${what} needs ${formatCurrency(amount)}, `
+      + `so ${formatCurrency(round2(amount - acc.balance))} is missing. Put money into ${acc.name} or pay from another account.`,
+    );
+  }
+  return finance.recordTransaction(
+    {
+      accountId,
+      direction: 'OUT',
+      // Stock money, not an expense: it reaches profit as cost of the boxes when they sell.
+      type: 'STOCK_PURCHASE',
+      amount,
+      brandId: brandOfOrder(po),
+      category,
+      description: `${po.poNumber} — ${po.supplier?.name || 'supplier'}`,
+      reference: po.poNumber,
+      refType: 'PurchaseOrder',
+      refId: po.id,
+      notes: notes || null,
+      occurredAt,
+    },
+    actor,
+    tx,
+    { checkBrand: true }, // a brand-reserved account only pays for its own brand's stock
+  );
+}
+
+const orderForMoney = (tx, id) => tx.purchaseOrder.findUnique({
+  where: { id },
+  include: { items: { include: { product: { select: { brandId: true } } } }, supplier: { select: { name: true, brandId: true } } },
+});
+
+async function paidOnOrderTx(tx, id) {
+  const paid = await tx.financeTransaction.aggregate({ where: { refType: 'PurchaseOrder', refId: id, direction: 'OUT' }, _sum: { amount: true } });
+  return round2(toNumber(paid._sum.amount));
+}
+
+// What Confirm purchase still has to pay: the order's total less its own payments, capped by the supplier's
+// books — balance payments and returned goods made before the cash-only flow may already cover an older order
+// (the same cap Finance's Pay PO uses, audit admin-money-1). An ORDERED order is on the books: never more than its
+// row's outstanding or the supplier's in all. A draft joins the books now: whatever credit the supplier holds
+// (from paying drafts when they still counted as debt) comes off it first.
+async function stillToPay(client, po) {
+  let due = round2(toNumber(po.totalCost) - (await paidOnOrderTx(client, po.id)));
+  if (due > 0 && po.supplierId) {
+    const finance = require('./finance.service'); // lazy: avoids an import cycle
+    const { orders, totals } = await finance.supplierDetail(po.supplierId);
+    const row = orders.find((o) => o.id === po.id);
+    due = row ? Math.min(due, row.outstanding, totals.outstanding) : Math.min(due, round2(totals.outstanding + due));
+  }
+  return Math.max(0, round2(due));
+}
+
+// Confirm purchase: the goods were bought with cash. The whole order is paid from one account in the same
+// transaction as the status change, so it is paid exactly once, and a short account is refused.
+async function confirmPurchase(id, { accountId, occurredAt, notes } = {}, actor) {
+  return withDocNumberRetry(() => prisma.$transaction(async (tx) => {
+    await lockOrder(tx, id);
+    const po = await orderForMoney(tx, id);
+    if (!NOT_YET_BOUGHT.includes(po.status)) {
+      throw ApiError.conflict(`${po.poNumber} is ${PO_STATE[po.status]} — it cannot be purchased again.`);
+    }
+    if (!po.items.length) throw ApiError.badRequest('This order has no products.');
+    if (po.items.some((i) => !(toNumber(i.unitCost) > 0))) {
+      throw ApiError.badRequest('Every product needs its buying price before the purchase is confirmed. Edit the order and fill them in.');
+    }
+    // An order made before this flow may already be paid, on the order or through the supplier's balance;
+    // only what is left is paid now.
+    const due = await stillToPay(tx, po);
+    let txn = null;
+    if (due > 0) {
+      txn = await payForOrder(tx, po, { accountId, amount: due, occurredAt, notes, category: 'Stock Purchase', what: po.poNumber }, actor);
+    }
+    const when = txn ? txn.occurredAt : occurredAt ? new Date(occurredAt) : new Date();
+    await tx.purchaseOrder.update({
+      where: { id },
+      data: { status: 'PURCHASED', purchasedAt: when, purchasedById: actor?.id || null, orderedAt: po.orderedAt || when },
+    });
+    return tx.purchaseOrder.findUnique({ where: { id }, include: PO_INCLUDE });
+  }, { timeout: 20000 }));
+}
+
+// Dispatch: the bought goods left China. From here the order can be checked in at the warehouse.
+async function dispatchOrder(id, { dispatchedAt, expectedArrival } = {}) {
+  return prisma.$transaction(async (tx) => {
+    await lockOrder(tx, id);
+    const po = await tx.purchaseOrder.findUnique({ where: { id } });
+    if (po.status !== 'PURCHASED') {
+      if (ARRIVING.includes(po.status) || po.status === 'RECEIVED') throw ApiError.conflict(`${po.poNumber} is ${PO_STATE[po.status]}.`);
+      throw ApiError.badRequest(`${po.poNumber} is ${PO_STATE[po.status]} — confirm the purchase before dispatching it.`);
+    }
+    const when = dispatchedAt ? new Date(dispatchedAt) : new Date();
+    const day = (d) => new Date(d).toISOString().slice(0, 10);
+    if (po.purchasedAt && day(when) < day(po.purchasedAt)) {
+      throw ApiError.badRequest('The dispatch date cannot be before the purchase date.');
+    }
+    assertArrivalNotBeforeOrder(when, expectedArrival);
+    return tx.purchaseOrder.update({
+      where: { id },
+      data: { status: 'IN_TRANSIT', dispatchedAt: when, ...(expectedArrival ? { expectedArrival: new Date(expectedArrival) } : {}) },
+      include: PO_INCLUDE,
+    });
+  });
+}
+
+// Receive cargo (admin, one step — 15 Nov 2026: the admin is also the warehouse, so there is no separate
+// approval). For each product, in the line's own unit (cartons for a carton line): how many arrived, how many
+// of those are damaged or rejected, and how many are missing (will not come). Only accepted = received −
+// damaged enters stock, at once, tied to the order, at the line's landed cost. What is neither received nor
+// missing stays outstanding for the next receiving; the order is complete when nothing is outstanding.
+// `clientKey` is one per press of the form: a double tap or a retry finds it recorded and adds nothing.
+async function receiveCargo(id, { items = [], notes, arrivedAt, clientKey } = {}, actor) {
+  if (!clientKey) throw ApiError.badRequest('Refresh the page and try again.');
+  return prisma.$transaction(async (tx) => {
+    await lockOrder(tx, id);
+    if (await tx.purchaseReceipt.findUnique({ where: { clientKey }, select: { id: true } })) {
+      throw ApiError.conflict('This receiving was already recorded — its boxes are in stock.');
+    }
+    const po = await tx.purchaseOrder.findUnique({
+      where: { id },
+      include: { items: { include: { product: { select: { name: true } }, packagingUnit: { select: { name: true } } } } },
+    });
+    if (!ARRIVING.includes(po.status)) {
+      throw ApiError.badRequest(
+        NOT_YET_BOUGHT.includes(po.status) || po.status === 'PURCHASED'
+          ? `${po.poNumber} has not been dispatched yet — only cargo on its way can be received.`
+          : `${po.poNumber} is ${PO_STATE[po.status]}.`,
+      );
+    }
+    const byId = new Map(po.items.map((i) => [i.id, i]));
+    const seen = new Set();
+    const lines = [];
+    for (const l of items) {
+      const it = byId.get(l.itemId);
+      if (!it) throw ApiError.badRequest('A product in this receiving is not on the order.');
+      if (seen.has(l.itemId)) throw ApiError.badRequest(`${it.product?.name || 'A product'} is entered twice.`);
+      seen.add(l.itemId);
+      const received = l.received || 0;
+      const damaged = l.damaged || 0;
+      const missing = l.missing || 0;
+      if (!received && !damaged && !missing) continue;
+      const name = it.product?.name || 'A product';
+      const size = it.quantity > 0 ? Math.max(1, Math.round(it.baseQuantity / it.quantity)) : 1;
+      const unit = String(it.packagingUnit?.name || 'box').toLowerCase();
+      if (damaged > received) throw ApiError.badRequest(`${name}: ${damaged} damaged or rejected, but only ${received} received.`);
+      const note = l.note ? String(l.note).trim().slice(0, 300) : '';
+      if (damaged > 0 && !note) throw ApiError.badRequest(`${name}: say what is wrong with the ${damaged} damaged or rejected.`);
+      const leftBase = it.baseQuantity - it.receivedBase - it.missingBase;
+      if ((received + missing) * size > leftBase) {
+        const left = leftBase % size === 0 ? `${leftBase / size} ${unit}${leftBase / size === 1 ? '' : 's'}` : `${leftBase} boxes`;
+        throw ApiError.badRequest(`${name}: ${received + missing} received or missing, but only ${left} still to come (${it.quantity} bought).`);
+      }
+      lines.push({
+        purchaseOrderItemId: it.id,
+        receivedQty: received, damagedQty: damaged, missingQty: missing,
+        receivedBase: received * size, damagedBase: damaged * size, missingBase: missing * size,
+        acceptedBase: (received - damaged) * size,
+        note: note || null,
+      });
+    }
+    if (!lines.length) throw ApiError.badRequest('Enter what arrived, or what is missing, for at least one product.');
+
+    let warehouseId = po.warehouseId;
+    if (!warehouseId) {
+      const wh = await tx.warehouse.findFirst({ where: { isActive: true }, orderBy: { isPrimary: 'desc' } });
+      if (!wh) throw ApiError.badRequest('No warehouse to receive into');
+      warehouseId = wh.id;
+    }
+    // Landed cost, the same rule as ever: shipping, clearing and other costs spread over the lines by goods
+    // value (by quantity when there is none), per box bought. The buying price on the line never changes.
+    const extraCost = toNumber(po.shippingCost) + toNumber(po.clearingCost) + toNumber(po.otherCost);
+    const goodsTotal = po.items.reduce((n, it) => n + toNumber(it.unitCost) * it.baseQuantity, 0);
+    const baseTotal = po.items.reduce((n, it) => n + it.baseQuantity, 0);
+    const landedOf = (it) => {
+      const share = goodsTotal > 0 ? (toNumber(it.unitCost) * it.baseQuantity) / goodsTotal : baseTotal > 0 ? it.baseQuantity / baseTotal : 0;
+      return round2(toNumber(it.unitCost) + (it.baseQuantity > 0 ? (extraCost * share) / it.baseQuantity : 0));
+    };
+    const baseUnits = await tx.productPackaging.findMany({
+      where: { productId: { in: po.items.map((it) => it.productId) }, isBaseUnit: true },
+      select: { productId: true, packagingUnitId: true },
+    });
+    const baseUnitOf = new Map(baseUnits.map((b) => [b.productId, b.packagingUnitId]));
+    const when = arrivedAt ? new Date(arrivedAt) : new Date();
+
+    const receipt = await tx.purchaseReceipt.create({
+      data: {
+        purchaseOrderId: id, clientKey, arrivedAt: when, receivedById: actor?.id || null,
+        notes: notes ? String(notes).trim().slice(0, 1000) || null : null,
+        items: { create: lines },
+      },
+    });
+
+    const after = new Map(po.items.map((it) => [it.id, { ...it }]));
+    for (const ln of lines) {
+      const it = after.get(ln.purchaseOrderItemId);
+      const landedUnitCost = landedOf(it);
+      if (ln.acceptedBase > 0) {
+        const unitId = baseUnitOf.get(it.productId);
+        if (!unitId) throw ApiError.badRequest(`${it.product?.name || 'A product'} has no box unit set up.`);
+        await inventory.increaseStock(tx, {
+          productId: it.productId,
+          packagingUnitId: unitId,
+          quantity: ln.acceptedBase,
+          baseQuantity: ln.acceptedBase,
+          type: 'PURCHASE_RECEIPT',
+          location: { type: inventory.LOCATION.WAREHOUSE, warehouseId },
+          unitCost: landedUnitCost,
+          referenceType: 'PURCHASE',
+          referenceId: po.id,
+          userId: actor ? actor.id : null,
+          notes: `Received PO ${po.poNumber}${ln.damagedBase ? ` (${ln.damagedBase} damaged or rejected not added)` : ''}`,
+        });
+        // Latest landed cost becomes the product's cost basis (as receiving always did). Selling prices are
+        // never touched.
+        await tx.product.update({ where: { id: it.productId }, data: { purchasePrice: landedUnitCost } });
+      }
+      it.receivedBase += ln.receivedBase;
+      it.damagedBase += ln.damagedBase;
+      it.missingBase += ln.missingBase;
+      await tx.purchaseOrderItem.update({
+        where: { id: it.id },
+        data: { receivedBase: it.receivedBase, damagedBase: it.damagedBase, missingBase: it.missingBase, landedUnitCost },
+      });
+    }
+
+    const complete = [...after.values()].every((it) => it.baseQuantity - it.receivedBase - it.missingBase <= 0);
+    const order = await tx.purchaseOrder.update({
+      where: { id },
+      data: {
+        status: complete ? 'RECEIVED' : 'PARTLY_RECEIVED',
+        warehouseId,
+        actualArrival: when,
+        ...(complete ? { receivedAt: new Date() } : {}),
+      },
+      include: PO_INCLUDE,
+    });
+    return { order, receipt };
+  }, { timeout: 20000 });
+}
+
+// Purchase history by product line: every price paid for a product, order by order, with what came in.
+// The same product bought at different prices keeps each price on its own order line.
+async function listPurchaseLines({ productId, from, to } = {}) {
+  const po = { status: { not: 'CANCELLED' } };
+  if (from || to) {
+    po.purchasedAt = {
+      ...(from ? { gte: new Date(`${from}T00:00:00+03:00`) } : {}),
+      ...(to ? { lte: new Date(`${to}T23:59:59.999+03:00`) } : {}),
+    };
+  }
+  const rows = await prisma.purchaseOrderItem.findMany({
+    where: { ...(productId ? { productId } : {}), purchaseOrder: po },
+    include: {
+      product: { select: { id: true, name: true, sku: true } },
+      packagingUnit: { select: { name: true } },
+      purchaseOrder: { select: { id: true, poNumber: true, status: true, purchasedAt: true, createdAt: true, actualArrival: true, supplier: { select: { name: true } } } },
+    },
+    orderBy: [{ purchaseOrder: { createdAt: 'desc' } }],
+    take: 500,
+  });
+  return rows.map((r) => ({
+    id: r.id,
+    product: r.product,
+    poId: r.purchaseOrder.id,
+    poNumber: r.purchaseOrder.poNumber,
+    status: r.purchaseOrder.status,
+    supplier: r.purchaseOrder.supplier?.name || null,
+    purchasedAt: r.purchaseOrder.purchasedAt,
+    createdAt: r.purchaseOrder.createdAt,
+    arrivedAt: r.purchaseOrder.actualArrival,
+    quantity: r.quantity,
+    unit: r.packagingUnit?.name || null,
+    boxes: r.baseQuantity,
+    unitCost: round2(toNumber(r.unitCost)),
+    unitPrice: round2(toNumber(r.unitCost) * (r.quantity > 0 ? r.baseQuantity / r.quantity : 1)),
+    lineTotal: round2(toNumber(r.unitCost) * r.baseQuantity),
+    landedUnitCost: round2(toNumber(r.landedUnitCost)),
+    received: r.receivedBase,
+    damaged: r.damagedBase,
+    missing: r.missingBase,
+    accepted: r.receivedBase - r.damagedBase,
+    outstanding: Math.max(0, r.baseQuantity - r.receivedBase - r.missingBase),
+  }));
+}
+
+// Shipping, clearing or other cost on a bought order, paid in cash as it is recorded — so the order stays fully
+// paid and nobody is left "owed". It enters the landed cost of the boxes confirmed after it; boxes already in
+// stock keep the cost they came in at.
+const COST_FIELD = { shipping: 'shippingCost', clearing: 'clearingCost', other: 'otherCost' };
+const COST_WORD = { shipping: 'Shipping', clearing: 'Clearing', other: 'Other cost' };
+async function addOrderCost(id, { kind, amount, accountId, occurredAt, notes } = {}, actor) {
+  const field = COST_FIELD[kind];
+  if (!field) throw ApiError.badRequest('Choose shipping, clearing or other.');
+  const amt = round2(toNumber(amount));
+  if (!(amt > 0)) throw ApiError.badRequest('Enter an amount greater than zero.');
+  return withDocNumberRetry(() => prisma.$transaction(async (tx) => {
+    await lockOrder(tx, id);
+    const po = await orderForMoney(tx, id);
+    if (!['PURCHASED', ...ARRIVING].includes(po.status)) {
+      throw ApiError.badRequest(
+        NOT_YET_BOUGHT.includes(po.status)
+          ? `${po.poNumber} is ${PO_STATE[po.status]} — put the cost on the order itself (Edit).`
+          : `${po.poNumber} is ${PO_STATE[po.status]} — its costs are final.`,
+      );
+    }
+    await payForOrder(tx, po, { accountId, amount: amt, occurredAt, notes, category: `${COST_WORD[kind]} (${po.poNumber})`, what: `${COST_WORD[kind]} for ${po.poNumber}` }, actor);
+    return tx.purchaseOrder.update({
+      where: { id },
+      data: { [field]: round2(toNumber(po[field]) + amt), totalCost: round2(toNumber(po.totalCost) + amt) },
+      include: PO_INCLUDE,
+    });
+  }, { timeout: 20000 }));
+}
+
 module.exports = {
   listSuppliers,
   createSupplier,
@@ -482,5 +897,10 @@ module.exports = {
   updatePurchaseOrder,
   deletePurchaseOrder,
   receivePurchaseOrder,
+  confirmPurchase,
+  dispatchOrder,
+  receiveCargo,
+  listPurchaseLines,
+  addOrderCost,
   PO_INCLUDE,
 };

@@ -93,6 +93,32 @@ export function pickerRows(products, { brandId } = {}) {
     .filter(Boolean);
 }
 
+// The same rows in cartons, for a purchase order bought by the carton (15 Nov 2026): each product in its Carton
+// packaging (a fixed number of boxes), its suggested price the buying price of a box times the carton. A product
+// with no carton size set stays in its box. Keys end in ":ct" so a carton price never mixes with a box price.
+export function cartonRows(products, { brandId } = {}) {
+  return (products || [])
+    .filter((p) => p && (!brandId || p.brandId === brandId))
+    .map((p) => {
+      const ct = p.packagings?.find((k) => k.isActive !== false && /^carton$/i.test(k.packagingUnit?.name || '') && Number(k.baseQuantity) > 1);
+      const pk = ct || boxPackaging(p);
+      if (!pk) return null;
+      const size = Number(pk.baseQuantity) || 1;
+      return {
+        key: ct ? `${p.id}:ct` : p.id,
+        id: p.id,
+        name: p.name,
+        brand: p.brand?.name || 'Other',
+        short: shortName(p.name, p.brand?.name),
+        packagingUnitId: pk.packagingUnitId,
+        size,
+        unitName: ct ? 'Carton' : null,
+        buyingPrice: Math.round((Number(p.purchasePrice) || 0) * size),
+      };
+    })
+    .filter(Boolean);
+}
+
 // An order being edited keeps every line exactly as it was saved. A line in the
 // product's box takes that product's row; a line in another unit (cartons), a
 // second line of the same product, or a product that is switched off gets a row

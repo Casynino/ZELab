@@ -179,18 +179,18 @@ model Permission {
 }
 
 model User {
-  id           String    @id @default(cuid())
-  name         String
-  email        String    @unique
-  passwordHash String
-  phone        String?
-  isActive     Boolean   @default(true)
-  lastLoginAt  DateTime?
+  id             String    @id @default(cuid())
+  name           String
+  email          String    @unique
+  passwordHash   String
+  phone          String?
+  isActive       Boolean   @default(true)
+  lastLoginAt    DateTime?
   // Bumped when a password is changed or reset, the role changes or the account is switched off: every
   // token carries the value it was issued with, so all older sessions stop working at once.
-  sessionVersion Int     @default(0)
-  roleId       String
-  role         Role      @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  sessionVersion Int       @default(0)
+  roleId         String
+  role           Role      @relation(fields: [roleId], references: [id], onDelete: Restrict)
 
   // Warehouse staff are usually attached to a home warehouse.
   warehouseId String?
@@ -994,10 +994,16 @@ model ReportArchive {
 // PHASE 2 — imports, stock requests, settlements, commissions, online orders
 // ===========================================================================
 
+// Cash-only purchasing (15 Nov 2026): DRAFT → PURCHASED (paid in full from an account, lines locked) →
+// IN_TRANSIT (dispatched) → PARTLY_RECEIVED (some cargo received or marked missing) → RECEIVED ("Completed":
+// every box bought is received or marked missing). ORDERED is the old "has an order date" state, kept for
+// orders made before.
 enum PurchaseStatus {
   DRAFT
   ORDERED
+  PURCHASED
   IN_TRANSIT
+  PARTLY_RECEIVED
   RECEIVED
   CANCELLED
 }
@@ -1109,13 +1115,19 @@ model PurchaseOrder {
   actualArrival   DateTime?
   receivedAt      DateTime?
 
+  // Cash-only flow. purchasedAt = the day the money left (Confirm purchase); dispatchedAt = left China.
+  purchasedAt   DateTime?
+  purchasedById String?
+  dispatchedAt  DateTime?
+
   notes       String?
   createdById String?
   createdBy   User?    @relation("POCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  items PurchaseOrderItem[]
+  items    PurchaseOrderItem[]
+  receipts PurchaseReceipt[]
 
   @@index([supplierId])
   @@index([status])
@@ -1133,11 +1145,60 @@ model PurchaseOrderItem {
 
   quantity       Int
   baseQuantity   Int
-  unitCost       Decimal @default(0) @db.Decimal(14, 2) // goods cost per base unit
+  unitCost       Decimal @default(0) @db.Decimal(18, 6) // goods cost per base unit (6 places: a carton price / boxes adds back up exactly)
   landedUnitCost Decimal @default(0) @db.Decimal(14, 2) // incl. shipping/clearing, set on receipt
+
+  // Running totals from every receiving, in boxes (base units). accepted = received − damaged is what went
+  // into stock. Still to come = bought − received − missing; the order is complete when that is 0 everywhere.
+  receivedBase Int @default(0)
+  damagedBase  Int @default(0)
+  missingBase  Int @default(0)
+
+  receiptItems PurchaseReceiptItem[]
 
   @@index([purchaseOrderId])
   @@map("purchase_order_items")
+}
+
+// One receiving of an order's cargo, recorded by the admin when it arrives — and in the same step its accepted
+// boxes enter stock. Several per order when cargo comes in parts; each is its own history.
+model PurchaseReceipt {
+  id              String        @id @default(cuid())
+  purchaseOrderId String
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Restrict)
+  // One per press of the form: a second press (or a retry after a lost answer) finds this and adds nothing.
+  clientKey       String        @unique
+  arrivedAt       DateTime // the day the cargo arrived
+  notes           String?
+  receivedById    String?
+  createdAt       DateTime      @default(now())
+
+  items PurchaseReceiptItem[]
+
+  @@index([purchaseOrderId])
+  @@map("purchase_receipts")
+}
+
+// One product in one receiving. Quantities in the order line's own unit (cartons for a carton line) and in
+// boxes. Damaged covers damaged and rejected; the note says what and why.
+model PurchaseReceiptItem {
+  id                  String            @id @default(cuid())
+  receiptId           String
+  receipt             PurchaseReceipt   @relation(fields: [receiptId], references: [id], onDelete: Cascade)
+  purchaseOrderItemId String
+  purchaseOrderItem   PurchaseOrderItem @relation(fields: [purchaseOrderItemId], references: [id], onDelete: Restrict)
+  receivedQty         Int               @default(0)
+  damagedQty          Int               @default(0)
+  missingQty          Int               @default(0)
+  receivedBase        Int               @default(0)
+  damagedBase         Int               @default(0)
+  missingBase         Int               @default(0)
+  acceptedBase        Int               @default(0) // received − damaged: the only boxes that enter stock
+  note                String?
+
+  @@index([receiptId])
+  @@index([purchaseOrderItemId])
+  @@map("purchase_receipt_items")
 }
 
 // --- Sales-rep stock requests ----------------------------------------------

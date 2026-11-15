@@ -237,10 +237,12 @@ export function DiscardFooter({ what, detail, onDiscard, onKeep }) {
  *            (with "Change product"), so what comes after it (the reason) is right there.
  * onlyHeld — a rep's stock: list only what he holds, with "Show all products" to see the rest
  * cost     — { [row.key]: '12000' } typed costs per box, or undefined for no cost column; onCost(key, value)
+ * inUnits  — the rows are in their own unit on purpose (a purchase order bought by the carton): quantities
+ *            and costs are per that unit, and the unit is a heading, not an amber "as it was saved" warning
  * placeName — "Main Warehouse", for the stock messages
  */
 export default function ProductPicker({
-  rows, value, onChange, stock = null, cap = false, locked = '', single = false, onlyHeld = false, cost, onCost,
+  rows, value, onChange, stock = null, cap = false, locked = '', single = false, onlyHeld = false, cost, onCost, inUnits = false,
   placeName = 'here', emptyText = 'No products yet.', loading = false, submitSelector = '[data-picker-submit]',
 }) {
   const [search, setSearch] = useState('');
@@ -363,6 +365,10 @@ export default function ProductPicker({
 
   const costOf = (r) => lineCost(cost, r);
   const unitLabel = (r, n) => (r.unitName ? `${r.unitName}${n === 1 ? '' : 's'}` : boxWord(n));
+  // What one cost is for, and a line's total: per box, or per the row's own unit when the rows are in units.
+  const costWord = (r) => (inUnits && r.unitName ? r.unitName.toLowerCase() : 'box');
+  const totalOf = (r, c, q) => (inUnits && r.unitName ? c * q : c * q * (r.size || 1));
+  const unitRow = inUnits ? rows.find((r) => r.unitName) : null;
   const few = (n) => n > 0 && n < 10;
 
   // The second line keeps its place: before a pick "21 here", after "19 left" (or "23 after" when boxes come in).
@@ -370,7 +376,7 @@ export default function ProductPicker({
     const on = q > 0;
     const max = maxOf(r);
     const h = held(r);
-    if (r.unitName) {
+    if (r.unitName && !inUnits) {
       return <span className="text-amber-300">In {r.unitName.toLowerCase()}s of {formatNumber(r.size)} — as it was saved</span>;
     }
     if (cap && stockReady && capped[r.key] != null && on) {
@@ -381,11 +387,11 @@ export default function ProductPicker({
     if (withCost) {
       const c = Number(costOf(r)) || 0;
       // A picked line with no cost would land at cost 0 and set the buying price to 0 — say so on the row.
-      if (on && !c) parts.push(<span key="c" className="text-amber-300">No cost — type the cost per box</span>);
+      if (on && !c) parts.push(<span key="c" className="text-amber-300">No cost — type the cost per {costWord(r)}</span>);
       else {
         parts.push(
           <span key="c" className="tabular-nums text-muted sm:hidden">
-            {on ? <>{formatNumber(q)} × {formatNumber(c)} = <span className="font-semibold text-foreground">{formatNumber(c * q * (r.size || 1))}</span></> : (c ? `${formatCurrency(c)} a box` : 'No buying price')}
+            {on ? <>{formatNumber(q)} × {formatNumber(c)} = <span className="font-semibold text-foreground">{formatNumber(totalOf(r, c, q))}</span></> : (c ? `${formatCurrency(c)} a ${costWord(r)}` : 'No buying price')}
           </span>,
         );
       }
@@ -462,7 +468,7 @@ export default function ProductPicker({
       onBlur={() => setCostOpen((k) => (k === r.key ? null : k))}
       autoFocus={!!focus}
       placeholder="0"
-      aria-label={`Cost per box of ${r.name}`}
+      aria-label={`Cost per ${costWord(r)} of ${r.name}`}
       className={clsx('text-right tabular-nums', extra)}
     />
   );
@@ -515,8 +521,8 @@ export default function ProductPicker({
             {!folded && (
               <div className="hidden px-3 text-[11px] text-faint sm:flex sm:items-center sm:gap-3">
                 <span className="flex-1">Product</span>
-                {withCost && <span className="w-28 text-right">Cost / box</span>}
-                <span className="w-[130px] text-center">{single ? 'Quantity' : 'Boxes'}</span>
+                {withCost && <span className="w-28 text-right">Cost / {unitRow ? unitRow.unitName.toLowerCase() : 'box'}</span>}
+                <span className="w-[130px] text-center">{single ? 'Quantity' : unitRow ? `${unitRow.unitName}s` : 'Boxes'}</span>
                 {withCost && <span className="w-24 text-right">Line total</span>}
               </div>
             )}
@@ -537,17 +543,17 @@ export default function ProductPicker({
                       const max = maxOf(r);
                       const blocked = !locked && !waitStock && max <= 0;
                       const c = Number(costOf(r)) || 0;
-                      const lineTotal = c * q * (r.size || 1);
+                      const lineTotal = totalOf(r, c, q);
                       const nameBlock = (
                         <>
                           <div className="truncate text-sm font-medium text-foreground" title={r.name}>
-                            {r.short}{r.unitName && <span className="ml-1 text-xs font-normal text-amber-300">· {r.unitName}s</span>}
+                            {r.short}{r.unitName && !inUnits && <span className="ml-1 text-xs font-normal text-amber-300">· {r.unitName}s</span>}
                           </div>
                           <div className="mt-0.5 flex min-w-0 items-center gap-2 text-xs">
                             <div className="min-w-0 truncate">{subLine(r, q)}</div>
                             {/* Phone: the cost is plain text; Edit opens its box (the row only grows when asked to). */}
                             {withCost && on && !single && costOpen !== r.key && (
-                              <button type="button" onClick={() => setCostOpen(r.key)} aria-label={`Change the cost per box of ${r.name}`}
+                              <button type="button" onClick={() => setCostOpen(r.key)} aria-label={`Change the cost per ${costWord(r)} of ${r.name}`}
                                 className="relative shrink-0 font-medium text-muted underline underline-offset-2 hover:text-foreground after:absolute after:-inset-x-2 after:-inset-y-3.5 after:content-[''] sm:hidden">
                                 Edit
                               </button>
@@ -600,7 +606,7 @@ export default function ProductPicker({
                                 // Desktop: plain figures; a box only on a picked row, or when the figure is clicked.
                                 <div className="hidden w-28 text-right text-sm tabular-nums sm:block">
                                   {on || costOpen === r.key ? costInput(r, clsx('h-9 py-0', on && !c && 'ring-1 ring-amber-400/60'), costOpen === r.key) : (
-                                    <button type="button" onClick={() => setCostOpen(r.key)} aria-label={`Change the cost per box of ${r.name}`}
+                                    <button type="button" onClick={() => setCostOpen(r.key)} aria-label={`Change the cost per ${costWord(r)} of ${r.name}`}
                                       className="w-full rounded-md px-2 py-1.5 text-right text-muted transition hover:bg-white/[0.05] hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-white/40">
                                       {c ? formatNumber(c) : '—'}
                                     </button>
@@ -615,7 +621,7 @@ export default function ProductPicker({
                               )}
                               {withCost && costOpen === r.key && (
                                 <label className="flex w-full items-center gap-2 text-xs text-muted sm:hidden">
-                                  <span className="shrink-0">Cost per box</span>
+                                  <span className="shrink-0">Cost per {costWord(r)}</span>
                                   {costInput(r, 'h-11 flex-1', true)}
                                 </label>
                               )}

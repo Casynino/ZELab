@@ -263,11 +263,13 @@ async function salesRepPerformance(params = {}) {
 }
 
 // Gross & net profit. Net subtracts the cost value of shrinkage/damage in the
-// window (the only "loss" the system tracks today).
+// window — stock written off, and (since 15 Nov 2026) bought boxes that arrived
+// damaged or never arrived: they were paid for but never became stock, so no sale
+// will ever carry their cost.
 async function profitReport(params = {}) {
   const range = await clampToEpoch(resolveRange(params));
 
-  const [salesAgg, lossRows] = await Promise.all([
+  const [salesAgg, lossRows, receivingRows] = await Promise.all([
     prisma.sale.aggregate({
       where: { ...NON_CANCELLED, soldAt: { gte: range.start, lte: range.end } },
       _sum: { total: true, costTotal: true, discount: true },
@@ -281,13 +283,24 @@ async function profitReport(params = {}) {
       },
       select: { baseQuantity: true, unitCost: true },
     }),
+    prisma.purchaseReceiptItem.findMany({
+      where: {
+        receipt: { arrivedAt: { gte: range.start, lte: range.end } },
+        OR: [{ damagedBase: { gt: 0 } }, { missingBase: { gt: 0 } }],
+      },
+      select: { damagedBase: true, missingBase: true, purchaseOrderItem: { select: { landedUnitCost: true, unitCost: true } } },
+    }),
   ]);
 
   const revenue = round2(toNumber(salesAgg._sum.total));
   const cogs = round2(toNumber(salesAgg._sum.costTotal));
   const grossProfit = round2(revenue - cogs);
+  const receivingLoss = receivingRows.reduce((s, r) => {
+    const unit = toNumber(r.purchaseOrderItem?.landedUnitCost) || toNumber(r.purchaseOrderItem?.unitCost);
+    return s + (r.damagedBase + r.missingBase) * unit;
+  }, 0);
   const lossValue = round2(
-    lossRows.reduce((s, r) => s + Math.abs(r.baseQuantity) * toNumber(r.unitCost), 0),
+    lossRows.reduce((s, r) => s + Math.abs(r.baseQuantity) * toNumber(r.unitCost), 0) + receivingLoss,
   );
 
   return {
