@@ -13,6 +13,7 @@ const { Prisma } = require('@prisma/client');
 const prisma = require('../config/prisma');
 const ApiError = require('../utils/ApiError');
 const reports = require('./reports.service');
+const profitMath = require('../utils/profitMath');
 const inventory = require('./inventory.service');
 const commission = require('./commission.service');
 const { nextDocNumber, withDocNumberRetry } = require('../utils/numbering');
@@ -389,7 +390,9 @@ async function backfillFromHistory() {
       },
       orderBy: { soldAt: 'asc' },
     }),
-    prisma.financeTransaction.findMany({ where: { refType: 'Sale' }, select: { refId: true } }),
+    // A sale with any money row — its takings, a payment collected later, money handed back — is covered: its
+    // money is already in the ledger and is never booked again from the sale (15 Nov 2026).
+    prisma.financeTransaction.findMany({ where: { refType: { in: ['Sale', 'SalePayment', 'SaleRefund'] } }, select: { refId: true } }),
   ]);
   const have = new Set(existingSaleTxns.map((t) => t.refId));
 
@@ -1314,7 +1317,7 @@ async function reverseTransaction(id, { reason } = {}, actor) {
     }
     const linked = ['Supplier', 'PurchaseOrder'].includes(original.refType) && original.type === 'STOCK_PURCHASE';
     if (!REVERSIBLE_TYPES.includes(original.type) || (original.refType && !linked && original.type !== 'TRANSFER')) {
-      const where = original.refType === 'Sale' ? 'Cancel the sale it came from.'
+      const where = ['Sale', 'SalePayment', 'SaleRefund'].includes(original.refType) ? 'Cancel or refund the sale it came from.'
         : original.refType === 'CommissionWithdrawal' ? 'It is a rep payout, recorded with the withdrawal.'
           : original.refType === 'PurchaseOrder' || original.refType === 'Supplier' ? 'It is a supplier or purchase order payment.'
             : 'It was recorded by the app, not typed in.';
@@ -1621,13 +1624,15 @@ async function report(opts = {}) {
   const base = epochWhere(range, epoch);
   const sumOf = async (extra) =>
     round2(toNumber((await prisma.financeTransaction.aggregate({ where: { ...base, ...extra }, _sum: { amount: true } }))._sum.amount));
-  const [expenses, supplierPayments, commissionPaid, otherIncome] = await Promise.all([
+  const [expenses, supplierPayments, commissionPaid, otherIncome, losses] = await Promise.all([
     sumOf({ direction: 'OUT', type: 'EXPENSE' }),
     sumOf({ direction: 'OUT', type: 'STOCK_PURCHASE' }),
     // What reps were paid: payouts from a business account (since 15 Nov 2026 — already inside `expenses`, and so
     // inside netProfit) and the older pocket records (outside cash flow and profit), together on one line.
     sumOf({ direction: 'OUT', refType: 'CommissionWithdrawal' }),
     sumOf({ direction: 'IN', type: 'INCOME' }),
+    // Stock lost in the window (written off, or bought and damaged / never received) — part of THE net profit.
+    reports.stockLosses(range),
   ]);
   return {
     range: range ? { start: range.start, end: range.end } : null,
@@ -1637,9 +1642,13 @@ async function report(opts = {}) {
     grossProfit: prof.totals.profit,
     margin: prof.totals.margin,
     boxesSold: prof.totals.boxes,
+    // Boxes sold before a buying price was set: in revenue, not in profit.
+    noCost: prof.totals.noCost,
     expenses,
+    stockLoss: losses.total,
     commissionAccrued: prof.totals.commission,
-    netProfit: round2(prof.totals.profit - expenses),
+    // One net profit everywhere (reports.netProfitOf): gross − expenses − stock lost.
+    netProfit: profitMath.netProfitOf({ grossProfit: prof.totals.profit, expenses, stockLoss: losses.total }),
     supplierPayments,
     commissionPaid,
     otherIncome,
@@ -2069,6 +2078,9 @@ async function payOrderLocked(tx, { purchaseOrderId, accountId, amount, notes, o
 // roughly 7.18M of it across 73 overdue accounts, so this is not a rounding
 // choice — it is the difference between a figure the owner can trust and one
 // that argues with him.
+// 15 Nov 2026: collections DO post cash now (sales.recordSalePayment — a credit payment or the rest of a part-paid
+// sale is received into a chosen account). It stays a memo all the same: most of what is owed is old, overdue
+// credit, and money not yet in hand is not counted as the owner's capital until it is.
 // What one supplier is owed RIGHT NOW: the cost of what has already SOLD, less
 // what he has been paid — never more than he is actually invoiced for.
 // Over-payment shows as zero due, not as a negative.
@@ -2288,6 +2300,7 @@ async function overview(period = 'month', shared = {}) {
     flowRows, [expAgg, byCat], [allBrands, brandTxnRows, products],
     [poAgg, poCreditAgg, poPayAgg, wdAgg, pendingApprovals],
     ownerAllTime, lifetime, lifetimeExpAgg, debtAgg, suppliersForSplit, stockSpendRows,
+    [periodLosses, lifetimeLosses],
   ] = await Promise.all([
     Promise.all(FLOW_PERIODS.map(flowFor)),
     Promise.all([
@@ -2362,6 +2375,9 @@ async function overview(period = 'month', shared = {}) {
       where: { direction: 'OUT', type: 'STOCK_PURCHASE' },
       _sum: { amount: true },
     }),
+    // Stock lost (written off, or bought and damaged / never received) in the period and since go-live: part of
+    // THE net profit (reports.netProfitOf), the same figure the Dashboard and Reports print.
+    Promise.all([reports.stockLosses(range), period === 'all' ? null : reports.stockLosses(null)]),
   ]);
   const flow = {};
   FLOW_PERIODS.forEach((p, i) => { flow[p] = flowRows[i]; });
@@ -2376,7 +2392,8 @@ async function overview(period = 'month', shared = {}) {
   // every commission himself, so it never leaves the business's money and
   // cannot reduce what the business made.
   const commissionAccrued = prof.totals.commission;
-  const netProfit = round2(grossProfit - expenses);
+  const stockLoss = periodLosses.total;
+  const netProfit = profitMath.netProfitOf({ grossProfit, expenses, stockLoss });
 
   // ── Per-brand finance (rows read above).
   const productBrand = new Map(products.map((p) => [p.id, p.brandId]));
@@ -2406,6 +2423,7 @@ async function overview(period = 'month', shared = {}) {
       }
     }
     const invB = invByBrand.get(b.id) || { cost: 0, units: 0 };
+    const brandLoss = periodLosses.byBrand.get(b.id) || 0;
     return {
       brandId: b.id,
       name: b.name,
@@ -2414,9 +2432,12 @@ async function overview(period = 'month', shared = {}) {
       grossProfit: p.profit,
       margin: p.margin,
       boxesSold: p.boxes,
+      // Boxes of this brand sold before a buying price was set: in revenue, not in profit or margin.
+      noCost: p.noCost || { boxes: 0, revenue: 0 },
       commission: round2(p.commission || 0),
       expenses: round2(brandExpenses),
-      netProfit: round2(p.profit - brandExpenses),
+      stockLoss: brandLoss,
+      netProfit: profitMath.netProfitOf({ grossProfit: p.profit, expenses: brandExpenses, stockLoss: brandLoss }),
       moneyIn: round2(moneyIn),
       moneyOut: round2(moneyOut),
       netCash: round2(moneyIn - moneyOut),
@@ -2438,7 +2459,12 @@ async function overview(period = 'month', shared = {}) {
   // 426,000 in another. (ownerAllTime, lifetime and lifetimeExpAgg are read above.)
   const ownerIn = ownerAllTime.intoAccounts;
   const ownerOut = ownerAllTime.drawn;
-  const earnedAllTime = round2(lifetime.totals.profit - round2(toNumber(lifetimeExpAgg._sum.amount)));
+  // The same net profit as every other screen, over all time (since go-live): gross − expenses − stock lost.
+  const earnedAllTime = profitMath.netProfitOf({
+    grossProfit: lifetime.totals.profit,
+    expenses: round2(toNumber(lifetimeExpAgg._sum.amount)),
+    stockLoss: (lifetimeLosses || periodLosses).total,
+  });
   // Every shilling of rep commission comes out of the owner's pocket, so the
   // payouts themselves are the record of what he has put in. The business owes
   // him this back when it can afford to. Counted HERE and nowhere else: no
@@ -2692,8 +2718,11 @@ async function overview(period = 'month', shared = {}) {
     cogs: prof.totals.cost,
     boxesSold: prof.totals.boxes,
     grossProfit,
+    // Boxes sold before a buying price was set: in revenue, not in profit ("N boxes … — not in profit").
+    noCost: prof.totals.noCost,
     commissionAccrued,
     expenses,
+    stockLoss,
     netProfit,
     expenseBreakdown,
     byBrand: prof.byBrand,

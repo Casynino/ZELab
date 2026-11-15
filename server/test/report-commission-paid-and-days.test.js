@@ -122,6 +122,8 @@ test('the sales report puts a sale on the Tanzanian day, week and month it happe
   stub('../src/config/prisma', {
     setting: { findUnique: async () => null },
     sale: { findMany: async () => sales },
+    // No box in these sales was sold without a buying price.
+    saleItem: { findMany: async () => [] },
   });
   const reports = fresh('../src/services/reports.service');
   const series = async (groupBy) => (await reports.salesReport({ from: '2026-08-01', to: '2026-09-30', groupBy })).series

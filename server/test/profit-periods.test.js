@@ -115,10 +115,29 @@ test('revenue is net of the discount, cost is the one frozen at the sale', async
   assert.equal(p.today.margin, round2(-3_000 / 9_000 * 100));
 });
 
-test('a line with no cost recorded falls back to the purchase price', async () => {
-  items = [line({ soldAt: '2026-09-23T10:00:00', qty: 3, lineTotal: 45_000, unitCost: 0 })];
+// 15 Nov 2026 (fina10 / sale01 / repo03): a box sold before its product had a buying price has NO known cost.
+// It used to borrow today's purchase price (0 for Pepa = 100% profit; a later order's price for older sales).
+// Now it counts in revenue and boxes, never in profit or margin, and is said apart as `noCost`.
+test('a line sold with no buying price counts in revenue, never in profit or margin', async () => {
+  items = [
+    line({ soldAt: '2026-09-23T10:00:00', qty: 3, lineTotal: 45_000, unitCost: 0 }),
+    line({ productId: 'p2', soldAt: '2026-09-23T11:00:00', qty: 2, lineTotal: 20_000, unitCost: 6_000 }),
+  ];
   const p = await reports.profitByPeriods(['today']);
-  assert.equal(p.today.profit, 45_000 - 3 * 10_000); // p1 costs 10,000
+  assert.equal(p.today.revenue, 65_000);
+  assert.equal(p.today.boxes, 5);
+  assert.equal(p.today.profit, 20_000 - 2 * 6_000); // only the costed line: p1's 10,000 price today is never borrowed
+  assert.equal(p.today.margin, 40); // 8,000 of the 20,000 that has a cost — never 100% on the no-cost boxes
+  assert.deepEqual(p.today.noCost, { boxes: 3, revenue: 45_000 });
+  const civ = p.today.byBrand.find((b) => b.name === 'CIVLILY');
+  assert.deepEqual({ revenue: civ.revenue, profit: civ.profit, margin: civ.margin }, { revenue: 45_000, profit: 0, margin: 0 });
+});
+
+test('net profit is ONE sum: gross − expenses − stock lost', () => {
+  const { netProfitOf } = require('../src/utils/profitMath');
+  assert.equal(netProfitOf({ grossProfit: 17_182_035, expenses: 3_090_451, stockLoss: 174_138.81 }), 13_917_445.19);
+  assert.equal(netProfitOf({ grossProfit: 0, expenses: 29_000, stockLoss: 168_138.81 }), -197_138.81);
+  assert.equal(netProfitOf({}), 0);
 });
 
 test('the same figures as the month report, brand by brand', async () => {

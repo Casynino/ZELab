@@ -4,6 +4,7 @@ const prisma = require('../config/prisma');
 const inventory = require('./inventory.service');
 const credit = require('./credit.service');
 const reports = require('./reports.service');
+const profitMath = require('../utils/profitMath');
 const reorder = require('./reorder.service');
 const stockCount = require('./stockCount.service');
 const settlement = require('./settlement.service');
@@ -111,6 +112,8 @@ async function overview() {
     activity,
     counts,
     settlements,
+    monthExpenses,
+    monthLosses,
   ] = await Promise.all([
     inventory.valuation(prisma),
     periodSales('today'),
@@ -133,6 +136,8 @@ async function overview() {
       prisma.warehouse.count({ where: { isActive: true } }),
     ]),
     settlement.summary(),
+    epochRange('month').then((r) => reports.expensesBetween(r)),
+    epochRange('month').then((r) => reports.stockLosses(r)),
   ]);
 
   return {
@@ -147,7 +152,8 @@ async function overview() {
     sales: { daily, weekly, monthly },
     profit: {
       grossProfit: profit.totals.profit,
-      netProfit: profit.totals.profit,
+      // THE net profit (reports.netProfitOf): gross − expenses − stock lost, as Finance and Reports print it.
+      netProfit: profitMath.netProfitOf({ grossProfit: profit.totals.profit, expenses: monthExpenses, stockLoss: monthLosses.total }),
       grossMargin: profit.totals.margin,
       revenue: profit.totals.revenue,
     },
@@ -194,20 +200,18 @@ async function overview() {
 // Everything is grouped by the product's brand, so no brand is ever mixed.
 // `valuationPromise` (optional): the command center passes the stock valuation it is already reading, so
 // one dashboard load values the stock once instead of three times. Read-only either way.
-async function brandBreakdown(valuationPromise = null) {
-  const month = await epochRange('month');
-  const today = await epochRange('today');
-  const [brands, products, val, monthItems, todayItems] = await Promise.all([
+async function brandBreakdown(valuationPromise = null, periodsPromise = null) {
+  // Month and today's sales by brand from the same line maths as Finance (discount shared, cost frozen at the sale,
+  // boxes with no buying price kept out of profit) — this used today's buying price and the pre-discount line total.
+  const [brands, products, val, periods] = await Promise.all([
     prisma.brand.findMany({ where: { isActive: true }, select: { id: true, name: true } }),
-    prisma.product.findMany({ select: { id: true, brandId: true, purchasePrice: true } }),
+    prisma.product.findMany({ select: { id: true, brandId: true } }),
     valuationPromise || inventory.valuation(prisma),
-    prisma.saleItem.groupBy({ by: ['productId'], where: { sale: { status: { not: 'CANCELLED' }, soldAt: { gte: month.start, lte: month.end } } }, _sum: { lineTotal: true, baseQuantity: true } }),
-    prisma.saleItem.groupBy({ by: ['productId'], where: { sale: { status: { not: 'CANCELLED' }, soldAt: { gte: today.start, lte: today.end } } }, _sum: { lineTotal: true } }),
+    periodsPromise || reports.profitByPeriods(['today', 'month']),
   ]);
 
   const brandOf = new Map(products.map((p) => [p.id, p.brandId]));
-  const costOf = new Map(products.map((p) => [p.id, toNumber(p.purchasePrice)]));
-  const mk = (b) => ({ brandId: b.id, name: b.name, stockValue: 0, stockRetail: 0, stockUnits: 0, warehouseUnits: 0, salesMonth: 0, costMonth: 0, unitsSoldMonth: 0, salesToday: 0 });
+  const mk = (b) => ({ brandId: b.id, name: b.name, stockValue: 0, stockRetail: 0, stockUnits: 0, warehouseUnits: 0, salesMonth: 0, profitMonth: 0, marginMonth: 0, unitsSoldMonth: 0, salesToday: 0 });
   const byBrand = new Map(brands.map((b) => [b.id, mk(b)]));
 
   for (const it of val.items) {
@@ -221,35 +225,31 @@ async function brandBreakdown(valuationPromise = null) {
     b.stockUnits += it.totalBase;
     b.warehouseUnits += it.warehouseBase;
   }
-  for (const r of monthItems) {
-    const b = byBrand.get(brandOf.get(r.productId));
+  for (const r of periods?.month?.byBrand || []) {
+    const b = byBrand.get(r.brandId);
     if (!b) continue;
-    b.salesMonth += toNumber(r._sum.lineTotal);
-    b.costMonth += (r._sum.baseQuantity || 0) * (costOf.get(r.productId) || 0);
-    b.unitsSoldMonth += r._sum.baseQuantity || 0;
+    b.salesMonth = r.revenue;
+    b.profitMonth = r.profit;
+    b.marginMonth = r.margin;
+    b.unitsSoldMonth = r.boxes;
+    b.noCostMonth = r.noCost;
   }
-  for (const r of todayItems) {
-    const b = byBrand.get(brandOf.get(r.productId));
-    if (!b) continue;
-    b.salesToday += toNumber(r._sum.lineTotal);
+  for (const r of periods?.today?.byBrand || []) {
+    const b = byBrand.get(r.brandId);
+    if (b) b.salesToday = r.revenue;
   }
 
   const items = [...byBrand.values()]
-    .map((b) => {
-      const profitMonth = round2(b.salesMonth - b.costMonth);
-      return {
-        ...b,
-        stockValue: round2(b.stockValue),
-        stockRetail: round2(b.stockRetail),
-        // What this brand's shelf would leave behind if it all sold at today's
-        // prices — before commission, like the figure for both brands together.
-        stockPotential: round2(b.stockRetail - b.stockValue),
-        salesMonth: round2(b.salesMonth),
-        salesToday: round2(b.salesToday),
-        profitMonth,
-        marginMonth: b.salesMonth > 0 ? round2((profitMonth / b.salesMonth) * 100) : 0,
-      };
-    })
+    .map((b) => ({
+      ...b,
+      stockValue: round2(b.stockValue),
+      stockRetail: round2(b.stockRetail),
+      // What this brand's shelf would leave behind if it all sold at today's
+      // prices — before commission, like the figure for both brands together.
+      stockPotential: round2(b.stockRetail - b.stockValue),
+      salesMonth: round2(b.salesMonth),
+      salesToday: round2(b.salesToday),
+    }))
     .sort((a, b) => a.name.localeCompare(b.name));
   const sum = (k) => round2(items.reduce((t, b) => t + b[k], 0));
   return {
@@ -282,17 +282,15 @@ async function dailySeries(days = 30) {
   const from = new Date(to.getTime() - (days - 1) * 86400000);
   const items = await prisma.saleItem.findMany({
     where: { sale: { is: { status: { not: 'CANCELLED' }, soldAt: { gte: from, lte: to } } } },
-    select: { baseQuantity: true, lineTotal: true, unitCost: true, sale: { select: { soldAt: true } } },
+    // The sale's discount, so a day's revenue is what the customers paid (sale05) — the same line maths as Finance.
+    select: { baseQuantity: true, lineTotal: true, unitCost: true, sale: { select: { soldAt: true, discount: true, subtotal: true } } },
   });
 
   const byDay = new Map();
   for (const it of items) {
     const k = eatDayKey(it.sale.soldAt);
-    const row = byDay.get(k) || { revenue: 0, profit: 0, boxes: 0 };
-    const rev = toNumber(it.lineTotal);
-    row.revenue += rev;
-    row.profit += rev - toNumber(it.unitCost) * (it.baseQuantity || 0);
-    row.boxes += it.baseQuantity || 0;
+    const row = byDay.get(k) || profitMath.newTally();
+    profitMath.addLine(row, profitMath.lineFinancials(it));
     byDay.set(k, row);
   }
 
@@ -300,8 +298,9 @@ async function dailySeries(days = 30) {
   const cur = new Date(from);
   for (let i = 0; i < days; i += 1) {
     const k = eatDayKey(cur);
-    const row = byDay.get(k) || { revenue: 0, profit: 0, boxes: 0 };
-    out.push({ date: k, revenue: round2(row.revenue), profit: round2(row.profit), boxes: row.boxes });
+    const row = byDay.get(k) || profitMath.newTally();
+    const p = profitMath.profitOf(row);
+    out.push({ date: k, revenue: p.revenue, profit: p.profit, boxes: row.boxes });
     cur.setUTCDate(cur.getUTCDate() + 1);
   }
   return out;
@@ -309,16 +308,11 @@ async function dailySeries(days = 30) {
 
 // "Which region is doing best" — a question only answerable now that regions
 // come from a fixed list instead of free text.
+// The same rule as Finance > Reports > Regional (reports.revenueByRegionRule), so the chart and the report never
+// put the same sale in two places (sale04). Blank is Dar es Salaam's (mergeRegionRevenue keeps that rule too).
 async function revenueByRegion(range) {
-  const rows = await prisma.sale.groupBy({
-    by: ['region'],
-    where: { status: { not: 'CANCELLED' }, soldAt: { gte: range.start, lte: range.end } },
-    _sum: { total: true },
-  });
-  // A sale with no region is Dar es Salaam's — direct sales out of the
-  // warehouse, and everything saved before regions were filled in. It used to
-  // be its own "Unassigned" slice; now it is added to Dar es Salaam's.
-  return mergeRegionRevenue(rows.map((r) => ({ region: r.region, total: toNumber(r._sum.total) })));
+  const rows = await reports.revenueByRegionRule(range);
+  return mergeRegionRevenue(rows.map((r) => ({ region: r.region, total: r.revenue })));
 }
 
 async function revenueByRep(range) {
@@ -343,20 +337,27 @@ async function revenueByRep(range) {
     .slice(0, 8);
 }
 
+// What each product brought in, net of the sale discount (sale05) — the same line maths as Finance > Profit.
 async function topProductsByRevenue(range, limit = 6) {
-  const rows = await prisma.saleItem.groupBy({
-    by: ['productId'],
+  const items = await prisma.saleItem.findMany({
     where: { sale: { is: { status: { not: 'CANCELLED' }, soldAt: { gte: range.start, lte: range.end } } } },
-    _sum: { lineTotal: true, baseQuantity: true },
+    select: { productId: true, baseQuantity: true, lineTotal: true, unitCost: true, sale: { select: { discount: true, subtotal: true } } },
   });
-  if (!rows.length) return [];
+  if (!items.length) return [];
+  const byProduct = new Map();
+  for (const it of items) {
+    const f = profitMath.lineFinancials(it);
+    const cur = byProduct.get(it.productId) || { productId: it.productId, value: 0, boxes: 0 };
+    cur.value += f.revenue; cur.boxes += f.boxes;
+    byProduct.set(it.productId, cur);
+  }
   const prods = await prisma.product.findMany({
-    where: { id: { in: rows.map((r) => r.productId) } },
+    where: { id: { in: [...byProduct.keys()] } },
     select: { id: true, name: true },
   });
   const m = new Map(prods.map((x) => [x.id, x.name]));
-  return rows
-    .map((r) => ({ name: m.get(r.productId) || 'Product', value: round2(toNumber(r._sum.lineTotal)), boxes: r._sum.baseQuantity || 0 }))
+  return [...byProduct.values()]
+    .map((r) => ({ name: m.get(r.productId) || 'Product', value: round2(r.value), boxes: r.boxes }))
     .sort((a, b) => b.value - a.value)
     .slice(0, limit);
 }
@@ -421,7 +422,7 @@ async function analysis() {
     occurredAt: { gte: epoch && epoch > start ? epoch : start, lte: end },
   });
 
-  const [items, products, openOrders, spendRows, expMonth, expPrev, flows] = await Promise.all([
+  const [items, products, openOrders, spendRows, expMonth, expPrev, flows, lossMonth, lossPrev] = await Promise.all([
     prisma.saleItem.findMany({
       where: { sale: { is: { status: { not: 'CANCELLED' }, soldAt: { gte: readFrom } } } },
       select: {
@@ -453,6 +454,9 @@ async function analysis() {
         ? Promise.resolve({ moneyIn: 0, moneyOut: 0, net: 0 })
         : finance.flowBetween(epoch && epoch > m.start ? epoch : m.start, m.end)
     ))),
+    // Stock lost this month and last (written off, or bought and never received): part of THE net profit.
+    reports.stockLosses({ start: thisMonth.start, end: thisMonth.end }),
+    epoch && prevMonth.end < epoch ? { total: 0 } : reports.stockLosses({ start: prevMonth.start, end: prevMonth.end }),
   ]);
 
   // ── The months ──
@@ -460,18 +464,15 @@ async function analysis() {
   const byMonth = new Map();
   for (const it of items) {
     const k = eatMonthKey(it.sale.soldAt);
-    const row = byMonth.get(k) || { revenue: 0, cost: 0, boxes: 0 };
-    const f = reports.lineFinancials(it, productById.get(it.productId));
-    row.revenue += f.revenue;
-    row.cost += f.cost;
-    row.boxes += f.boxes;
+    const row = byMonth.get(k) || profitMath.newTally();
+    profitMath.addLine(row, profitMath.lineFinancials(it, productById.get(it.productId)));
     byMonth.set(k, row);
   }
+  // Boxes sold before a buying price was set count in revenue, never in profit (reports.lineFinancials).
   const monthFigures = (m) => {
-    const row = byMonth.get(m.key) || { revenue: 0, cost: 0, boxes: 0 };
-    const revenue = round2(row.revenue);
-    const cost = round2(row.cost);
-    return { revenue, cost, grossProfit: round2(revenue - cost), boxes: row.boxes };
+    const row = byMonth.get(m.key) || profitMath.newTally();
+    const p = profitMath.profitOf(row);
+    return { revenue: p.revenue, cost: p.cost, grossProfit: p.profit, boxes: row.boxes, noCost: p.noCost };
   };
 
   const trend = last12.map((m, i) => {
@@ -507,8 +508,15 @@ async function analysis() {
   const expensesMonth = round2(toNumber(expMonth._sum.amount));
   const expensesPrev = round2(toNumber(expPrev._sum.amount));
 
-  const month = { ...m0, label: thisMonth.label, expenses: expensesMonth, netProfit: round2(m0.grossProfit - expensesMonth) };
-  const lastMonth = { ...m1, label: prevMonth.label, expenses: expensesPrev, netProfit: round2(m1.grossProfit - expensesPrev) };
+  // THE net profit (reports.netProfitOf) — the same figure Finance and Reports > Profit print for the month.
+  const month = {
+    ...m0, label: thisMonth.label, expenses: expensesMonth, stockLoss: lossMonth.total,
+    netProfit: profitMath.netProfitOf({ grossProfit: m0.grossProfit, expenses: expensesMonth, stockLoss: lossMonth.total }),
+  };
+  const lastMonth = {
+    ...m1, label: prevMonth.label, expenses: expensesPrev, stockLoss: lossPrev.total,
+    netProfit: profitMath.netProfitOf({ grossProfit: m1.grossProfit, expenses: expensesPrev, stockLoss: lossPrev.total }),
+  };
 
   // ── How long the boxes already out have been out ──
   // Outstanding is what the order still owes: issued, less what was settled,
@@ -553,10 +561,12 @@ async function analysis() {
   // back null so the screen can say so instead of printing a confident 0%.
   const growth = (now, before) => (before > 0 ? round2(((now - before) / before) * 100) : null);
   const share = (part, whole) => (whole > 0 ? round2((part / whole) * 100) : null);
+  // Margins are over the revenue whose cost is known: a box sold before a buying price was set is never "100% kept".
+  const costedRevenue = round2(month.revenue - (month.noCost?.revenue || 0));
   const health = {
-    grossMargin: share(month.grossProfit, month.revenue),
+    grossMargin: share(month.grossProfit, costedRevenue),
     expenseRatio: share(month.expenses, month.revenue),
-    netMargin: share(month.netProfit, month.revenue),
+    netMargin: share(month.netProfit, costedRevenue),
     revenueGrowth: growth(month.revenue, lastMonth.revenue),
     profitGrowth: growth(month.grossProfit, lastMonth.grossProfit),
     overdueShare: share(ageing.overdueValue, ageing.total),
@@ -602,16 +612,18 @@ async function command() {
   // Each is started once here and handed to them, instead of being worked out two or three times over
   // in the same request. Same functions, same arguments, read-only; nothing is kept after the request.
   const valP = inventory.valuation(prisma);
+  // Today, this week and this month in one read: the brand cards and the brand split both use it.
+  const periodsP = reports.profitByPeriods(['today', 'week', 'month']).catch(() => null);
   const commAllP = commission.summaryAllReps();
   const supplierRowsP = finance.supplierSummaries();
 
-  const [fin, profMonth, periods, bd, stl, low, val, repsRows, repBal, commAll, supplierRows, products, pendCounts, pendingWithdrawals, salesTodayRows, salesMonthRows, activeStl, retTodayAgg, retSubmittedToday, retSubmittedTodayBoxes] = await Promise.all([
+  const [fin, profMonth, periods, bd, stl, low, val, repsRows, repBal, commAll, supplierRows, products, pendCounts, pendingWithdrawals, salesTodayRows, salesMonthRows, activeStl, retTodayAgg, retSubmittedToday, retSubmittedTodayBoxes, refundTodayAgg] = await Promise.all([
     finance.overview('today', { valuation: valP, commSummary: commAllP, supplierSummaries: supplierRowsP }),
     reports.profitOverview('month'),
     // Today, this week and this month in one read, so every brand card can be
     // switched between them without another trip.
-    reports.profitByPeriods(['today', 'week', 'month']).catch(() => null),
-    brandBreakdown(valP),
+    periodsP,
+    brandBreakdown(valP, periodsP),
     settlement.summary(),
     reorderSvc.lowStock(),
     valP,
@@ -642,6 +654,12 @@ async function command() {
     prisma.returnItem.aggregate({
       where: { return: { is: { createdAt: { gte: todayR.start, lte: todayR.end } } } },
       _sum: { quantity: true },
+    }),
+    // Boxes customers brought back today (a refund on the sale puts them back as CUSTOMER_RETURN stock rows, not
+    // as a Return): they are boxes back on the shelf too (sale08).
+    prisma.inventoryTransaction.aggregate({
+      where: { type: 'CUSTOMER_RETURN', referenceType: 'SALE', occurredAt: { gte: todayR.start, lte: todayR.end } },
+      _sum: { baseQuantity: true },
     }),
   ]);
 
@@ -682,6 +700,10 @@ async function command() {
       grossProfitToday: today.profit,
       marginToday: today.margin,
       boxesSoldToday: today.boxes,
+      // Boxes sold before a buying price was set, per window: in revenue, not in profit or margin.
+      noCostToday: today.noCost || { boxes: 0, revenue: 0 },
+      noCostWeek: week.noCost || { boxes: 0, revenue: 0 },
+      noCostMonth: pm.noCost || { boxes: 0, revenue: 0 },
       revenueWeek: week.revenue,
       grossProfitWeek: week.profit,
       marginWeek: week.margin,
@@ -752,6 +774,8 @@ async function command() {
       grossProfit: fin.grossProfit,
       expenses: fin.expenses,
       netProfit: fin.netProfit,
+      // Boxes sold before a buying price was set: in revenue, not in profit (said on the page).
+      noCost: fin.noCost || { boxes: 0, revenue: 0 },
       moneyIn: fin.flow.today.moneyIn,
       moneyOut: fin.flow.today.moneyOut,
       netCash: fin.flow.today.net,
@@ -764,11 +788,12 @@ async function command() {
         revenue: periods.week.revenue,
         grossProfit: periods.week.profit,
         boxes: periods.week.boxes,
+        noCost: periods.week.noCost || { boxes: 0, revenue: 0 },
         start: periods.week.range.start,
         end: periods.week.range.end,
       }
       : null,
-    month: { revenue: profMonth.totals.revenue, grossProfit: profMonth.totals.profit, boxes: profMonth.totals.boxes },
+    month: { revenue: profMonth.totals.revenue, grossProfit: profMonth.totals.profit, boxes: profMonth.totals.boxes, noCost: profMonth.totals.noCost || { boxes: 0, revenue: 0 } },
     brands,
     reps,
     attention: {
@@ -814,7 +839,8 @@ async function command() {
       units: val.totals.totalBaseUnits,
       warehouseBoxes,
       repBoxes,
-      returnedToday: retTodayAgg._sum.baseQuantity || 0,
+      returnedToday: (retTodayAgg._sum.baseQuantity || 0) + (refundTodayAgg._sum.baseQuantity || 0),
+      refundedToday: refundTodayAgg._sum.baseQuantity || 0,
     },
     // The shape behind the totals. Everything here is scoped to the same month
     // range the rest of the payload uses, except the trend, which is a rolling

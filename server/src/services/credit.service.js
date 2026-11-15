@@ -55,71 +55,20 @@ async function getCredit(id) {
   return { ...credit, daysOverdue: credit.balance > 0 ? daysOverdue(credit.dueDate) : 0 };
 }
 
+// A payment on a credit sale is money received INTO an account (15 Nov 2026): it used to lower the debt and post
+// nothing, so the account never held the money and balances drifted from real money. It now runs the one
+// sale-payment path (sales.recordSalePayment): the account row, the credit payment, the debt and the sale's own
+// figures in one transaction, one payment at a time per debt (the sale row is locked — audit #54 still holds).
 async function recordPayment(creditSaleId, payload, actor) {
   const amount = round2(payload.amount);
-  if (amount <= 0) throw ApiError.badRequest('Payment amount must be greater than zero');
-
-  return prisma.$transaction(async (tx) => {
-    // One payment at a time per debt (audit #54, 11 Nov 2026): two payments at the same instant both
-    // read the same balance and each wrote its own "balance - amount", so one payment vanished from the
-    // balance (and the over-payment check could pass twice). The row lock makes the second wait and
-    // read the balance the first one left.
-    if (typeof tx.$queryRaw === 'function') {
-      await tx.$queryRaw`SELECT id FROM "credit_sales" WHERE id = ${creditSaleId} FOR UPDATE`;
-    }
-    const credit = await tx.creditSale.findUnique({
-      where: { id: creditSaleId },
-      include: { sale: true },
-    });
-    if (!credit) throw ApiError.notFound('Credit sale not found');
-    if (credit.status === 'PAID') throw ApiError.badRequest('This debt is already fully paid');
-    if (credit.status === 'WRITTEN_OFF') throw ApiError.badRequest('This debt has been written off');
-
-    const currentBalance = toNumber(credit.balance);
-    if (amount > currentBalance + 0.001) {
-      throw ApiError.badRequest(
-        `Payment (${amount}) exceeds the outstanding balance (${currentBalance})`,
-      );
-    }
-
-    await tx.creditPayment.create({
-      data: {
-        creditSaleId,
-        amount,
-        method: payload.method || 'CASH',
-        reference: payload.reference || null,
-        notes: payload.notes || null,
-        paidAt: payload.paidAt ? new Date(payload.paidAt) : new Date(),
-        receivedById: actor ? actor.id : null,
-      },
-    });
-
-    const newAmountPaid = round2(toNumber(credit.amountPaid) + amount);
-    const newBalance = round2(toNumber(credit.principal) - newAmountPaid);
-    const status = computeStatus({
-      balance: newBalance,
-      amountPaid: newAmountPaid,
-      dueDate: credit.dueDate,
-    });
-
-    const updated = await tx.creditSale.update({
-      where: { id: creditSaleId },
-      data: { amountPaid: newAmountPaid, balance: newBalance, status },
-      include: CREDIT_INCLUDE,
-    });
-
-    // Keep the parent sale's payment fields in sync.
-    await tx.sale.update({
-      where: { id: credit.saleId },
-      data: {
-        amountPaid: newAmountPaid,
-        balanceDue: newBalance,
-        status: newBalance <= 0 ? 'PAID' : 'PARTIAL',
-      },
-    });
-
-    return updated;
-  });
+  if (!(amount > 0)) throw ApiError.badRequest('Payment amount must be greater than zero');
+  const credit = await prisma.creditSale.findUnique({ where: { id: creditSaleId }, select: { id: true, saleId: true, status: true } });
+  if (!credit) throw ApiError.notFound('Credit sale not found');
+  if (credit.status === 'PAID') throw ApiError.badRequest('This debt is already fully paid');
+  if (credit.status === 'WRITTEN_OFF') throw ApiError.badRequest('This debt has been written off');
+  const sales = require('./sales.service'); // eslint-disable-line global-require
+  await sales.recordSalePayment(credit.saleId, { ...payload, amount }, actor);
+  return prisma.creditSale.findUnique({ where: { id: creditSaleId }, include: CREDIT_INCLUDE });
 }
 
 // Recalculate OVERDUE flags. Intended to be run on a schedule or on demand.

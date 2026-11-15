@@ -4,7 +4,7 @@ import toast from 'react-hot-toast';
 import {
   Receipt, Download, Share2, Plus, Trash2, Search, ArrowLeft, Check, Package,
 } from 'lucide-react';
-import api, { unwrap } from '@/lib/api';
+import api, { unwrap, apiError } from '@/lib/api';
 import { useProducts } from '@/lib/hooks';
 import {
   PageHeader, Card, CardHeader, CardBody, Button, Field, Input, NumberInput, EmptyState,
@@ -14,14 +14,20 @@ import { invoiceBlob, invoiceFilename } from '@/lib/invoicePdf';
 
 const tzs = (n) => `${Number(n || 0).toLocaleString('en-US')} TZS`;
 
-// Per-device running invoice number, e.g. INV-2026-001. (Document tool — no
-// server record, so numbering is local to this device/year.)
-function nextInvoiceNumber() {
+// Invoice numbers come from the server (15 Nov 2026, sale10), e.g. INV-2026-001, so two devices never hand out
+// the same number. Each device used to count on its own (in this browser's storage); the highest number it gave
+// out that way is sent along once, so the server never repeats a number a customer may already hold.
+function localInvoiceSeq(year) {
+  try {
+    return parseInt(localStorage.getItem(`haostock.invoiceSeq.${year}`) || '0', 10) || 0;
+  } catch {
+    return 0;
+  }
+}
+async function nextInvoiceNumber({ customer, total, lines }) {
   const year = new Date().getFullYear();
-  const key = `haostock.invoiceSeq.${year}`;
-  const n = (parseInt(localStorage.getItem(key) || '0', 10) || 0) + 1;
-  localStorage.setItem(key, String(n));
-  return `INV-${year}-${String(n).padStart(3, '0')}`;
+  const res = unwrap(await api.post('/invoices/number', { after: localInvoiceSeq(year), customer, total, lines })).data;
+  return res.number;
 }
 
 function triggerDownload(blob, filename) {
@@ -149,10 +155,21 @@ export default function InvoiceGenerator() {
   const grandTotal = cart.reduce((s, x) => s + x.qty * x.unitPrice, 0);
   const valid = customer.name.trim() && customer.phone.trim() && cart.length > 0;
 
-  const generate = () => {
-    if (!valid) return;
+  const [numbering, setNumbering] = useState(false);
+  const generate = async () => {
+    if (!valid || numbering) return;
+    let number;
+    setNumbering(true);
+    try {
+      number = await nextInvoiceNumber({ customer: customer.name.trim(), total: grandTotal, lines: cart.length });
+    } catch (e) {
+      toast.error(`No invoice number yet — ${apiError(e)}`);
+      return;
+    } finally {
+      setNumbering(false);
+    }
     setInvoice({
-      number: nextInvoiceNumber(),
+      number,
       date: new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
       customer: {
         name: customer.name.trim(),
@@ -295,7 +312,7 @@ export default function InvoiceGenerator() {
               {valid ? <span className="inline-flex items-center gap-1 text-emerald-500"><Check className="h-3.5 w-3.5" /> Ready to generate</span>
                 : 'Add customer name, phone and at least one product.'}
             </p>
-            <Button className="shrink-0 whitespace-nowrap rounded-full px-5" onClick={generate} disabled={!valid}><Receipt className="h-4 w-4" /> Generate invoice</Button>
+            <Button className="shrink-0 whitespace-nowrap rounded-full px-5" onClick={generate} loading={numbering} disabled={!valid || numbering}><Receipt className="h-4 w-4" /> Generate invoice</Button>
           </div>
         </div>
       </div>

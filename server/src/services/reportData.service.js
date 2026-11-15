@@ -18,6 +18,7 @@
 const prisma = require('../config/prisma');
 const finance = require('./finance.service');
 const reports = require('./reports.service');
+const profitMath = require('../utils/profitMath');
 const { dayjs } = require('../utils/dates');
 
 const num = (v) => Number(v) || 0;
@@ -41,30 +42,30 @@ const ACTIVE_SALE = { status: { not: 'CANCELLED' } };
 async function salesByDay(start, end) {
   const items = await prisma.saleItem.findMany({
     where: { sale: { is: { ...ACTIVE_SALE, soldAt: { gte: start, lte: end } } } },
-    select: { baseQuantity: true, lineTotal: true, unitCost: true, sale: { select: { soldAt: true } } },
+    // Discount and cost by the same line maths as finance.report (sale05), so a day's column adds up to the headline.
+    select: { baseQuantity: true, lineTotal: true, unitCost: true, sale: { select: { soldAt: true, discount: true, subtotal: true } } },
   });
   const byDay = new Map();
   for (const it of items) {
     const k = eatDayKey(it.sale.soldAt);
-    const row = byDay.get(k) || { revenue: 0, profit: 0, boxes: 0 };
-    const rev = num(it.lineTotal);
-    row.revenue += rev;
-    row.profit += rev - num(it.unitCost) * (it.baseQuantity || 0);
-    row.boxes += it.baseQuantity || 0;
+    const row = byDay.get(k) || profitMath.newTally();
+    profitMath.addLine(row, profitMath.lineFinancials(it));
     byDay.set(k, row);
   }
   const out = [];
   const last = eatDayKey(end);
   for (let d = dayjs.utc(eatDayKey(start)); d.format('YYYY-MM-DD') <= last; d = d.add(1, 'day')) {
     const k = d.format('YYYY-MM-DD');
-    const row = byDay.get(k) || { revenue: 0, profit: 0, boxes: 0 };
+    const row = byDay.get(k) || profitMath.newTally();
+    // Boxes sold before a buying price was set: in the day's revenue, not in its profit.
+    const p = profitMath.profitOf(row);
     out.push({
       date: k,
       day: d.format('D'),
       short: d.format('ddd'),
       long: d.format('dddd D MMM'),
-      revenue: round2(row.revenue),
-      profit: round2(row.profit),
+      revenue: p.revenue,
+      profit: p.profit,
       boxes: row.boxes,
     });
   }
@@ -93,7 +94,7 @@ async function repLeaderboard(start, end) {
   const [items, reps] = await Promise.all([
     prisma.saleItem.findMany({
       where: { sale: { is: { ...ACTIVE_SALE, soldAt: { gte: start, lte: end }, salesRepId: { not: null } } } },
-      select: { baseQuantity: true, lineTotal: true, saleId: true, sale: { select: { salesRepId: true } } },
+      select: { baseQuantity: true, lineTotal: true, unitCost: true, saleId: true, sale: { select: { salesRepId: true, discount: true, subtotal: true } } },
     }).catch(() => []),
     prisma.salesRepresentative.findMany({ include: { user: { select: { name: true } } } }).catch(() => []),
   ]);
@@ -102,7 +103,8 @@ async function repLeaderboard(start, end) {
   for (const it of items) {
     const id = it.sale.salesRepId;
     const row = per.get(id) || { id, name: name.get(id) || 'Rep', revenue: 0, boxes: 0, sales: new Set() };
-    row.revenue += num(it.lineTotal);
+    // What the rep's sales brought in, net of the sale discount — the same line maths as the headline (sale05).
+    row.revenue += profitMath.lineFinancials(it).revenue;
     row.boxes += it.baseQuantity || 0;
     row.sales.add(it.saleId);
     per.set(id, row);

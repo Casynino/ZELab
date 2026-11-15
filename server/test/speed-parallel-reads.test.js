@@ -184,6 +184,8 @@ function financeWorld() {
     financeEpoch: async () => null,
     profitOverview: async () => profit,
     profitByPeriods: async () => null,
+    stockLosses: async () => ({ total: 0, writtenOff: 0, receivingLoss: 0, byBrand: new Map() }),
+    revenueByRegionRule: async () => [],
   });
   stub('../src/services/inventory.service', {
     valuation: async () => { counts.valuation += 1; return { items: [], totals: { totalValue: 0, retailValue: 0, totalBaseUnits: 0 } }; },

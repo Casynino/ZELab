@@ -64,6 +64,8 @@ test('two Cancel clicks on one sale: the stock goes back once', async () => {
   };
   stub('../src/config/prisma', { $transaction: async (fn) => fn(tx) });
   stub('../src/services/inventory.service', { increaseStock: async () => { moved.stockBack += 1; }, LOCATION: { WAREHOUSE: 'WAREHOUSE', REP: 'REP' } });
+  // The money going back skips rows from before the books began, so the cancel asks for the go-live date.
+  stub('../src/services/reports.service', { financeEpoch: async () => null });
   delete require.cache[require.resolve('../src/services/sales.service')];
   const svc = require('../src/services/sales.service');
   const r = await Promise.allSettled([svc.cancelSale('s1', { id: 'a' }), svc.cancelSale('s1', { id: 'a' })]);

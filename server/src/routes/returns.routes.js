@@ -18,6 +18,7 @@ const canDecide = requireRoles(ROLES.WAREHOUSE_STAFF);
 router.use(authenticate);
 router.get('/', validate(returnQuery), ctrl.list);
 router.get('/summary', ctrl.summary); // must precede /:id
+router.get('/refunds', canDecide, ctrl.refunds); // customer refunds on sales (staff only) — must precede /:id
 router.get('/:id', validate(idParam), ctrl.get);
 router.post('/', canCreate, validate(returnCreate), ctrl.create);
 router.post('/:id/cancel', validate(idParam), ctrl.cancel); // rep (own) or staff

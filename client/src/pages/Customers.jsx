@@ -7,7 +7,7 @@ import api, { unwrap, apiError } from '@/lib/api';
 import { pageQueries, keepOnPageTurn } from '@/lib/pageQueries';
 import { useAuth } from '@/context/AuthContext';
 import { useSalesReps, useDebounce } from '@/lib/hooks';
-import { ROLES, CREDIT_STATUS_META } from '@/lib/constants';
+import { ROLES, CREDIT_STATUS_META, SALE_STATUS_META } from '@/lib/constants';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { TZ_REGIONS } from '@/lib/regions';
 import {
@@ -68,6 +68,13 @@ function CustomerDetail({ id, onClose }) {
             <div className="rounded-lg bg-elevated p-3"><div className="text-xs text-muted">Total purchases</div><div className="text-lg font-bold">{formatCurrency(data.stats.totalPurchases)}</div></div>
             <div className="rounded-lg bg-elevated p-3"><div className="text-xs text-muted">Orders</div><div className="text-lg font-bold">{data.stats.orderCount}</div></div>
           </div>
+          {/* Still owed on this customer's sales: credit, and the rest of a part-paid sale (cancelled sales owe nothing). */}
+          {Number(data.stats.outstandingDebt) > 0 && (
+            <div className="flex items-baseline justify-between rounded-lg bg-amber-500/[0.08] px-3 py-2 ring-1 ring-inset ring-amber-500/25">
+              <span className="text-xs text-muted">Still owes</span>
+              <span className="font-bold tabular-nums text-amber-300">{formatCurrency(data.stats.outstandingDebt)}</span>
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-3">
             <div><span className="text-muted">Phone</span><div>{data.phone || '—'}</div></div>
             <div><span className="text-muted">Region</span><div>{data.region || '—'}</div></div>
@@ -78,10 +85,21 @@ function CustomerDetail({ id, onClose }) {
             <div className="mb-1 font-medium text-foreground">Recent sales</div>
             {data.sales.length === 0 ? <p className="text-faint">No sales yet.</p> : (
               <Table>
-                <THead><TR><TH>Sale</TH><TH>Type</TH><TH>Total</TH><TH>Balance</TH><TH>Date</TH></TR></THead>
-                <TBody>{data.sales.map((s) => (
-                  <TR key={s.id}><TD>{s.saleNumber}</TD><TD>{s.type}</TD><TD>{formatCurrency(s.total)}</TD><TD>{formatCurrency(s.balanceDue)}</TD><TD className="text-faint">{formatDate(s.soldAt)}</TD></TR>
-                ))}</TBody>
+                <THead><TR><TH>Sale</TH><TH>Status</TH><TH>Total</TH><TH>Balance</TH><TH>Date</TH></TR></THead>
+                {/* A cancelled sale is struck through, as on the Sales list: it is not in the totals above (sale13). */}
+                <TBody>{data.sales.map((s) => {
+                  const dead = s.status === 'CANCELLED';
+                  const meta = SALE_STATUS_META[s.status] || {};
+                  return (
+                    <TR key={s.id}>
+                      <TD className={dead ? 'text-muted line-through' : undefined}>{s.saleNumber}</TD>
+                      <TD><Badge className={meta.cls}>{meta.label || s.status}</Badge></TD>
+                      <TD className={dead ? 'text-faint line-through' : undefined}>{formatCurrency(s.total)}</TD>
+                      <TD className={dead ? 'text-faint line-through' : undefined}>{formatCurrency(s.balanceDue)}</TD>
+                      <TD className="text-faint">{formatDate(s.soldAt)}</TD>
+                    </TR>
+                  );
+                })}</TBody>
               </Table>
             )}
           </div>

@@ -20,6 +20,7 @@ router.use('/inventory', require('./inventory.routes'));
 router.use('/transfers', require('./transfers.routes'));
 router.use('/sales', require('./sales.routes'));
 router.use('/credit', require('./credit.routes'));
+router.use('/invoices', require('./invoices.routes')); // invoice numbers, given out once by the server
 router.use('/returns', require('./returns.routes'));
 router.use('/reports', require('./reports.routes'));
 router.use('/reorder', require('./reorder.routes'));

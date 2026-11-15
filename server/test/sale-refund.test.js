@@ -165,10 +165,13 @@ function world({ salesRepId = null, settlementId = null, paid } = {}) {
       notes: null, updatedAt: new Date('2026-11-12T08:00:00.000Z'),
     },
     items: [{ id: 'i1', saleId: 's1', productId: 'p1', packagingUnitId: 'box', quantity: 5, baseQuantity: 5, lineTotal: 50000, lineDiscount: 0, unitCost: 7000, product: { name: 'OHIS Ndogo' } }],
-    money: [{ id: 'f1', txnNumber: 'FTX-1', refType: 'Sale', refId: 's1', direction: 'IN', amount: paid ?? 50000, notes: null, occurredAt: new Date(), createdAt: new Date(), account: { id: 'mpesa', name: 'M-Pesa' } }],
+    money: [{ id: 'f1', txnNumber: 'FTX-1', accountId: 'mpesa', type: 'WAREHOUSE_SALE', brandId: 'ohis', refType: 'Sale', refId: 's1', direction: 'IN', amount: paid ?? 50000, notes: null, occurredAt: new Date(Date.now() - 3600e3), createdAt: new Date(), account: { id: 'mpesa', name: 'M-Pesa' } }],
     stockBack: [],
+    fundsChecked: [],
     writes: 0,
   };
+  // The money the sale still holds on the ledger: its rows netted (contra rows are minus figures).
+  db.net = () => Math.round(db.money.reduce((s, m) => s + Number(m.amount), 0) * 100) / 100;
   // One row lock on the sale, held from a transaction's first write on it until that transaction ends.
   let holder = null; const queue = [];
   const lock = async (me) => { if (holder === me) return; while (holder) await new Promise((r) => queue.push(r)); holder = me; };
@@ -190,10 +193,18 @@ function world({ salesRepId = null, settlementId = null, paid } = {}) {
       },
       saleItem: { update: async ({ where, data }) => { db.writes++; Object.assign(db.items.find((i) => i.id === where.id), data); } },
       financeTransaction: {
-        findMany: async () => clone(db.money.filter((m) => m.direction === 'IN')),
-        update: async ({ where, data }) => { db.writes++; Object.assign(db.money.find((m) => m.id === where.id), data); },
-        deleteMany: async () => { db.writes++; const n = db.money.length; db.money = []; return { count: n }; },
+        findMany: async ({ where } = {}) => (where?.txnNumber ? [] : clone(db.money.filter((m) => m.direction === 'IN'))),
+        // The ledger is permanent: an edit or a delete of a money row fails the test outright.
+        update: async () => { throw new Error('a ledger row was edited'); },
+        deleteMany: async () => { throw new Error('a ledger row was deleted'); },
+        create: async ({ data }) => {
+          db.writes++;
+          const row = { id: `f${db.money.length + 1}`, ...data, txnNumber: `FTX-C${db.money.length + 1}`, createdAt: new Date(), account: { id: data.accountId, name: 'M-Pesa' } };
+          db.money.push(row);
+          return row;
+        },
       },
+      businessAccount: { findMany: async () => [] },
       creditSale: { update: async () => ({}) },
     };
   };
@@ -201,6 +212,8 @@ function world({ salesRepId = null, settlementId = null, paid } = {}) {
   stub('../src/config/prisma', {
     $transaction: async (fn) => { const me = ++n; try { return await fn(txFor(me)); } finally { unlock(me); } },
   });
+  stub('../src/services/reports.service', { financeEpoch: async () => null });
+  stub('../src/services/finance.service', { assertFunds: async (_tx, accountId, amount) => { db.fundsChecked.push({ accountId, amount }); } });
   stub('../src/services/inventory.service', {
     increaseStock: async (_tx, o) => { db.stockBack.push({ base: o.baseQuantity, type: o.type, where: o.location }); },
     LOCATION: { WAREHOUSE: 'WAREHOUSE', SALES_REP: 'SALES_REP' },
@@ -217,18 +230,45 @@ test('part refund: the line, the sale, the stock and the money all come down tog
   assert.equal(db.items[0].quantity, 3);
   assert.equal(db.sale.total, 30000);
   assert.equal(db.sale.costTotal, 21000);
-  assert.equal(db.money[0].amount, 30000); // the sale's own IN row, on M-Pesa
-  assert.match(db.money[0].notes, /Refund to customer .*20,000.*2 boxes back/);
+  // The ledger is permanent (15 Nov 2026): the sale's own row keeps its 50,000 on its day; the refund is a
+  // dated contra row on the same account, same kind, minus what went back.
+  assert.equal(db.money[0].amount, 50000);
+  assert.equal(db.money.length, 2);
+  const back = db.money[1];
+  assert.deepEqual(
+    { accountId: back.accountId, direction: back.direction, type: back.type, amount: back.amount, refType: back.refType, refId: back.refId, brandId: back.brandId, category: back.category },
+    { accountId: 'mpesa', direction: 'IN', type: 'WAREHOUSE_SALE', amount: -20000, refType: 'SaleRefund', refId: 's1', brandId: 'ohis', category: 'Customer refund' },
+  );
+  assert.ok(Date.now() - new Date(back.occurredAt).getTime() < 60e3, 'dated when the money went back');
+  assert.match(back.description, /Refund to customer \(2 boxes back\) — SALE-9/);
+  assert.equal(back.notes, 'Damaged');
+  assert.equal(db.net(), 30000);
+  assert.deepEqual(db.fundsChecked, [{ accountId: 'mpesa', amount: 20000 }]);
   assert.deepEqual(db.stockBack, [{ base: 2, type: 'CUSTOMER_RETURN', where: { type: 'WAREHOUSE', warehouseId: 'w1' } }]);
   assert.equal(refund.ledger[0].account, 'M-Pesa');
+  assert.deepEqual({ before: refund.ledger[0].before, after: refund.ledger[0].after, taken: refund.ledger[0].taken }, { before: 50000, after: 30000, taken: 20000 });
 });
 
-test('every box back runs the Cancel path: sale cancelled, its income row gone, boxes in as a customer return', async () => {
+test('a second refund on the same sale takes only what the account still holds of it', async () => {
+  const { svc, db } = world();
+  await svc.refundSale('s1', { items: [{ saleItemId: 'i1', quantity: 2 }], version: db.sale.updatedAt.toISOString() }, { id: 'a' });
+  const { refund } = await svc.refundSale('s1', { items: [{ saleItemId: 'i1', quantity: 2 }], version: new Date(db.sale.updatedAt).toISOString() }, { id: 'a' });
+  assert.equal(refund.cashBack, 20000);
+  assert.deepEqual({ before: refund.ledger[0].before, after: refund.ledger[0].after }, { before: 30000, after: 10000 });
+  assert.equal(db.money[0].amount, 50000);
+  assert.equal(db.net(), 10000);
+});
+
+test('every box back runs the Cancel path: sale cancelled, its income given back by a contra row, boxes in as a customer return', async () => {
   const { svc, db, version } = world();
   const { refund, sale } = await svc.refundSale('s1', { items: [{ saleItemId: 'i1', quantity: 5 }], version }, { id: 'admin' });
   assert.equal(refund.everything, true);
   assert.equal(sale.status, 'CANCELLED');
-  assert.equal(db.money.length, 0);
+  assert.equal(db.money[0].amount, 50000); // kept
+  assert.equal(db.money[1].amount, -50000);
+  assert.equal(db.money[1].category, 'Customer refund');
+  assert.equal(db.net(), 0);
+  assert.equal(refund.ledger[0].taken, 50000);
   assert.equal(boxesBack(db), 5);
   assert.equal(db.stockBack[0].type, 'CUSTOMER_RETURN');
 });
@@ -241,7 +281,8 @@ test('a double tap sends one refund: the second finds the sale changed and write
   assert.equal(r.find((x) => x.status === 'rejected').reason.statusCode, 409);
   assert.equal(boxesBack(db), 2);
   assert.equal(db.items[0].quantity, 3);
-  assert.equal(db.money[0].amount, 30000);
+  assert.equal(db.money.length, 2);
+  assert.equal(db.net(), 30000);
 });
 
 test('a refund and a Cancel at the same moment: the stock and the money go back once, in total', async () => {
@@ -253,7 +294,21 @@ test('a refund and a Cancel at the same moment: the stock and the money go back 
   assert.ok(r.some((x) => x.status === 'fulfilled'));
   assert.equal(db.sale.status, 'CANCELLED');
   assert.equal(boxesBack(db), 5); // 2 refunded + the 3 left on the sale — never 2 + 5
-  assert.equal(db.money.length, 0);
+  assert.equal(db.money[0].amount, 50000);
+  assert.equal(db.net(), 0); // 50,000 in, 50,000 back in total — never more
+});
+
+test('Cancel keeps the sale\'s money row and writes the money back as a dated contra row', async () => {
+  const { svc, db } = world();
+  await svc.cancelSale('s1', { id: 'admin' }, 'typed wrong');
+  assert.equal(db.sale.status, 'CANCELLED');
+  assert.equal(db.money.length, 2);
+  assert.equal(db.money[0].amount, 50000);
+  assert.deepEqual(
+    { accountId: db.money[1].accountId, amount: db.money[1].amount, type: db.money[1].type, category: db.money[1].category, notes: db.money[1].notes, createdById: db.money[1].createdById },
+    { accountId: 'mpesa', amount: -50000, type: 'WAREHOUSE_SALE', category: 'Sale cancelled', notes: 'typed wrong', createdById: 'admin' },
+  );
+  assert.deepEqual(db.fundsChecked, [{ accountId: 'mpesa', amount: 50000 }]);
 });
 
 test('a rep sale is refused before anything is written', async () => {
@@ -271,6 +326,7 @@ test('a part-paid sale: one box back clears debt, no cash leaves the account', a
   const { refund } = await svc.refundSale('s1', { items: [{ saleItemId: 'i1', quantity: 1 }], version }, { id: 'a' });
   assert.equal(refund.cashBack, 0);
   assert.equal(refund.owedCleared, 10000);
+  assert.equal(db.money.length, 1);
   assert.equal(db.money[0].amount, 30000);
   assert.equal(db.sale.balanceDue, 10000);
   assert.equal(db.sale.status, 'PARTIAL');

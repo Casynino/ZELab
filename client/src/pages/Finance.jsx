@@ -753,8 +753,8 @@ function Overview({ onNavigate, onOwnerMoney }) {
           <p className="mt-0.5 hidden text-[11px] text-white/50 sm:block">{periodSub}</p>
         </div>
 
-        <div className="order-last grid grid-cols-2 gap-x-4 gap-y-3 border-t border-white/[0.07] pt-4 sm:col-span-2 sm:flex sm:items-start sm:justify-start sm:gap-5 lg:gap-7 2xl:order-none 2xl:col-span-1 2xl:justify-center 2xl:border-l 2xl:border-t-0 2xl:pl-6 2xl:pt-0"
-          title={`Earned = sales − cost of goods − expenses, ${words}. Rep pay is yours, not the business's.`}>
+        <div className="order-last grid grid-cols-2 gap-x-4 gap-y-3 border-t border-white/[0.07] pt-4 sm:col-span-2 sm:flex sm:flex-wrap sm:items-start sm:justify-start sm:gap-5 lg:gap-7 2xl:order-none 2xl:col-span-1 2xl:justify-center 2xl:border-l 2xl:border-t-0 2xl:pl-6 2xl:pt-0"
+          title={`Earned = sales − cost of goods − expenses${(data.stockLoss ?? 0) > 0 ? ' − stock lost' : ''}, ${words} — the same net profit as Home and Reports.${(data.noCost?.boxes ?? 0) > 0 ? ` ${data.noCost.boxes} boxes sold before a buying price was set are in sales but not in Earned.` : ''} Rep pay is yours, not the business's.`}>
           <Term label="Sales" value={formatCurrency(data.revenue)} tone="text-foreground" dot="bg-sky-400"
             caption={`${formatNumber(data.boxesSold ?? 0)} boxes`} />
           <Op>−</Op>
@@ -763,6 +763,14 @@ function Overview({ onNavigate, onOwnerMoney }) {
           <Op>−</Op>
           <Term label="Expenses" sign="− " value={formatCurrency(data.expenses)} tone="text-foreground" dot="bg-amber-400"
             caption={expenses.length ? `${expenses.length} categor${expenses.length === 1 ? 'y' : 'ies'}` : 'none recorded'} />
+          {/* Stock lost (written off, or bought and damaged / never received) is part of the one net profit. */}
+          {(data.stockLoss ?? 0) > 0 && (
+            <>
+              <Op>−</Op>
+              <Term label="Stock lost" sign="− " value={formatCurrency(data.stockLoss)} tone="text-foreground" dot="bg-orange-400"
+                caption="damaged, missing, written off" />
+            </>
+          )}
           <Op>=</Op>
           <Term label="Earned" sign="= " big value={formatCurrency(data.netProfit)} tone={data.netProfit >= 0 ? 'text-emerald-300' : 'text-rose-300'} dot="bg-emerald-400"
             caption={<>{margin != null && <span className={`mr-1 inline-block whitespace-nowrap rounded-full px-1.5 py-px text-[10px] font-semibold ${data.netProfit >= 0 ? 'bg-emerald-500/15 text-emerald-300' : 'bg-rose-500/15 text-rose-300'}`}>{margin}% of sales</span>}reps earned <span className="whitespace-nowrap tabular-nums text-amber-300">{formatCurrency(data.commissionAccrued ?? 0)}</span></>} />
@@ -783,6 +791,13 @@ function Overview({ onNavigate, onOwnerMoney }) {
             )}
           </div>
         </div>
+        {/* Boxes sold before a buying price was set: in sales, never in Earned (15 Nov 2026). */}
+        {(data.noCost?.boxes ?? 0) > 0 && (
+          <p className="order-last text-[11px] text-amber-300 sm:col-span-2 2xl:col-span-3">
+            {formatNumber(data.noCost.boxes)} {data.noCost.boxes === 1 ? 'box' : 'boxes'} sold before a buying price was set
+            ({formatCurrency(data.noCost.revenue)}) — in sales, not in profit.
+          </p>
+        )}
       </div>
 
       {/* ── Six small figures ── */}
@@ -933,9 +948,14 @@ function Overview({ onNavigate, onOwnerMoney }) {
           ) : (
             <div className="flex flex-1 flex-col gap-4">
               {data.brandFinance.map((b, i) => {
-                const kept = b.revenue - b.cogs;
-                const keptPct = b.revenue > 0 ? Math.round((kept / b.revenue) * 100) : 0;
-                const cogsPct = b.revenue > 0 ? Math.min(100, (b.cogs / b.revenue) * 100) : 0;
+                // The server's gross profit: boxes sold before a buying price was set are in sales, never in what
+                // was kept (a Pepa box with cost 0 used to read "100% kept").
+                const nc = b.noCost || { boxes: 0, revenue: 0 };
+                const costed = b.revenue - (nc.revenue || 0);
+                const kept = b.grossProfit ?? (b.revenue - b.cogs);
+                const keptPct = costed > 0 ? Math.round((kept / costed) * 100) : 0;
+                const cogsPct = costed > 0 ? Math.min(100, (b.cogs / costed) * 100) : 0;
+                const allUnknown = nc.boxes > 0 && costed <= 0;
                 return (
                   <div key={b.brandId}
                     title={`Sales over ${period === 'all' ? 'the whole period' : words}, not money sitting in an account — most of it has already gone back out to buy stock. Out of every 100 shillings of ${b.name} sold, ${keptPct} stayed in the business after paying for the boxes.${(b.commission ?? 0) > 0 ? ` Reps earned ${formatCurrency(b.commission)} on these sales, which you pay yourself.` : ''}`}>
@@ -946,23 +966,29 @@ function Overview({ onNavigate, onOwnerMoney }) {
                       <span className={`ml-auto text-sm font-bold tabular-nums ${kept >= 0 ? 'text-emerald-300' : 'text-rose-300'}`}>{formatCurrency(kept)}</span>
                     </div>
                     <div className="mt-1.5 flex h-1.5 w-full overflow-hidden rounded-full bg-white/[0.07]">
-                      <div className="h-full bg-rose-400/45" style={{ width: `${cogsPct}%` }} />
-                      <div className="h-full bg-emerald-400" style={{ width: `${Math.max(0, 100 - cogsPct)}%` }} />
+                      {!allUnknown && <div className="h-full bg-rose-400/45" style={{ width: `${cogsPct}%` }} />}
+                      {!allUnknown && <div className="h-full bg-emerald-400" style={{ width: `${Math.max(0, 100 - cogsPct)}%` }} />}
                     </div>
                     <p className="mt-1.5 text-[11px] text-white/50">
                       <span className="whitespace-nowrap">Sales <span className="tabular-nums text-white/80">{formatCurrency(b.revenue)}</span></span>{' '}
                       <span className="whitespace-nowrap">− goods <span className="tabular-nums text-white/80">{formatCurrency(b.cogs)}</span></span>
                     </p>
+                    {nc.boxes > 0 && (
+                      <p className="mt-0.5 text-[11px] text-amber-300">
+                        {formatNumber(nc.boxes)} {nc.boxes === 1 ? 'box' : 'boxes'} sold before a buying price was set ({formatCurrency(nc.revenue)}) — not in profit
+                      </p>
+                    )}
                     <p className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[11px] text-white/50">
-                      <span className={`rounded-full px-1.5 py-px text-[10px] font-semibold ${kept >= 0 ? 'bg-emerald-500/15 text-emerald-300' : 'bg-rose-500/15 text-rose-300'}`}>{keptPct}% kept</span>
+                      {!allUnknown && <span className={`rounded-full px-1.5 py-px text-[10px] font-semibold ${kept >= 0 ? 'bg-emerald-500/15 text-emerald-300' : 'bg-rose-500/15 text-rose-300'}`}>{keptPct}% kept</span>}
                       {(b.commission ?? 0) > 0 && <span className="whitespace-nowrap">reps earned <span className="tabular-nums text-amber-300/90">{formatCurrency(b.commission)}</span></span>}
                     </p>
                   </div>
                 );
               })}
               {data.brandFinance.length > 1 && (() => {
-                const rev = data.brandFinance.reduce((t, b) => t + b.revenue, 0);
-                const kept = data.brandFinance.reduce((t, b) => t + (b.revenue - b.cogs), 0);
+                // Over the boxes with a known cost only, like each brand above.
+                const rev = data.brandFinance.reduce((t, b) => t + b.revenue - (b.noCost?.revenue || 0), 0);
+                const kept = data.brandFinance.reduce((t, b) => t + (b.grossProfit ?? (b.revenue - b.cogs)), 0);
                 return (
                   <div className="mt-auto flex items-center gap-2 border-t border-white/[0.07] pt-2.5 text-[13px]">
                     <span className="flex-1 font-semibold text-foreground">All brands</span>
@@ -1961,7 +1987,8 @@ function ProfitTab({ accounts = [] }) {
   }[period];
   const words = PERIOD_WORDS[period];
 
-  const perBoxKept = (row) => (row.boxes > 0 ? row.contribution / row.boxes : 0);
+  // Per box with a known cost: a box sold before its buying price was set has no profit to share out.
+  const perBoxKept = (row) => { const n = row.boxes - (row.noCost?.boxes || 0); return n > 0 ? row.contribution / n : 0; };
   const rank = brandRank(accounts, data.byBrand.filter((b) => b.revenue > 0).map((b) => b.brandId));
   const brandHex = (id, i) => ACCOUNT_LIGHT[(rank.get(id) ?? rank.size + i) % ACCOUNT_LIGHT.length];
   // The donut: each brand's share of what the sales earned. A brand that lost money is not a slice; it is
@@ -2003,6 +2030,13 @@ function ProfitTab({ accounts = [] }) {
             <p className="mt-0.5 text-[11px] text-white/50">margin on every sale</p>
           </div>
         </div>
+        {/* Boxes sold before a buying price was set: in revenue, never in profit or margin (15 Nov 2026). */}
+        {(t.noCost?.boxes ?? 0) > 0 && (
+          <p className="order-last text-[11px] text-amber-300 sm:col-span-2 2xl:col-span-3">
+            {formatNumber(t.noCost.boxes)} {t.noCost.boxes === 1 ? 'box' : 'boxes'} sold before a buying price was set
+            ({formatCurrency(t.noCost.revenue)}) — in revenue, not in profit or margin.
+          </p>
+        )}
       </div>
 
       {/* ── Four small figures: what reps earned, and what the stock on hand could still make ── */}
@@ -2111,7 +2145,10 @@ function ProfitTab({ accounts = [] }) {
                 {data.byProduct.map((p) => (
                   <li key={p.productId} className="px-4 py-2.5">
                     <div className="flex items-baseline justify-between gap-3">
-                      <span className="min-w-0 text-[13px] font-medium leading-snug text-foreground">{p.name}</span>
+                      <span className="min-w-0 text-[13px] font-medium leading-snug text-foreground">
+                        {p.name}
+                        {(p.noCost?.boxes ?? 0) > 0 && <span className="ml-1.5 text-[11px] font-normal text-amber-300">{formatNumber(p.noCost.boxes)} with no buying price</span>}
+                      </span>
                       <span className={`shrink-0 whitespace-nowrap text-[13px] font-semibold tabular-nums ${p.contribution >= 0 ? 'text-emerald-300' : 'text-rose-300'}`}>{formatCurrency(p.contribution)}</span>
                     </div>
                     <p className="mt-0.5 text-[11px] leading-relaxed tabular-nums text-white/50">
@@ -2140,7 +2177,10 @@ function ProfitTab({ accounts = [] }) {
                   <tbody>
                     {data.byProduct.map((p) => (
                       <tr key={p.productId} className="border-b border-white/[0.05] transition last:border-0 hover:bg-white/[0.035]">
-                        <td className="px-4 py-2 font-medium leading-snug text-foreground">{p.name}</td>
+                        <td className="px-4 py-2 font-medium leading-snug text-foreground">
+                          {p.name}
+                          {(p.noCost?.boxes ?? 0) > 0 && <span className="ml-1.5 text-[11px] font-normal text-amber-300">{formatNumber(p.noCost.boxes)} with no buying price</span>}
+                        </td>
                         <td className={clsx(TD_NUM, 'text-muted')}>{formatNumber(p.boxes)}</td>
                         <td className={clsx(TD_NUM, 'text-muted')}>{formatCurrency(p.revenue)}</td>
                         <td className={clsx(TD_NUM, 'text-white/45')}>{formatCurrency(p.cost)}</td>

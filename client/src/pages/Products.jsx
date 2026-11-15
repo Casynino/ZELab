@@ -312,6 +312,9 @@ export function ProductModal({ open, onClose, editing, brands, categories, units
     && String(purchasePrice) === String(lastAdded.purchasePrice) && String(sellingPrice) === String(lastAdded.sellingPrice);
   const checkPrices = keptPrices && otherKind(name, lastAdded.name);
   const sellsAtLoss = !blank(purchasePrice) && !blank(sellingPrice) && Number(sellingPrice) <= Number(purchasePrice);
+  // Buying price 0 = not known yet (Pepa until its first purchase order): a box sold now keeps cost 0 for good, so
+  // it counts in revenue but never in profit (15 Nov 2026). Said plainly, never blocked.
+  const noBuyingPrice = !blank(purchasePrice) && !(Number(purchasePrice) > 0);
   const pending = save.isPending;
   const pendingAgain = pending && save.variables?.addAnother;
   // A phone gets two thumb-sized buttons sharing the row, Save last; the X above closes the window.
@@ -386,7 +389,12 @@ export function ProductModal({ open, onClose, editing, brands, categories, units
           </Field>
         </div>
         {/* A warning, not a block: the server's price rules are unchanged. */}
-        {sellsAtLoss ? (
+        {noBuyingPrice ? (
+          <p className="-mt-2 text-xs text-amber-300">
+            No buying price: boxes sold before one is set count in revenue but never in profit, and keep no cost for good.
+            Enter what one {unitWord} costs as soon as you know it.
+          </p>
+        ) : sellsAtLoss ? (
           <p className="-mt-2 text-xs text-amber-300">The selling price is not above the buying price. Check both before saving.</p>
         ) : keptPrices ? (
           <p className={`-mt-2 text-xs ${checkPrices ? 'text-amber-300' : 'text-faint'}`}>
@@ -623,6 +631,13 @@ function ProductsCatalogue() {
                     <TD className="stack-full min-w-[12rem] whitespace-normal">
                       <div className="font-medium text-foreground">{p.name}</div>
                       <div className="text-xs text-faint">{p.sku}</div>
+                      {/* Buying price 0 = not known: its sales are in revenue, not in profit, until one is set. */}
+                      {p.purchasePrice != null && !(Number(p.purchasePrice) > 0) && (
+                        <Badge className="mt-1 bg-amber-500/15 text-amber-300"
+                          title="Boxes sold before a buying price is set count in revenue but not in profit. Set it on the product, or receive a purchase order.">
+                          No buying price
+                        </Badge>
+                      )}
                     </TD>
                     <TD>{p.brand?.name}</TD>
                     <TD>

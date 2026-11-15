@@ -86,7 +86,13 @@ const creditPayment = {
     reference: z.string().max(120).optional().nullable(),
     notes: z.string().max(500).optional().nullable(),
     paidAt: z.string().datetime().optional(),
+    // Money a customer pays later always lands in a chosen account (15 Nov 2026), so the account holds what the
+    // sale says was paid. clientKey: one per press of the form — a double tap records nothing the second time.
+    accountId: id,
+    clientKey: z.string().trim().min(8).max(100).optional(),
   }),
 };
+// The rest of a part-paid sale (or a credit sale's payment): the same fields.
+const salePayment = creditPayment;
 
-module.exports = { saleCreate, saleQuery, cancelSale, refundSale, creditQuery, creditPayment };
+module.exports = { saleCreate, saleQuery, cancelSale, refundSale, creditQuery, creditPayment, salePayment };

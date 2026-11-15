@@ -131,7 +131,8 @@ require.cache[reportsPath] = {
   id: reportsPath,
   filename: reportsPath,
   loaded: true,
-  exports: { financeEpoch: async () => epoch, profitOverview: async () => PROFIT },
+  // No stock lost in these books: net profit moves only with finance's own rows.
+  exports: { financeEpoch: async () => epoch, profitOverview: async () => PROFIT, stockLosses: async () => ({ total: 0, writtenOff: 0, receivingLoss: 0, byBrand: new Map() }) },
 };
 
 const finance = require('../src/services/finance.service');

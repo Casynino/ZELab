@@ -140,9 +140,15 @@ function overReturnMessage(productName, boxes, actor, salesRepId, repName) {
   return `${productName}: only ${count} still unaccounted on the rep's open orders — no more than that can be returned.`;
 }
 
+// A customer return is a refund on the sale (owner, 12 Nov 2026): the boxes AND the money come back together,
+// through the sale. The old CUSTOMER_RETURN return put boxes on a shelf (or a rep's van) while the sale's income
+// stayed (sale07), so none may be created or approved any more. Old rows stay readable.
+const CUSTOMER_RETURN_REFUSED = "A customer's boxes come back as a refund on the sale: open the sale (Returns > Customer return, or Sales) and choose 'Customer returned boxes · refund', so the money goes back too.";
+
 async function createReturn(payload, actor) {
   const { type, customerId, salesRepId, settlementId, warehouseId, items, reason, notes, processedAt } = payload;
 
+  if (type === 'CUSTOMER_RETURN') throw ApiError.badRequest(CUSTOMER_RETURN_REFUSED);
   if (!items || items.length === 0) {
     throw ApiError.badRequest('A return must contain at least one item');
   }
@@ -330,9 +336,11 @@ async function createReturn(payload, actor) {
 // ── Approve — execute inventory moves and close settlement if possible ────────
 
 async function approveReturn(id, actor) {
-  const found = await prisma.return.findUnique({ where: { id }, select: { id: true, status: true } });
+  const found = await prisma.return.findUnique({ where: { id }, select: { id: true, status: true, type: true } });
   if (!found) throw ApiError.notFound('Return not found');
   if (found.status !== 'PENDING') throw ApiError.conflict(`This return is already ${found.status.toLowerCase()}`);
+  // An old pending customer return would put boxes back with the money still in (sale07): reject it instead.
+  if (found.type === 'CUSTOMER_RETURN') throw ApiError.badRequest(CUSTOMER_RETURN_REFUSED);
 
   let ret;
   let order = null; // the linked order after this approval
@@ -791,8 +799,51 @@ async function returnsSummary(filters = {}) {
   };
 }
 
+// Customer refunds (sale08, 15 Nov 2026): since 12 Nov a customer's boxes come back as a refund on the sale, not
+// as a Return row, so the Returns page never listed them. Each refund is one REFUND entry in the audit log
+// (written by POST /sales/:id/refund with the boxes, the cash handed back and who did it) — read from there,
+// newest first. Staff only; a rep's sales are returned through his order, never refunded.
+async function customerRefunds({ limit = 50 } = {}) {
+  const take = Math.min(Math.max(Number(limit) || 50, 1), 200);
+  const where = { entityType: 'Sale', action: 'REFUND' };
+  const [rows, all] = await Promise.all([
+    prisma.auditLog.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      take,
+      select: { id: true, entityId: true, createdAt: true, newValues: true, user: { select: { name: true } } },
+    }),
+    // Only the figures, for the whole-history totals (a refund log is small: one per refund).
+    prisma.auditLog.findMany({ where, select: { newValues: true } }),
+  ]);
+  const num = (v) => Number(v) || 0;
+  return {
+    count: all.length,
+    boxes: all.reduce((n, r) => n + num(r.newValues?.boxes), 0),
+    cashBack: all.reduce((n, r) => n + num(r.newValues?.cashBack), 0),
+    items: rows.map((r) => {
+      const v = r.newValues || {};
+      return {
+        id: r.id,
+        saleId: r.entityId,
+        saleNumber: v.saleNumber || null,
+        at: r.createdAt,
+        by: r.user?.name || null,
+        boxes: num(v.boxes),
+        cashBack: num(v.cashBack),
+        owedCleared: num(v.owedCleared),
+        everything: !!v.everything,
+        reason: v.reason || null,
+        lines: Array.isArray(v.lines) ? v.lines : [],
+      };
+    }),
+  };
+}
+
 module.exports = {
   overReturnMessage,
   cancelReturn,
   expireStaleReturns,
+  customerRefunds,
+  CUSTOMER_RETURN_REFUSED,
   returnsSummary, createReturn, approveReturn, rejectReturn, listReturns, getReturn, RETURN_INCLUDE };

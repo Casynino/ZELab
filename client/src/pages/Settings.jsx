@@ -45,7 +45,8 @@ const SETTING_ORDER = [
 ];
 
 // Settings the WhatsApp panel manages itself — hidden from the raw list below.
-const MANAGED_PREFIXES = ['whatsapp.notify.', 'whatsapp.quiet'];
+// invoice.seq.<year> is the server's invoice counter: a hand edit could hand out a number twice.
+const MANAGED_PREFIXES = ['whatsapp.notify.', 'whatsapp.quiet', 'invoice.seq.'];
 // public.productPage is JSON owned by the label editor; a hand edit here could break it.
 const MANAGED_KEYS = ['whatsapp.lastWeeklySent', 'commission.boxThreshold', 'public.productPage'];
 
