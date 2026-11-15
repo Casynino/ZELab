@@ -41,7 +41,9 @@ export default function WalletCard({
       onClick={onOpen}
       onKeyDown={onOpen ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(); } } : undefined}
       className={clsx(
-        'relative isolate overflow-hidden rounded-[22px] p-4 text-white ring-1 ring-inset',
+        // The card keeps the size it had with its figures row (Nino, 15 Nov 2026: "same size as before"):
+        // the label at the top, the balance low on the card, as on a bank card.
+        'relative isolate flex min-h-[148px] flex-col overflow-hidden rounded-[22px] p-4 text-white ring-1 ring-inset',
         negative ? 'ring-rose-400/25' : 'ring-white/[0.09]',
         onOpen && 'cursor-pointer transition active:scale-[0.995]',
       )}
@@ -83,7 +85,7 @@ export default function WalletCard({
 
       {/* The balance, and the one action beside it. They wrap onto two lines only
           when a very long figure meets a very narrow phone. */}
-      <div className="-mt-0.5 flex flex-wrap items-center justify-between gap-x-3">
+      <div className="mt-auto flex flex-wrap items-center justify-between gap-x-3 pt-4">
         {/* A small arrow right after the figure says the card opens (Nino, 15 Nov 2026: no word on the
             card, just a way to see it can be opened) — the way a banking app marks a tappable balance. */}
         <span className="flex min-w-0 items-center gap-1">
