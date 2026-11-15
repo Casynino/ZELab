@@ -617,6 +617,34 @@ function HistoryRow({ r, onView }) {
   );
 }
 
+// One customer refund (15 Nov 2026, sale08): boxes a customer brought back on a counter sale, and the money that
+// went back with them. They are refunds on the sale, not Return rows, so they are listed from the refund record.
+function RefundRow({ r }) {
+  const lines = (r.lines || []).map((l) => `${formatNumber(l.boxes ?? l.quantity ?? 0)}x ${l.product || 'box'}`);
+  const what = lines.slice(0, 2).join(' · ') + (lines.length > 2 ? ` · +${lines.length - 2} more` : '');
+  return (
+    <div className="flex w-full items-center gap-3 px-4 py-3">
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className="shrink-0 text-sm font-semibold text-foreground">{r.saleNumber || 'Sale'}</span>
+          <span className="truncate text-sm text-muted">
+            {r.cashBack > 0 ? `${formatCurrency(r.cashBack)} back to the customer` : 'no cash back — debt cleared'}
+            {r.everything ? ' · sale cancelled' : ''}
+          </span>
+        </div>
+        <p className="mt-0.5 truncate text-xs text-faint">
+          {what ? `${what} · ` : ''}{formatDateTime(r.at)}{r.by ? ` · ${r.by}` : ''}{r.reason ? ` · ${r.reason}` : ''}
+        </p>
+      </div>
+      <div className="shrink-0 text-right">
+        <div className="text-lg font-bold leading-none tabular-nums text-emerald-300">{formatNumber(r.boxes)}</div>
+        <div className="mt-0.5 text-[10px] uppercase tracking-wide text-faint">box{plural(r.boxes)}</div>
+      </div>
+      <Badge className="shrink-0 bg-sky-500/15 text-sky-300">Refunded</Badge>
+    </div>
+  );
+}
+
 // ── The rep's Returns page, in the same style as their Requests page (Nino, 11 Nov 2026: "like the one you
 // showed me for requests — nice, not this"): a premium New return card, the returns still waiting as soft
 // cards, the rest in a History list that opens and closes. The tiles and the paragraph under them are gone;
@@ -753,6 +781,8 @@ export default function Returns() {
     placeholderData: keepOnPageTurn({ type: typeFilter }),
     refetchInterval: LIVE,
   });
+  // Customer refunds are refunds on the sale, not Return rows (sale08): read apart, staff only.
+  const { data: refunds } = useQuery({ ...pageQueries.customerRefunds(), enabled: canDecide });
 
   // Per row: one press goes through until it has an answer (audit admin-ops-3).
   const once = useOnce();
@@ -870,8 +900,10 @@ export default function Returns() {
   const chips = [
     { key: '', label: 'All returns', count: summary?.totalReturns, tone: 'bg-white/10 text-foreground ring-white/20' },
     { key: 'SALES_RETURN', label: 'Rep → ZELab', count: summary?.salesReturns, tone: 'bg-sky-500/15 text-sky-300 ring-sky-500/30' },
-    { key: 'CUSTOMER_RETURN', label: 'Customer returns', count: summary?.customerReturns, tone: 'bg-sky-500/15 text-sky-300 ring-sky-500/30' },
+    // Customer returns = the old Return rows of that kind plus the refunds on sales (sale08).
+    { key: 'CUSTOMER_RETURN', label: 'Customer returns', count: summary ? (summary.customerReturns || 0) + (refunds?.count || 0) : undefined, tone: 'bg-sky-500/15 text-sky-300 ring-sky-500/30' },
   ];
+  const refundRows = typeFilter === 'CUSTOMER_RETURN' ? (refunds?.items || []) : [];
 
   return (
     <div>
@@ -939,17 +971,31 @@ export default function Returns() {
         </div>
       )}
 
+      {/* Customer refunds: boxes a customer brought back on a counter sale, with the money handed back (sale08). */}
+      {refundRows.length > 0 && (
+        <div className="mt-4">
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <PackageCheck className="h-4 w-4 text-sky-400" />
+            <h2 className="text-sm font-semibold text-muted">
+              Refunded to customers — {formatNumber(refunds.count)} refund{refunds.count === 1 ? '' : 's'}, {formatNumber(refunds.boxes)} box{plural(refunds.boxes)} back
+            </h2>
+            {refunds.count > refundRows.length && <span className="text-xs text-faint">latest {formatNumber(refundRows.length)} listed</span>}
+          </div>
+          <Card><div className="divide-y divide-border">{refundRows.map((r) => <RefundRow key={r.id} r={r} />)}</div></Card>
+        </div>
+      )}
+
       {/* The list is one page of records (the pager below walks the rest); the cards above are the full history. */}
       {isLoading ? (
         <Card className="mt-4"><PageSpinner /></Card>
       ) : isError && !data ? (
         <Card className="mt-4"><LoadError what="the returns" onRetry={refetch} /></Card>
-      ) : all.length === 0 ? (
+      ) : all.length === 0 ? (refundRows.length > 0 ? null : (
         <Card className="mt-4">
           <EmptyState icon={PackageOpen} title="No returns to show"
             message={typeFilter ? 'No returns of this kind — try another chip above.' : isRep ? 'Nothing you sent back is on record yet.' : 'Nobody has sent stock back yet.'} />
         </Card>
-      ) : (
+      )) : (
         <div className="mt-4 space-y-8">
           {/* ── Pending — compact approval strip, same as settlements ── */}
           {pending.length > 0 && (

@@ -90,4 +90,10 @@ const cancel = asyncHandler(async (req, res) => {
   return ok(res, ret);
 });
 
-module.exports = { create, list, get, approve, reject, summary, cancel };
+// GET /returns/refunds — customer refunds (boxes back on a sale, money handed back), newest first. Staff only.
+const refunds = asyncHandler(async (req, res) => {
+  const q = req.validatedQuery || req.query;
+  return ok(res, await returnsService.customerRefunds({ limit: q.limit }));
+});
+
+module.exports = { create, list, get, approve, reject, summary, cancel, refunds };

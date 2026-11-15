@@ -61,6 +61,8 @@ export const pageQueries = {
     queryFn: listOf('/sales', { refundable: 'true', limit: 10, search: q || undefined, from, to }),
   }),
   returnsSummary: () => ({ queryKey: ['returns', 'summary'], queryFn: dataOf('/returns/summary') }),
+  // Customer refunds on sales (boxes back, money handed back) — staff only; filed under "Customer returns".
+  customerRefunds: () => ({ queryKey: ['returns', 'refunds'], queryFn: dataOf('/returns/refunds') }),
   returns: ({ type, page }) => ({
     queryKey: ['returns', { type, page }],
     queryFn: listOf('/returns', { page, limit: 100, type: type || undefined }),
