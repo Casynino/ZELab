@@ -27,7 +27,7 @@ const summary = asyncHandler(async (_req, res) => {
   // response — background() survives the post-response serverless freeze.
   const wa = require('../services/whatsappNotify.service');
   wa.background(settlement.sendDueReminders());
-  wa.background(penalty.applyDuePenalties());
+  wa.background(penalty.applyDuePenaltiesFromRead());
   return ok(res, await settlement.summary());
 });
 

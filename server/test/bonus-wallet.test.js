@@ -98,6 +98,8 @@ function world({ commissionEarned = 300000, tiers = TIERS, legacyPaidAt = null }
     },
     sale: {
       aggregate: async ({ where }) => ({ _sum: { total: t.sales.filter((s) => matches(s, where)).reduce((x, s) => x + s.total, 0) } }),
+      // Every rep's bonus is summed from the rows read once (bonus.progressForReps, 15 Nov 2026).
+      findMany: async ({ where } = {}) => t.sales.filter((s) => matches(s, where)).map((s) => ({ ...s })),
     },
     saleItem: { aggregate: async () => ({ _sum: { baseQuantity: 0 } }), findMany: async () => [] },
     commissionWithdrawal: {
@@ -121,10 +123,14 @@ function world({ commissionEarned = 300000, tiers = TIERS, legacyPaidAt = null }
       },
       // Paying writes PAID with update, inside the withdrawal's own transaction (15 Nov 2026).
       update: async ({ where, data }) => Object.assign(t.withdrawals.find((w) => w.id === where.id), data),
-      groupBy: async ({ where }) => {
+      // Grouped by the fields asked for: commission reads every rep's totals at once, by rep and status.
+      groupBy: async ({ by: fields, where }) => {
         const by = new Map();
-        t.withdrawals.filter((w) => matches(w, where)).forEach((w) => by.set(w.status, (by.get(w.status) || 0) + w.amount));
-        return [...by].map(([status, amount]) => ({ status, _sum: { amount } }));
+        t.withdrawals.filter((w) => matches(w, where)).forEach((w) => {
+          const key = JSON.stringify(fields.map((f) => w[f]));
+          by.set(key, (by.get(key) || 0) + w.amount);
+        });
+        return [...by].map(([key, amount]) => ({ ...Object.fromEntries(JSON.parse(key).map((v, i) => [fields[i], v])), _sum: { amount } }));
       },
     },
     salesRepresentative: {
@@ -133,7 +139,7 @@ function world({ commissionEarned = 300000, tiers = TIERS, legacyPaidAt = null }
         if (!r) return null;
         return include ? { ...r } : { ...r };
       },
-      findMany: async () => t.reps.map((r) => ({ ...r })),
+      findMany: async ({ where } = {}) => t.reps.filter((r) => matches(r, where)).map((r) => ({ ...r })),
       update: async () => ({}),
       updateMany: async () => ({ count: 0 }),
     },
@@ -165,7 +171,10 @@ function world({ commissionEarned = 300000, tiers = TIERS, legacyPaidAt = null }
     notifyAdmins: async (data) => { notices.admin.push(data); },
     createIfAbsent: async () => {},
   });
-  stub('../src/services/penalty.service', { penaltyBreakdownForRep: async () => ({ total: 0, breakdown: [] }) });
+  stub('../src/services/penalty.service', {
+    penaltyBreakdownForRep: async () => ({ total: 0, breakdown: [] }),
+    penaltyBreakdownForReps: async (ids) => new Map((ids || []).map((rid) => [rid, { total: 0, breakdown: [] }])),
+  });
   // A payout comes off a business account (15 Nov 2026); the money side is tested on a real database in
   // finance-business-money.db.test.js. Here it only records that it was asked, once per payout.
   const payouts = [];

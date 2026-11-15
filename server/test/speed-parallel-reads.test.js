@@ -62,57 +62,95 @@ function gauge() {
 stub('../src/services/notification.service', {
   notifyUser: async () => {}, notifyAdmins: async () => {}, createIfAbsent: async () => {},
 });
-stub('../src/services/penalty.service', { penaltyBreakdownForRep: async () => ({ total: 0, breakdown: [] }) });
+stub('../src/services/penalty.service', {
+  penaltyBreakdownForRep: async () => ({ total: 0, breakdown: [] }),
+  penaltyBreakdownForReps: async (ids) => new Map((ids || []).map((id) => [id, { total: 0, breakdown: [] }])),
+});
 
-test('commission for every rep is read at once, but the list and totals come out exactly as before', async () => {
-  // The slowest rep answers last; rows must still follow the reps' order, so a tie keeps its place.
-  const reps = [
-    { id: 'r1', code: 'A', isActive: true, user: { name: 'Asha' }, adjustment: 50000, delay: 40 },
-    { id: 'r2', code: 'B', isActive: true, user: { name: 'Baraka' }, adjustment: 50000, delay: 25 },
-    { id: 'r3', code: 'C', isActive: true, user: { name: 'Chausiku' }, adjustment: 90000, delay: 10 },
-    { id: 'r4', code: 'D', isActive: true, user: { name: 'Daudi' }, adjustment: 0, delay: 1 },
-  ];
+// Counts every read, so a test can show that the number of reads does not grow with the number of reps.
+function counted(tables) {
+  const calls = { n: 0 };
+  const wrapped = {};
+  for (const [name, fns] of Object.entries(tables)) {
+    wrapped[name] = Object.fromEntries(Object.entries(fns).map(([k, fn]) => [k, (...a) => { calls.n += 1; return fn(...a); }]));
+  }
+  return { tables: wrapped, calls };
+}
+
+// Since 15 Nov 2026 every rep's commission and bonus come from one batch of reads (computeForReps /
+// progressForReps) instead of about thirty reads per rep. The rows and totals must come out exactly as before.
+function commissionWorld(reps) {
   const byId = new Map(reps.map((r) => [r.id, r]));
-  const g = gauge();
-  stub('../src/config/prisma', db({
+  const { tables, calls } = counted({
     salesRepresentative: {
-      findMany: async () => reps,
-      findUnique: ({ where }) => g.run(async () => {
-        const r = byId.get(where.id);
-        await wait(r.delay);
-        return { withdrawalThreshold: null, commissionAdjustment: r.adjustment, earnsCommission: true };
-      }),
+      findMany: async ({ where, select } = {}) => (select
+        ? where.id.in.map((id) => ({ id, withdrawalThreshold: null, commissionAdjustment: byId.get(id).adjustment, earnsCommission: true }))
+        : reps),
     },
-  }));
-  const commission = fresh('../src/services/commission.service');
+    saleItem: { findMany: async () => [] },
+    commissionWithdrawal: { findMany: async () => [], groupBy: async () => [] },
+    commissionRate: { findMany: async () => [] },
+    brand: { findMany: async () => [] },
+    setting: { findMany: async () => [] },
+  });
+  stub('../src/config/prisma', db(tables));
+  return { commission: fresh('../src/services/commission.service'), calls };
+}
 
+test('commission for every rep comes from one batch of reads, and the list and totals come out exactly as before', async () => {
+  const reps = [
+    { id: 'r1', code: 'A', isActive: true, user: { name: 'Asha' }, adjustment: 50000 },
+    { id: 'r2', code: 'B', isActive: true, user: { name: 'Baraka' }, adjustment: 50000 },
+    { id: 'r3', code: 'C', isActive: true, user: { name: 'Chausiku' }, adjustment: 90000 },
+    { id: 'r4', code: 'D', isActive: true, user: { name: 'Daudi' }, adjustment: 0 },
+  ];
+  const { commission, calls } = commissionWorld(reps);
   const s = await commission.summaryAllReps();
-  assert.ok(g.max > 1, 'the reps were read at the same time');
   assert.deepEqual(s.items.map((i) => i.salesRepId), ['r3', 'r1', 'r2', 'r4'], 'by earned, ties in the reps\' order');
   assert.deepEqual(s.items.map((i) => i.earned), [90000, 50000, 50000, 0]);
   assert.equal(s.totals.earned, 190000);
   assert.equal(s.totals.available, 190000);
+
+  // Twice the reps, the same number of reads.
+  const more = [...reps, ...reps.map((r) => ({ ...r, id: `${r.id}b`, code: `${r.code}2` }))];
+  const second = commissionWorld(more);
+  const s2 = await second.commission.summaryAllReps();
+  assert.equal(s2.items.length, 8);
+  assert.equal(s2.totals.earned, 380000);
+  assert.equal(second.calls.n, calls.n, 'the reads do not grow with the number of reps');
 });
 
-test('bonus progress for every rep is read at once and keeps the reps\' order', async () => {
+test('bonus progress for every rep comes from one batch of reads and keeps the reps\' order', async () => {
+  const world = (reps) => {
+    const { tables, calls } = counted({
+      salesRepresentative: { findMany: async () => reps },
+      bonusRule: { findMany: async () => [{ id: 't1', salesTarget: 1000000, bonusAmount: 50000, effectiveFrom: new Date('2026-01-01'), isActive: true }] },
+      bonusAward: { findMany: async () => [] },
+      commissionWithdrawal: { findMany: async () => [] },
+      // b1 sold 1.2M on settled orders since the tier started; nobody else sold anything.
+      sale: { findMany: async () => [{ salesRepId: 'b1', soldAt: new Date('2026-03-01'), total: 1200000 }] },
+    });
+    stub('../src/config/prisma', db(tables));
+    return { bonus: fresh('../src/services/bonus.service'), calls };
+  };
   const reps = [
-    { id: 'b1', code: 'A', isActive: true, user: { name: 'Asha' }, delay: 30 },
-    { id: 'b2', code: 'B', isActive: true, user: { name: 'Baraka' }, delay: 15 },
-    { id: 'b3', code: 'C', isActive: true, user: { name: null }, delay: 1 },
+    { id: 'b1', code: 'A', isActive: true, user: { name: 'Asha' } },
+    { id: 'b2', code: 'B', isActive: true, user: { name: 'Baraka' } },
+    { id: 'b3', code: 'C', isActive: true, user: { name: null } },
   ];
-  const byId = new Map(reps.map((r) => [r.id, r]));
-  const g = gauge();
-  stub('../src/config/prisma', db({
-    salesRepresentative: { findMany: async () => reps },
-    bonusRule: { findMany: async () => [{ id: 't1', salesTarget: 1000000, bonusAmount: 50000, effectiveFrom: new Date('2026-01-01'), isActive: true }] },
-    bonusAward: { findMany: ({ where }) => g.run(async () => { await wait(byId.get(where.salesRepId).delay); return []; }) },
-  }));
-  const bonus = fresh('../src/services/bonus.service');
-
-  const s = await bonus.summaryAllReps();
-  assert.ok(g.max > 1, 'the reps were read at the same time');
+  const { bonus, calls } = world(reps);
+  const s = await bonus.summaryAllReps({ heal: false });
+  const reads = calls.n;
   assert.deepEqual(s.items.map((i) => i.salesRepId), ['b1', 'b2', 'b3']);
   assert.deepEqual(s.items.map((i) => i.name), ['Asha', 'Baraka', 'C'], 'a rep with no name shows the code, as before');
+  const b1 = await bonus.progressForReps(['b1', 'b2'], { heal: false });
+  assert.equal(b1.get('b1').sales, 1200000, 'sales are summed per rep from the rows read once');
+  assert.equal(b1.get('b1').unlocked, true);
+  assert.equal(b1.get('b2').sales, 0);
+
+  const many = world([...reps, { id: 'b4', code: 'D', isActive: true, user: { name: 'Daudi' } }, { id: 'b5', code: 'E', isActive: true, user: { name: 'Eli' } }]);
+  await many.bonus.summaryAllReps({ heal: false });
+  assert.equal(many.calls.n, reads, 'the reads do not grow with the number of reps');
 });
 
 // ── Finance ──────────────────────────────────────────────────────────────────

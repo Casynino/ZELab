@@ -46,7 +46,7 @@ const myOverview = asyncHandler(async (req, res) => {
   // background() keeps the work alive after the response (Vercel freeze).
   const wa = require('../services/whatsappNotify.service');
   wa.background(settlement.sendDueReminders());
-  wa.background(penalty.applyDuePenalties());
+  wa.background(penalty.applyDuePenaltiesFromRead());
   wa.background(require('../services/returns.service').expireStaleReturns());
   wa.background(wa.flush());
 

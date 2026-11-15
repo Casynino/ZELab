@@ -3,7 +3,7 @@
 const prisma = require('../config/prisma');
 const ApiError = require('../utils/ApiError');
 const notification = require('./notification.service');
-const { penaltyBreakdownForRep } = require('./penalty.service');
+const { penaltyBreakdownForReps } = require('./penalty.service');
 const { toNumber, round2, formatCurrency, MAX_COMMISSION_CHANGE } = require('../utils/money');
 
 // Commission settings:
@@ -53,26 +53,42 @@ const normalizeBrand = (name) => String(name || '').toUpperCase().replace(/[^A-Z
 let rateCache = null;
 let rateCacheAt = 0;
 const RATE_CACHE_MS = 60 * 1000;
+// Callers that arrive while the table is being read wait for that read instead of each starting their own
+// (a page that prices several things at once used to read the same table a dozen times when the cache was cold).
+let rateRead = null;
+let rateGeneration = 0;
 
 function clearRateCache() {
   rateCache = null;
   rateCacheAt = 0;
+  rateRead = null;
+  rateGeneration += 1; // a read already under way belongs to the old table and must not refill the cache
 }
 
 async function allRates() {
   if (rateCache && Date.now() - rateCacheAt < RATE_CACHE_MS) return rateCache;
-  const rows = await prisma.commissionRate.findMany({
+  if (rateRead) return rateRead;
+  const generation = rateGeneration;
+  const read = prisma.commissionRate.findMany({
     include: { brand: { select: { id: true, name: true } } },
     orderBy: { effectiveFrom: 'asc' },
+  }).then((rows) => {
+    const table = rows.map((r) => ({
+      brandId: r.brandId,
+      brandKey: r.brand ? normalizeBrand(r.brand.name) : null,
+      perBox: toNumber(r.perBox),
+      effectiveFrom: new Date(r.effectiveFrom).getTime(),
+    }));
+    if (generation === rateGeneration) {
+      rateCache = table;
+      rateCacheAt = Date.now();
+    }
+    return table;
+  }).finally(() => {
+    if (rateRead === read) rateRead = null;
   });
-  rateCache = rows.map((r) => ({
-    brandId: r.brandId,
-    brandKey: r.brand ? normalizeBrand(r.brand.name) : null,
-    perBox: toNumber(r.perBox),
-    effectiveFrom: new Date(r.effectiveFrom).getTime(),
-  }));
-  rateCacheAt = Date.now();
-  return rateCache;
+  rateRead = read;
+  return read;
 }
 
 // The rate for one box of `brand` on an order created at `when`: the latest row
@@ -196,6 +212,13 @@ async function earnedForRep(salesRepId, { since = null } = {}) {
     allRates(),
   ]);
 
+  return priceItems(items, rates);
+}
+
+// Settled sale lines priced the one way commission is priced: each box at the rate in force when its own
+// order was issued, for its product's brand. earnedForRep and the every-rep read (computeForReps) both
+// price through here, so the two can never disagree.
+function priceItems(items, rates) {
   let earned = 0;
   let boxes = 0;
   const byBrand = new Map();
@@ -338,13 +361,10 @@ async function boxesSettledByRep(salesRepId) {
   return agg._sum.baseQuantity || 0;
 }
 
-// Commission only: a BONUS withdrawal (14 Nov 2026) comes out of the bonus pot, never out of commission.
-async function withdrawalTotals(salesRepId) {
-  const grouped = await prisma.commissionWithdrawal.groupBy({
-    by: ['status'],
-    where: { salesRepId, source: 'COMMISSION' },
-    _sum: { amount: true },
-  });
+// Paid and waiting, from one rep's COMMISSION withdrawals summed by status (computeForReps reads them for
+// every rep at once). Commission only: a BONUS withdrawal (14 Nov 2026) comes out of the bonus pot, never
+// out of commission.
+function withdrawalTotalsFrom(grouped) {
   const m = new Map(grouped.map((g) => [g.status, toNumber(g._sum.amount)]));
   // Approved but not yet paid is still waiting for the money (audit money-flows-7): it counted as paid
   // here, so the rep's wallet and the totals said "paid out" before anything was handed over. Both
@@ -360,16 +380,12 @@ async function withdrawalTotals(salesRepId) {
 // not a lifetime total, but "since I last paid him, how is he doing".
 //
 // The boundary is the LAST withdrawal that was decided for payment, APPROVED or PAID (an approval
-// closes the run, as it always has; `withdrawalTotals` shows an approved one as waiting until it is
+// closes the run, as it always has; `withdrawalTotalsFrom` shows an approved one as waiting until it is
 // paid). The run's brought-forward figure is derived from the balance, so the row still adds up. Ordered in memory rather than
 // by SQL because the moment is paidAt when there is one and the decision
 // otherwise, and no index can sort across two columns like that.
-async function lastPayoutFor(salesRepId) {
-  const rows = await prisma.commissionWithdrawal.findMany({
-    // A bonus payout does not close a commission run.
-    where: { salesRepId, source: 'COMMISSION', status: { in: ['APPROVED', 'PAID'] } },
-    select: { id: true, amount: true, status: true, paidAt: true, decidedAt: true, requestedAt: true },
-  });
+// `rows`: one rep's APPROVED/PAID COMMISSION withdrawals (a bonus payout does not close a commission run).
+function latestPayout(rows) {
   let best = null;
   for (const r of rows) {
     const at = r.paidAt || r.decidedAt || r.requestedAt;
@@ -381,158 +397,225 @@ async function lastPayoutFor(salesRepId) {
   return best;
 }
 
-// Fines charged inside the current run. WAIVED rows are excluded here exactly as
-// they are in the lifetime figure — a forgiven fine costs the rep nothing.
-async function penaltiesSince(salesRepId, since) {
-  const agg = await prisma.settlementPenalty.aggregate({
-    where: { salesRepId, status: 'APPLIED', appliedAt: { gt: since } },
-    _sum: { amount: true },
-  });
-  return round2(toNumber(agg._sum.amount));
+// What commission one rep has: earned, paid, waiting, fines, the balance, and the run since his last payout.
+async function computeForRep(salesRepId) {
+  return (await computeForReps([salesRepId])).get(salesRepId);
 }
 
-async function computeForRep(salesRepId) {
-  const rule = await getRule();
-  const [earnedData, wt, penaltyData, rates, rep, payout] = await Promise.all([
-    earnedForRep(salesRepId),
-    withdrawalTotals(salesRepId),
-    penaltyBreakdownForRep(salesRepId),
-    currentRates(),
-    prisma.salesRepresentative.findUnique({
-      where: { id: salesRepId },
-      select: {
-        withdrawalThreshold: true, commissionAdjustment: true, commissionAdjustmentNote: true,
-        commissionAdjustedAt: true, earnsCommission: true,
-        emergencyWindowAt: true, emergencyWindowById: true, emergencyWindowReason: true,
-      },
-    }).catch(() => null),
-    lastPayoutFor(salesRepId),
-  ]);
-  const { boxes } = earnedData;
+// The same figures for any number of reps, in the same dozen reads whatever their number (15 Nov 2026).
+// Home, Finance, Commissions and the reps list price every rep at once; reading them rep by rep (each
+// rep ~30 statements) made those pages slower with every rep added. The arithmetic below is the per-rep
+// arithmetic, unchanged: every line is priced through priceItems, the run is the lines sold after the
+// rep's last payout, the fines are the same sums. Returns Map(salesRepId -> figures) for every id asked.
+const REP_TERMS = {
+  withdrawalThreshold: true, commissionAdjustment: true, commissionAdjustmentNote: true,
+  commissionAdjustedAt: true, earnsCommission: true,
+  emergencyWindowAt: true, emergencyWindowById: true, emergencyWindowReason: true,
+};
 
-  // A rep who is not on commission. Their settlements are still real sales and
-  // still count as boxes moved — they simply earn nothing on them, owe nothing
-  // against a balance that does not exist, and cannot request a withdrawal.
-  // Nothing is deleted: flip the switch back and the history returns.
-  if (rep && rep.earnsCommission === false) {
-    // Their boxes still belong to a run, so the run figure has to be measured
-    // from the payout like everybody else's. The lifetime count sitting under a
-    // column headed "this run" would overstate it the moment such a rep had
-    // ever been paid — true today only because none of them has.
-    const offSince = payout ? new Date(payout.at) : null;
-    const offRunBoxes = offSince ? (await earnedForRep(salesRepId, { since: offSince })).boxes : boxes;
-    return {
-      rule,
-      rates,
-      minWithdrawal: rule.amountPerThreshold,
-      hasCustomThreshold: false,
-      earnsCommission: false,
-      boxesSettled: round2(boxes),
-      earnedByBrand: [],
-      grossEarned: 0,
-      adjustment: 0,
-      adjustmentNote: null,
-      adjustedAt: null,
-      earned: 0,
-      paid: 0,
-      pending: 0,
-      pendingRequests: 0,
-      penalties: 0,
-      penaltyBreakdown: [],
-      available: 0,
-      eligible: false,
-      // A rep off commission has no balance, so a window would waive nothing.
-      emergency: { open: false, openedAt: null, until: null, reason: null, openedById: null },
-      emergencyFloor: 0,
-      // Their boxes are still real work and still belong to a run; only the
-      // money is nil.
-      run: {
-        since: payout ? payout.at : null,
-        lastPayout: payout ? { at: payout.at, amount: payout.amount } : null,
-        boxes: round2(offRunBoxes),
-        earned: 0,
-        penalties: 0,
-        net: 0,
-        broughtForward: 0,
-      },
-    };
+async function computeForReps(salesRepIds) {
+  const asked = [...new Set(salesRepIds || [])];
+  const ids = asked.filter(Boolean);
+  const rule = await getRule();
+  const [items, priceTable, wtRows, penaltyByRep, rates, repRows, payoutRows] = await Promise.all([
+    ids.length
+      ? prisma.saleItem.findMany({
+        where: { sale: { is: { salesRepId: { in: ids }, settlementId: { not: null }, status: { not: 'CANCELLED' } } } },
+        select: {
+          baseQuantity: true,
+          product: { select: { brand: { select: { name: true } } } },
+          sale: { select: { salesRepId: true, soldAt: true, settlement: { select: { issuedAt: true } } } },
+        },
+      })
+      : [],
+    allRates(),
+    ids.length
+      ? prisma.commissionWithdrawal.groupBy({ by: ['salesRepId', 'status'], where: { salesRepId: { in: ids }, source: 'COMMISSION' }, _sum: { amount: true } })
+      : [],
+    penaltyBreakdownForReps(ids),
+    currentRates(),
+    ids.length
+      ? prisma.salesRepresentative.findMany({ where: { id: { in: ids } }, select: { id: true, ...REP_TERMS } }).catch(() => [])
+      : [],
+    // A bonus payout does not close a commission run.
+    ids.length
+      ? prisma.commissionWithdrawal.findMany({
+        where: { salesRepId: { in: ids }, source: 'COMMISSION', status: { in: ['APPROVED', 'PAID'] } },
+        select: { salesRepId: true, id: true, amount: true, status: true, paidAt: true, decidedAt: true, requestedAt: true },
+      })
+      : [],
+  ]);
+
+  const listOf = (rows, key) => {
+    const m = new Map();
+    for (const r of rows || []) {
+      const k = key(r);
+      if (!m.has(k)) m.set(k, []);
+      m.get(k).push(r);
+    }
+    return m;
+  };
+  const itemsOf = listOf(items, (it) => it.sale?.salesRepId);
+  const wtOf = listOf(wtRows, (r) => r.salesRepId);
+  const payoutsOf = listOf(payoutRows, (r) => r.salesRepId);
+  const repOf = new Map((repRows || []).map((r) => [r.id, r]));
+
+  const base = new Map();
+  for (const id of asked) {
+    const repItems = (id && itemsOf.get(id)) || [];
+    const payout = latestPayout((id && payoutsOf.get(id)) || []);
+    base.set(id, {
+      rep: (id && repOf.get(id)) || null,
+      repItems,
+      earnedData: priceItems(repItems, priceTable),
+      wt: withdrawalTotalsFrom((id && wtOf.get(id)) || []),
+      penaltyData: (id && penaltyByRep.get(id)) || { total: 0, breakdown: [] },
+      payout,
+      since: payout ? new Date(payout.at) : null,
+    });
   }
 
-  // A one-off correction to a squared-up account. Kept separate from the
-  // derived figure so the boxes that produced it stay untouched and visible.
-  const adjustment = round2(toNumber(rep?.commissionAdjustment));
-  const grossEarned = earnedData.earned;
-  const earned = round2(grossEarned + adjustment);
-  // This rep's own minimum, where one has been agreed; otherwise the business
-  // default. Everything downstream must quote THIS, never rule.amountPerThreshold.
-  const minWithdrawal = rep?.withdrawalThreshold != null
-    ? round2(toNumber(rep.withdrawalThreshold))
-    : rule.amountPerThreshold;
-  // Penalties are REAL applied deductions (persisted transactions). The balance
-  // is earned − paid − pending withdrawals − penalties, and is NOT clamped, so a
-  // rep with more fines than earnings goes negative (owes ZELab). Future
-  // earnings raise `earned`, automatically offsetting the debt.
-  const penalties = penaltyData.total;
-  const pending = round2(earned - wt.paid);
-  const available = round2(earned - wt.paid - wt.pendingRequests - penalties);
+  // Fines charged inside each run (since that rep's last payout), every rep in one read. WAIVED rows are
+  // excluded exactly as in the lifetime figure — a forgiven fine costs the rep nothing.
+  const runFor = [...base.entries()].filter(([id, b]) => id && b.since && !(b.rep && b.rep.earnsCommission === false));
+  const runPenRows = runFor.length
+    ? await prisma.settlementPenalty.groupBy({
+      by: ['salesRepId'],
+      where: { status: 'APPLIED', OR: runFor.map(([id, b]) => ({ salesRepId: id, appliedAt: { gt: b.since } })) },
+      _sum: { amount: true },
+    })
+    : [];
+  const runPenOf = new Map((runPenRows || []).map((r) => [r.salesRepId, round2(toNumber(r._sum.amount))]));
+  // The lines sold after the payout: the same test as the `soldAt > since` read this replaces.
+  const linesSince = (repItems, since) => repItems.filter((it) => it.sale?.soldAt && new Date(it.sale.soldAt).getTime() > since.getTime());
 
-  // The run in progress. With no payout behind them the run IS their whole
-  // history, so the figures already in hand answer it and no second pass over
-  // the boxes is needed.
-  const since = payout ? new Date(payout.at) : null;
-  const [runEarnedData, runPenalties] = since
-    ? await Promise.all([earnedForRep(salesRepId, { since }), penaltiesSince(salesRepId, since)])
-    : [earnedData, penalties];
-  const runNet = round2(runEarnedData.earned - runPenalties);
-  const run = {
-    since: payout ? payout.at : null,
-    lastPayout: payout ? { at: payout.at, amount: payout.amount } : null,
-    boxes: round2(runEarnedData.boxes),
-    earned: runEarnedData.earned,
-    penalties: runPenalties,
-    net: runNet,
-    // What the balance was already carrying when this run opened: a part-taken
-    // payout leaves the remainder behind, and an agreed adjustment sits outside
-    // any run's boxes. Derived from `available` rather than summed separately,
-    // so earned − fines + brought forward always equals what he can withdraw.
-    broughtForward: round2(available - runNet),
-  };
+  const out = new Map();
+  for (const [id, b] of base) {
+    const { rep, repItems, earnedData, wt, penaltyData, payout, since } = b;
+    const { boxes } = earnedData;
 
-  // The one place the eligibility rule lives. It used to be re-derived in the
-  // rep-profile controller as `available >= threshold`, which was the same rule
-  // written twice — and with a window in play the two would disagree: the
-  // profile would read "not eligible" about a rep who can withdraw right now.
-  const emergency = emergencyStateFor(rep);
-  const waived = emergency.open && available < minWithdrawal;
-  const eligible = available >= minWithdrawal || (waived && available >= EMERGENCY_FLOOR);
+    // A rep who is not on commission. Their settlements are still real sales and
+    // still count as boxes moved — they simply earn nothing on them, owe nothing
+    // against a balance that does not exist, and cannot request a withdrawal.
+    // Nothing is deleted: flip the switch back and the history returns.
+    if (rep && rep.earnsCommission === false) {
+      // Their boxes still belong to a run, so the run figure has to be measured
+      // from the payout like everybody else's. The lifetime count sitting under a
+      // column headed "this run" would overstate it the moment such a rep had
+      // ever been paid — true today only because none of them has.
+      const offRunBoxes = since ? priceItems(linesSince(repItems, since), priceTable).boxes : boxes;
+      out.set(id, {
+        rule,
+        rates,
+        minWithdrawal: rule.amountPerThreshold,
+        hasCustomThreshold: false,
+        earnsCommission: false,
+        boxesSettled: round2(boxes),
+        earnedByBrand: [],
+        grossEarned: 0,
+        adjustment: 0,
+        adjustmentNote: null,
+        adjustedAt: null,
+        earned: 0,
+        paid: 0,
+        pending: 0,
+        pendingRequests: 0,
+        penalties: 0,
+        penaltyBreakdown: [],
+        available: 0,
+        eligible: false,
+        // A rep off commission has no balance, so a window would waive nothing.
+        emergency: { open: false, openedAt: null, until: null, reason: null, openedById: null },
+        emergencyFloor: 0,
+        // Their boxes are still real work and still belong to a run; only the
+        // money is nil.
+        run: {
+          since: payout ? payout.at : null,
+          lastPayout: payout ? { at: payout.at, amount: payout.amount } : null,
+          boxes: round2(offRunBoxes),
+          earned: 0,
+          penalties: 0,
+          net: 0,
+          broughtForward: 0,
+        },
+      });
+      continue;
+    }
 
-  return {
-    rule,
-    rates,
-    minWithdrawal,
-    emergency,
-    // The floor actually in force, so the button and the server cannot disagree
-    // about what the smallest allowed request is.
-    emergencyFloor: waived ? EMERGENCY_FLOOR : 0,
-    eligible,
-    // True when this rep is on terms of their own, so the UI can say so rather
-    // than silently showing a number that differs from every other rep's.
-    hasCustomThreshold: rep?.withdrawalThreshold != null,
-    boxesSettled: round2(boxes),
-    earnedByBrand: earnedData.byBrand,
-    grossEarned,
-    adjustment,
-    adjustmentNote: rep?.commissionAdjustmentNote || null,
-    adjustedAt: rep?.commissionAdjustedAt || null,
-    earned,
-    paid: wt.paid,
-    pending,
-    pendingRequests: wt.pendingRequests,
-    penalties,
-    penaltyBreakdown: penaltyData.breakdown,
-    available, // can be negative when penalties exceed remaining balance
-    run,
-  };
+    // A one-off correction to a squared-up account. Kept separate from the
+    // derived figure so the boxes that produced it stay untouched and visible.
+    const adjustment = round2(toNumber(rep?.commissionAdjustment));
+    const grossEarned = earnedData.earned;
+    const earned = round2(grossEarned + adjustment);
+    // This rep's own minimum, where one has been agreed; otherwise the business
+    // default. Everything downstream must quote THIS, never rule.amountPerThreshold.
+    const minWithdrawal = rep?.withdrawalThreshold != null
+      ? round2(toNumber(rep.withdrawalThreshold))
+      : rule.amountPerThreshold;
+    // Penalties are REAL applied deductions (persisted transactions). The balance
+    // is earned − paid − pending withdrawals − penalties, and is NOT clamped, so a
+    // rep with more fines than earnings goes negative (owes ZELab). Future
+    // earnings raise `earned`, automatically offsetting the debt.
+    const penalties = penaltyData.total;
+    const pending = round2(earned - wt.paid);
+    const available = round2(earned - wt.paid - wt.pendingRequests - penalties);
+
+    // The run in progress. With no payout behind them the run IS their whole
+    // history, so the figures already in hand answer it.
+    const runEarnedData = since ? priceItems(linesSince(repItems, since), priceTable) : earnedData;
+    const runPenalties = since ? (runPenOf.get(id) || 0) : penalties;
+    const runNet = round2(runEarnedData.earned - runPenalties);
+    const run = {
+      since: payout ? payout.at : null,
+      lastPayout: payout ? { at: payout.at, amount: payout.amount } : null,
+      boxes: round2(runEarnedData.boxes),
+      earned: runEarnedData.earned,
+      penalties: runPenalties,
+      net: runNet,
+      // What the balance was already carrying when this run opened: a part-taken
+      // payout leaves the remainder behind, and an agreed adjustment sits outside
+      // any run's boxes. Derived from `available` rather than summed separately,
+      // so earned − fines + brought forward always equals what he can withdraw.
+      broughtForward: round2(available - runNet),
+    };
+
+    // The one place the eligibility rule lives. It used to be re-derived in the
+    // rep-profile controller as `available >= threshold`, which was the same rule
+    // written twice — and with a window in play the two would disagree: the
+    // profile would read "not eligible" about a rep who can withdraw right now.
+    const emergency = emergencyStateFor(rep);
+    const waived = emergency.open && available < minWithdrawal;
+    const eligible = available >= minWithdrawal || (waived && available >= EMERGENCY_FLOOR);
+
+    out.set(id, {
+      rule,
+      rates,
+      minWithdrawal,
+      emergency,
+      // The floor actually in force, so the button and the server cannot disagree
+      // about what the smallest allowed request is.
+      emergencyFloor: waived ? EMERGENCY_FLOOR : 0,
+      eligible,
+      // True when this rep is on terms of their own, so the UI can say so rather
+      // than silently showing a number that differs from every other rep's.
+      hasCustomThreshold: rep?.withdrawalThreshold != null,
+      boxesSettled: round2(boxes),
+      earnedByBrand: earnedData.byBrand,
+      grossEarned,
+      adjustment,
+      adjustmentNote: rep?.commissionAdjustmentNote || null,
+      adjustedAt: rep?.commissionAdjustedAt || null,
+      earned,
+      paid: wt.paid,
+      pending,
+      pendingRequests: wt.pendingRequests,
+      penalties,
+      penaltyBreakdown: penaltyData.breakdown,
+      available, // can be negative when penalties exceed remaining balance
+      run,
+    });
+  }
+  return out;
 }
 
 async function summaryAllReps() {
@@ -543,13 +626,12 @@ async function summaryAllReps() {
   const reps = await prisma.salesRepresentative.findMany({
     include: { user: { select: { name: true } } },
   });
-  // Every rep's figures are read at the same time rather than one rep after another (each rep is ~25 DB
-  // round trips, so six reps in a row was the slowest part of the dashboard, Finance and Commissions).
-  // Same reads per rep; the rows are still built in the reps' own order, so totals add up the same.
-  const computed = await Promise.all(reps.map((rep) => computeForRep(rep.id)));
+  // Every rep's figures in one batch of reads (computeForReps), however many reps there are. The rows are
+  // still built in the reps' own order, so ties and totals add up the same.
+  const computed = await computeForReps(reps.map((rep) => rep.id));
   const items = [];
-  reps.forEach((rep, i) => {
-    const row = { salesRepId: rep.id, name: rep.user?.name, code: rep.code, ...computed[i], isActive: rep.isActive !== false };
+  reps.forEach((rep) => {
+    const row = { salesRepId: rep.id, name: rep.user?.name, code: rep.code, ...computed.get(rep.id), isActive: rep.isActive !== false };
     if (row.isActive || row.available > 0 || (row.pendingRequests || 0) > 0) items.push(row);
   });
   items.sort((a, b) => b.earned - a.earned);
@@ -988,6 +1070,7 @@ module.exports = {
   currentRates,
   rateForProductOnOrder,
   computeForRep,
+  computeForReps,
   summaryAllReps,
   requestWithdrawal,
   listWithdrawals,

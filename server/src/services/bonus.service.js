@@ -28,6 +28,7 @@
 const prisma = require('./../config/prisma');
 const ApiError = require('../utils/ApiError');
 const notification = require('./notification.service');
+const { Prisma } = require('@prisma/client');
 const { round2, toNumber, formatCurrency } = require('../utils/money');
 
 const CREDITED = 'CREDITED';
@@ -182,8 +183,9 @@ function historyOf(state, limit = 24) {
   }));
 }
 
-// Progress, wallet and what is due to be credited, from the facts read.
-async function evaluate(salesRepId, state, db = prisma) {
+// Progress, wallet and what is due to be credited, from the facts read. `qualify(salesRepId, since)` sums the
+// sales that count from rows already read (progressForReps); without it each sum is its own query.
+async function evaluate(salesRepId, state, db = prisma, qualify = null) {
   const cyc = cycleOf(state);
   const wallet = walletOf(state, cyc);
   const history = historyOf(state);
@@ -201,7 +203,9 @@ async function evaluate(salesRepId, state, db = prisma) {
   });
   const cycleStart = new Date(Math.min(...starts.map((d) => d.getTime())));
   const keys = [...new Set([cycleStart, ...starts].map((d) => d.getTime()))];
-  const counted = await both(db, keys.map((k) => () => qualifyingSales(salesRepId, new Date(k), db)));
+  const counted = await both(db, keys.map((k) => async () => (
+    qualify ? qualify(salesRepId, new Date(k)) : qualifyingSales(salesRepId, new Date(k), db)
+  )));
   const salesFrom = new Map(keys.map((k, i) => [k, counted[i]]));
   const sales = salesFrom.get(cycleStart.getTime());
 
@@ -435,17 +439,101 @@ async function requestBonusTx(tx, salesRepId, amt, notes, include) {
   return { withdrawal, credited };
 }
 
+// progressForRep for many reps, in the same five reads whatever their number (15 Nov 2026): the tiers once,
+// every rep's bonus withdrawals and awards, and every rep's settled-order sales since the earliest tier. Each
+// sum that counts toward a target is then added up from those rows — exactly (decimal arithmetic, as the
+// database sums) and with the same conditions as qualifyingSales — instead of one query per rep per start
+// date. Home and Finance read every rep's bonus on each load. Returns Map(salesRepId -> progress).
+async function progressForReps(salesRepIds, { heal = true } = {}) {
+  const asked = [...new Set(salesRepIds || [])];
+  const ids = asked.filter(Boolean);
+  const [tiers, withdrawals, awards] = await Promise.all([
+    activeTiers(new Date()),
+    ids.length
+      ? prisma.commissionWithdrawal.findMany({
+        where: { salesRepId: { in: ids }, source: 'BONUS' },
+        select: { salesRepId: true, id: true, amount: true, status: true, requestedAt: true, decidedAt: true, paidAt: true },
+        orderBy: { requestedAt: 'asc' },
+      })
+      : [],
+    ids.length
+      ? prisma.bonusAward.findMany({
+        where: { salesRepId: { in: ids }, status: { in: [CREDITED, LEGACY_PAID] } },
+        select: {
+          salesRepId: true, id: true, bonusRuleId: true, bonusAmount: true, status: true, cycleStart: true, unlockedAt: true,
+          paidAt: true, qualifyingSales: true, bonusRule: { select: { salesTarget: true } },
+        },
+        orderBy: { unlockedAt: 'asc' },
+      })
+      : [],
+  ]);
+  // Each rep's rows, in the order read, without the rep id the per-rep read never carried.
+  const byRep = (rows) => {
+    const m = new Map();
+    for (const { salesRepId, ...row } of rows || []) {
+      if (!m.has(salesRepId)) m.set(salesRepId, []);
+      m.get(salesRepId).push(row);
+    }
+    return m;
+  };
+  const wOf = byRep(withdrawals);
+  const aOf = byRep(awards);
+
+  // Every start date a rep's sums can use is on or after the earliest tier's effectiveFrom.
+  const tierList = tiers || [];
+  const from = tierList.length ? new Date(Math.min(...tierList.map((t) => new Date(t.effectiveFrom).getTime()))) : null;
+  const saleRows = ids.length && from
+    ? await prisma.sale.findMany({
+      where: { salesRepId: { in: ids }, status: { not: 'CANCELLED' }, settlementId: { not: null }, soldAt: { gte: from } },
+      select: { salesRepId: true, soldAt: true, total: true },
+    })
+    : [];
+  const salesOf = new Map();
+  for (const r of saleRows || []) {
+    if (!salesOf.has(r.salesRepId)) salesOf.set(r.salesRepId, []);
+    salesOf.get(r.salesRepId).push(r);
+  }
+  const qualify = (salesRepId, since) => {
+    const at = new Date(since).getTime();
+    let sum = new Prisma.Decimal(0);
+    for (const r of salesOf.get(salesRepId) || []) {
+      if (new Date(r.soldAt).getTime() >= at) sum = sum.plus(r.total ?? 0);
+    }
+    return round2(toNumber(sum));
+  };
+
+  const out = new Map();
+  await Promise.all(asked.map(async (id) => {
+    if (!id) {
+      out.set(id, await progressForRep(id, { heal }));
+      return;
+    }
+    const state = { tiers: tierList, withdrawals: wOf.get(id) || [], awards: aOf.get(id) || [] };
+    let { due, progress } = await evaluate(id, state, prisma, qualify);
+    if (heal && due.length) {
+      try {
+        await creditMilestones(id);
+        ({ progress } = await evaluate(id, await readState(id)));
+      } catch {
+        // Shown as it stands; the next approval or read credits it.
+      }
+    }
+    out.set(id, progress);
+  }));
+  return out;
+}
+
 // Progress and wallet for every rep — the admin view. Active reps, plus a deactivated rep only while bonus
 // money is still in play for them.
 async function summaryAllReps({ heal = true } = {}) {
   const reps = await prisma.salesRepresentative.findMany({
     include: { user: { select: { name: true } } },
   });
-  // All reps at once, not one after another; rows keep the reps' order. `heal: false` (Finance) only reads.
-  const progress = await Promise.all(reps.map((rep) => progressForRep(rep.id, { heal })));
+  // Every rep in one batch of reads; rows keep the reps' order. `heal: false` (Finance) only reads.
+  const progress = await progressForReps(reps.map((rep) => rep.id), { heal });
   const items = [];
-  reps.forEach((rep, i) => {
-    const { history, ...p } = progress[i]; // eslint-disable-line no-unused-vars
+  reps.forEach((rep) => {
+    const { history, ...p } = progress.get(rep.id); // eslint-disable-line no-unused-vars
     const w = p.wallet || emptyWallet();
     const isActive = rep.isActive !== false;
     if (!isActive && !(w.available > 0 || w.pending > 0)) return;
@@ -593,6 +681,7 @@ module.exports = {
   activeTiers,
   qualifyingSales,
   progressForRep,
+  progressForReps,
   walletForRep,
   combine,
   creditMilestones,

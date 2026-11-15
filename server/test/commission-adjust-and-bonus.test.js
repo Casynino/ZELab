@@ -50,7 +50,12 @@ stub('../src/services/notification.service', {
   notifyAdmins: async () => {},
   createIfAbsent: async (data) => { unlockedNotices.push(data); },
 });
-stub('../src/services/penalty.service', { penaltyBreakdownForRep: async () => ({ total: 0, breakdown: [] }) });
+// No fines in these tests. Commission reads every rep's fines in one go (penaltyBreakdownForReps, 15 Nov 2026).
+const noFines = () => ({ total: 0, breakdown: [] });
+stub('../src/services/penalty.service', {
+  penaltyBreakdownForRep: async () => noFines(),
+  penaltyBreakdownForReps: async (ids) => new Map((ids || []).map((id) => [id, noFines()])),
+});
 
 // ── #120 manual adjustment ────────────────────────────────────────────────────────────────────────────
 test('two commission corrections saved at the same moment both count, and a note is never put back', async () => {
@@ -95,16 +100,22 @@ test('a deactivated rep still owed money stays in the totals; one owed nothing s
   ];
   const byId = new Map(reps.map((r) => [r.id, r]));
   let listedWhere = 'unset';
+  // Every rep's terms and withdrawals are read in one go (15 Nov 2026): `id in [...]`, rows keyed by rep.
   stub('../src/config/prisma', db({
     salesRepresentative: {
-      findMany: async ({ where } = {}) => { listedWhere = where; return reps; },
-      findUnique: async ({ where }) => ({ withdrawalThreshold: null, commissionAdjustment: byId.get(where.id).adjustment, earnsCommission: true }),
+      findMany: async ({ where, select } = {}) => {
+        if (select) {
+          return where.id.in.map((id) => ({ id, withdrawalThreshold: null, commissionAdjustment: byId.get(id).adjustment, earnsCommission: true }));
+        }
+        listedWhere = where;
+        return reps;
+      },
     },
     commissionWithdrawal: {
-      groupBy: async ({ where }) => {
-        const r = byId.get(where.salesRepId);
-        return r.pending ? [{ status: 'PENDING', _sum: { amount: r.pending } }] : [];
-      },
+      groupBy: async ({ where }) => where.salesRepId.in
+        .map((id) => byId.get(id))
+        .filter((r) => r.pending)
+        .map((r) => ({ salesRepId: r.id, status: 'PENDING', _sum: { amount: r.pending } })),
     },
   }));
   const commission = fresh('../src/services/commission.service');
@@ -122,14 +133,15 @@ test('a deactivated rep still owed money stays in the totals; one owed nothing s
 // ── money-flows-7: approved but not yet paid is still waiting ─────────────────────────────────────────
 test('an approved, unpaid withdrawal counts as waiting, not as paid, and the balance does not move', async () => {
   const rows = [
-    { status: 'PAID', _sum: { amount: 100000 } },
-    { status: 'APPROVED', _sum: { amount: 50000 } },
-    { status: 'PENDING', _sum: { amount: 20000 } },
+    { salesRepId: 'r1', status: 'PAID', _sum: { amount: 100000 } },
+    { salesRepId: 'r1', status: 'APPROVED', _sum: { amount: 50000 } },
+    { salesRepId: 'r1', status: 'PENDING', _sum: { amount: 20000 } },
   ];
   stub('../src/config/prisma', db({
     salesRepresentative: {
-      findMany: async () => [{ id: 'r1', code: 'A', isActive: true, user: { name: 'A' } }],
-      findUnique: async () => ({ withdrawalThreshold: null, commissionAdjustment: 300000, earnsCommission: true }),
+      findMany: async ({ select } = {}) => (select
+        ? [{ id: 'r1', withdrawalThreshold: null, commissionAdjustment: 300000, earnsCommission: true }]
+        : [{ id: 'r1', code: 'A', isActive: true, user: { name: 'A' } }]),
     },
     commissionWithdrawal: { groupBy: async () => rows },
   }));

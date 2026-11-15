@@ -61,9 +61,29 @@ async function applyDuePenalties() {
     where: { status: { in: ['OPEN', 'PARTIAL', 'OVERDUE'] }, deadlineAt: { lte: new Date(now) } },
     include: { salesRep: { include: { user: { select: { id: true, name: true } } } } },
   });
+  if (!overdue.length) return { applied: 0 };
+
+  // Check first, lock second (15 Nov 2026). Every rep's Home poll runs this, and it used to open a
+  // row-locking transaction on EVERY overdue order each time, even seconds after the last run when no
+  // new day could be owed — an approval on the same order waited for it. Two reads now say which orders
+  // can owe a new day; only those take the lock, where everything is checked again exactly as before.
+  // Nothing here decides a fine: an order skipped on a stale read is simply caught by the next run.
+  const ids = overdue.map((s) => s.id);
+  const [chargedRows, pausedRows] = await Promise.all([
+    prisma.settlementPenalty.groupBy({ by: ['settlementId'], where: { settlementId: { in: ids }, daysOverdue: { gt: 0 } }, _count: true }),
+    prisma.return.groupBy({ by: ['settlementId'], where: { settlementId: { in: ids }, status: 'PENDING' }, _count: true }),
+  ]);
+  const chargedSoFar = new Map((chargedRows || []).map((r) => [r.settlementId, r._count || 0]));
+  const paused = new Set((pausedRows || []).map((r) => r.settlementId));
+  const mayOwe = (s) => {
+    if (paused.has(s.id)) return false;
+    const clock = fineClockStart(s);
+    if (clock > now) return false;
+    return penaltyDaysDue(clock, now) > (chargedSoFar.get(s.id) || 0);
+  };
 
   let applied = 0;
-  for (const s of overdue) {
+  for (const s of overdue.filter(mayOwe)) {
     // Every check and every new fine for this order happen in ONE transaction holding the order's lock
     // (audit, 11 Nov 2026): the cron and the dashboard polls can run this at the same moment, and without
     // the lock both counted the same charged days and both wrote the next one — a fine charged twice.
@@ -141,19 +161,44 @@ async function applyDuePenalties() {
   return { applied };
 }
 
-// Persisted penalties for a rep, grouped per order — for the commission UI.
-async function penaltyBreakdownForRep(salesRepId) {
+// The sweep as the READ paths run it (a rep's Home poll, the settlements summary): callers that arrive
+// while a sweep is running share it, and a server instance starts one at most once a minute. With seven
+// to thirty phones polling, the same sweep was being repeated several times a minute for nothing. A fine
+// lands at most a minute later than it would have, never twice and never lost: every run charges every
+// day still owed. The daily cron and the admin's "apply now" call applyDuePenalties() itself, unthrottled.
+const READ_SWEEP_EVERY_MS = 60_000;
+let readSweep = null;
+let readSweepAt = 0;
+function applyDuePenaltiesFromRead() {
+  if (readSweep) return readSweep;
+  if (Date.now() - readSweepAt < READ_SWEEP_EVERY_MS) return Promise.resolve({ applied: 0, skipped: true });
+  readSweepAt = Date.now();
+  readSweep = applyDuePenalties().finally(() => { readSweep = null; });
+  return readSweep;
+}
+
+// Persisted penalties, grouped per order — for the commission UI. For any number of reps in the same four
+// reads (15 Nov 2026): Home, Finance, Commissions and the reps list price every rep at once, and reading
+// them rep by rep made those pages slower with every rep added. Returns Map(salesRepId -> { total, breakdown }),
+// with an entry (nothing charged) for every rep asked about.
+async function penaltyBreakdownForReps(salesRepIds) {
+  const repIds = [...new Set((salesRepIds || []).filter(Boolean))];
+  const out = new Map(repIds.map((id) => [id, { total: 0, breakdown: [] }]));
+  if (!repIds.length) return out;
   const grouped = await prisma.settlementPenalty.groupBy({
-    by: ['settlementId'],
-    where: { salesRepId, status: 'APPLIED' },
+    by: ['salesRepId', 'settlementId'],
+    where: { salesRepId: { in: repIds }, status: 'APPLIED' },
     _sum: { amount: true },
     _count: true,
     _max: { daysOverdue: true },
+    // Orders with the same total stay in order-id order, as the one-rep read returned them (Postgres
+    // grouped it sorted by order id); with several reps it would otherwise hash them into any order.
+    orderBy: [{ salesRepId: 'asc' }, { settlementId: 'asc' }],
   });
-  if (grouped.length === 0) return { total: 0, breakdown: [] };
+  if (!grouped.length) return out;
 
   // Manual deductions have no settlement — keep them out of the id lookups.
-  const ids = grouped.map((g) => g.settlementId).filter(Boolean);
+  const ids = [...new Set(grouped.map((g) => g.settlementId).filter(Boolean))];
   const [settlements, pendingRets, lateRates] = await Promise.all([
     prisma.settlement.findMany({ where: { id: { in: ids } }, select: { id: true, settlementNumber: true, status: true, selfExtendedAt: true } }),
     ids.length
@@ -162,38 +207,50 @@ async function penaltyBreakdownForRep(salesRepId) {
     // The daily fine actually charged on each order. Today's rate follows the order's extension state NOW,
     // so a closed order extended after its fines quoted 20,000 a day beside a 10,000 one-day fine.
     ids.length
-      ? prisma.settlementPenalty.groupBy({ by: ['settlementId'], where: { salesRepId, settlementId: { in: ids }, status: 'APPLIED', kind: 'LATE_FINE' }, _max: { amount: true } })
+      ? prisma.settlementPenalty.groupBy({ by: ['salesRepId', 'settlementId'], where: { salesRepId: { in: repIds }, settlementId: { in: ids }, status: 'APPLIED', kind: 'LATE_FINE' }, _max: { amount: true } })
       : [],
   ]);
   const sMap = new Map(settlements.map((s) => [s.id, s]));
   const pendingMap = new Map(pendingRets.map((r) => [r.settlementId, r._count]));
-  const chargedRate = new Map(lateRates.map((r) => [r.settlementId, round2(toNumber(r._max.amount))]));
+  const chargedRate = new Map(lateRates.map((r) => [`${r.salesRepId}|${r.settlementId}`, round2(toNumber(r._max.amount))]));
 
-  let total = 0;
-  const breakdown = grouped
-    .map((g) => {
-      const amt = round2(toNumber(g._sum.amount));
-      total += amt;
-      const s = g.settlementId ? sMap.get(g.settlementId) : null;
-      const closed = s?.status === 'SETTLED';
-      return {
-        settlementId: g.settlementId,
-        settlementNumber: s?.settlementNumber || (g.settlementId ? '—' : 'Manual deduction'),
-        // 0 for manual deductions and return-expiry fines — they are not late,
-        // so callers must not render them as overdue days.
-        daysOverdue: g._max.daysOverdue || 0,
-        fines: g._count,
-        // A manual deduction has no daily rate. A closed order shows what it was charged; an open one the
-        // rate its next fine will be charged at.
-        penaltyPerDay: !g.settlementId ? null : (closed && chargedRate.get(g.settlementId)) || dailyRateFor(s),
-        totalPenalty: amt,
-        closed,
-        exemptPendingReturn: (pendingMap.get(g.settlementId) || 0) > 0,
-      };
-    })
-    .sort((a, b) => b.totalPenalty - a.totalPenalty);
+  const groupsOf = new Map();
+  for (const g of grouped) {
+    if (!groupsOf.has(g.salesRepId)) groupsOf.set(g.salesRepId, []);
+    groupsOf.get(g.salesRepId).push(g);
+  }
+  for (const [repId, groups] of groupsOf) {
+    let total = 0;
+    const breakdown = groups
+      .map((g) => {
+        const amt = round2(toNumber(g._sum.amount));
+        total += amt;
+        const s = g.settlementId ? sMap.get(g.settlementId) : null;
+        const closed = s?.status === 'SETTLED';
+        return {
+          settlementId: g.settlementId,
+          settlementNumber: s?.settlementNumber || (g.settlementId ? '—' : 'Manual deduction'),
+          // 0 for manual deductions and return-expiry fines — they are not late,
+          // so callers must not render them as overdue days.
+          daysOverdue: g._max.daysOverdue || 0,
+          fines: g._count,
+          // A manual deduction has no daily rate. A closed order shows what it was charged; an open one the
+          // rate its next fine will be charged at.
+          penaltyPerDay: !g.settlementId ? null : (closed && chargedRate.get(`${repId}|${g.settlementId}`)) || dailyRateFor(s),
+          totalPenalty: amt,
+          closed,
+          exemptPendingReturn: (pendingMap.get(g.settlementId) || 0) > 0,
+        };
+      })
+      .sort((a, b) => b.totalPenalty - a.totalPenalty);
+    out.set(repId, { total: round2(total), breakdown });
+  }
+  return out;
+}
 
-  return { total: round2(total), breakdown };
+// One rep's fines by order — the same reads as every rep's, so the two can never differ.
+async function penaltyBreakdownForRep(salesRepId) {
+  return (await penaltyBreakdownForReps([salesRepId])).get(salesRepId) || { total: 0, breakdown: [] };
 }
 
 // Total penalties charged to a rep (drives the commission balance).
@@ -359,7 +416,9 @@ async function listPenalties({ salesRepId, settlementId, status, page = 1, limit
 module.exports = {
   fineClockStart,
   applyDuePenalties,
+  applyDuePenaltiesFromRead,
   penaltyBreakdownForRep,
+  penaltyBreakdownForReps,
   totalPenaltiesForRep,
   adjustCommission,
   waivePenalty,
