@@ -15,6 +15,27 @@ const HIGH_DAYS = 14;
 
 const groupDigits = (n) => Number(n || 0).toLocaleString('en-US');
 
+// Orders that are bought (or, for an order from before Confirm purchase, ordered) and not all in yet — the
+// same orders the Purchases page counts as "on the way". A draft is not bought; a cancelled or completed
+// order brings nothing more.
+const ON_THE_WAY = ['ORDERED', 'PURCHASED', 'IN_TRANSIT', 'PARTLY_RECEIVED'];
+
+// Boxes per product already bought and still to come: what each line bought, less what was received and
+// what was marked missing (will never come). Cargo takes about 35 days, so without this the page asked
+// for the same goods again the day after they were paid for (audit purc02, 15 Nov 2026).
+async function onTheWayByProduct(client) {
+  const lines = await client.purchaseOrderItem.findMany({
+    where: { purchaseOrder: { status: { in: ON_THE_WAY } } },
+    select: { productId: true, baseQuantity: true, receivedBase: true, missingBase: true },
+  });
+  const map = new Map();
+  for (const l of lines) {
+    const left = Math.max(0, (l.baseQuantity || 0) - (l.receivedBase || 0) - (l.missingBase || 0));
+    if (left > 0) map.set(l.productId, (map.get(l.productId) || 0) + left);
+  }
+  return map;
+}
+
 // Compute sales velocity and project days-of-cover for every active product,
 // then recommend reorder quantities. "Days remaining" = on-hand / avg daily
 // sales over the lookback window.
@@ -23,7 +44,7 @@ async function reorderAnalysis(options = {}) {
   const coverDays = options.coverDays || 30; // target days of stock to hold
   const since = dayjs().subtract(lookbackDays, 'day').toDate();
 
-  const [products, soldRows, onHandMap, warehouseMap] = await Promise.all([
+  const [products, soldRows, onHandMap, warehouseMap, comingMap] = await Promise.all([
     prisma.product.findMany({
       where: { isActive: true },
       include: { brand: { select: { name: true } }, category: { select: { name: true } } },
@@ -35,6 +56,7 @@ async function reorderAnalysis(options = {}) {
     }),
     inventory.productOnHand(prisma),
     inventory.warehouseOnHand(prisma),
+    onTheWayByProduct(prisma),
   ]);
 
   const soldMap = new Map(soldRows.map((r) => [r.productId, Math.abs(r._sum.baseQuantity || 0)]));
@@ -45,6 +67,9 @@ async function reorderAnalysis(options = {}) {
     // towards days of cover, since the pace includes what the reps settle.
     const inWarehouse = warehouseMap.get(p.id) || 0;
     const withReps = onHand - inWarehouse;
+    // Bought and on its way: not on the shelf yet (so it does not change the cover or the urgency), but
+    // never to be bought a second time.
+    const onTheWay = comingMap.get(p.id) || 0;
     const soldBase = soldMap.get(p.id) || 0;
     const avgDaily = round2(soldBase / lookbackDays);
     const daysRemaining = avgDaily > 0 ? Math.floor(onHand / avgDaily) : null;
@@ -69,7 +94,20 @@ async function reorderAnalysis(options = {}) {
     else if (onHand <= 0 && belowMin) urgency = 'MEDIUM'; // nothing on the shelf to sell at all
     else if (belowMin) urgency = 'LOW';
 
-    const needsReorder = urgency !== 'OK';
+    // What to buy: the gap to the target cover (and to the warehouse minimum, where the cargo lands), less
+    // what is already on its way. The supplier's pack size is a floor only where cover is genuinely short —
+    // rounding a one-box top-up up to a 50-box pack is how a product with years of cover came to ask for
+    // millions of shillings of stock — and only while something is still missing after the cargo.
+    let recommendedQty = 0;
+    if (urgency !== 'OK') {
+      const gap = Math.max(target - onHand - onTheWay, p.minStockLevel - inWarehouse - onTheWay, 0);
+      if (onTheWay > 0 && gap <= 0) recommendedQty = 0;
+      else recommendedQty = urgency === 'LOW' ? gap : Math.max(gap, p.reorderQuantity || 0);
+    }
+    // Fully covered by cargo on the way: nothing to buy, so it is not a reorder (nor a reorder alert). Its
+    // cover and urgency still say how soon the shelf runs dry.
+    const covered = onTheWay > 0 && recommendedQty === 0;
+    const needsReorder = urgency !== 'OK' && !covered;
 
     // One line saying why this row is on the list, so long cover reads as long
     // cover instead of hiding behind a colour.
@@ -90,15 +128,7 @@ async function reorderAnalysis(options = {}) {
         ? `${groupDigits(daysRemaining)} days of cover left`
         : `nothing sold in the last ${lookbackDays} days`;
     }
-
-    let recommendedQty = 0;
-    if (needsReorder) {
-      const gap = Math.max(target - onHand, p.minStockLevel - inWarehouse, 0);
-      // The supplier's pack size is a floor only where cover is genuinely
-      // short. Rounding a one-box top-up up to a 50-box pack is how a product
-      // with years of cover came to ask for millions of shillings of stock.
-      recommendedQty = urgency === 'LOW' ? gap : Math.max(gap, p.reorderQuantity || 0);
-    }
+    if (onTheWay > 0) reason += `; ${groupDigits(onTheWay)} already bought and on the way`;
 
     let message = `${p.name} has ${onHand} ${p.baseUnitName}(s) on hand`;
     if (avgDaily > 0 && daysRemaining !== null) {
@@ -106,6 +136,7 @@ async function reorderAnalysis(options = {}) {
     } else {
       message += ' with no recent sales activity.';
     }
+    if (onTheWay > 0) message += ` ${onTheWay} more already bought and on the way.`;
 
     return {
       productId: p.id,
@@ -117,10 +148,12 @@ async function reorderAnalysis(options = {}) {
       onHand,
       inWarehouse,
       withReps,
+      onTheWay,
       minStockLevel: p.minStockLevel,
       avgDailySales: avgDaily,
       daysRemaining,
       belowMin,
+      covered,
       needsReorder,
       urgency,
       reason,
@@ -161,6 +194,8 @@ async function reorderAnalysis(options = {}) {
       mediumCount: countOf('MEDIUM'),
       lowCount: countOf('LOW'),
       belowMinCount: items.filter((i) => i.belowMin).length,
+      // Short of stock, but what is already bought and on the way covers it: nothing to buy for these.
+      coveredCount: items.filter((i) => i.covered).length,
       noVelocityCount: items.filter((i) => i.avgDailySales === 0).length,
       estimatedReorderValue: round2(recommendations.reduce((s, i) => s + i.recommendedValue, 0)),
       urgentValue: round2(urgentValue),

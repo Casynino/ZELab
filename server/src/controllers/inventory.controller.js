@@ -37,19 +37,32 @@ async function refuseOwedRepBoxes(tx, { location, productId, baseQuantity }) {
   }
 }
 
-// Receive stock into a warehouse (opening stock / purchase receipt).
+// Opening stock into a warehouse (admin only — audit purc05, 15 Nov 2026). Bought cargo never comes in here: it is
+// received on its purchase order, which ties the boxes to what was paid and stops the same cargo coming in twice.
+// One entry per press of the form: its `clientKey` is kept on the ledger rows, so a double tap or a retry after a
+// lost answer finds them and adds nothing.
 const stockIn = asyncHandler(async (req, res) => {
-  const { warehouseId, items, notes, occurredAt } = req.body;
-  const type = req.body.type || 'STOCK_IN';
+  const { warehouseId, items, notes, occurredAt, clientKey } = req.body;
+  const type = 'STOCK_IN';
+  if (!clientKey) throw ApiError.badRequest('Refresh the page and try again.');
 
   const warehouse = await prisma.warehouse.findUnique({ where: { id: warehouseId } });
   if (!warehouse) throw ApiError.badRequest('Warehouse not found');
 
   const result = await prisma.$transaction(async (tx) => {
+    // Two presses with the same key wait for each other here; the second then finds the first one's rows.
+    if (typeof tx.$executeRaw === 'function') await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`stock-in:${clientKey}`}))`;
+    const done = await tx.inventoryTransaction.findFirst({ where: { referenceType: 'MANUAL', referenceId: clientKey }, select: { id: true } });
+    if (done) throw ApiError.conflict('This stock was already added — it is in the ledger.');
+
     const productIds = [...new Set(items.map((i) => i.productId))];
     const products = await tx.product.findMany({ where: { id: { in: productIds } } });
     const pMap = new Map(products.map((p) => [p.id, p]));
     if (pMap.size !== productIds.length) throw ApiError.badRequest('One or more products were not found');
+    const off = products.filter((p) => p.isActive === false);
+    if (off.length) {
+      throw ApiError.badRequest(`${off.map((p) => p.name).join(', ')} ${off.length === 1 ? 'is' : 'are'} switched off. Switch ${off.length === 1 ? 'it' : 'them'} back on in Products before adding stock.`);
+    }
 
     const movements = [];
     for (const item of items) {
@@ -63,9 +76,10 @@ const stockIn = asyncHandler(async (req, res) => {
         type,
         location: { type: inventory.LOCATION.WAREHOUSE, warehouseId },
         unitCost: item.unitCost != null ? item.unitCost : toNumber(product.purchasePrice),
-        referenceType: type === 'PURCHASE_RECEIPT' ? 'PURCHASE' : 'MANUAL',
+        referenceType: 'MANUAL',
+        referenceId: clientKey,
         userId: req.user.id,
-        notes: notes || null,
+        notes,
         occurredAt: occurredAt ? new Date(occurredAt) : undefined,
       });
       movements.push(movement);
@@ -73,7 +87,7 @@ const stockIn = asyncHandler(async (req, res) => {
     return movements;
   });
 
-  await audit.record(req, { action: 'STOCK_IN', entityType: 'Warehouse', entityId: warehouseId, newValues: { type, lines: items.length } });
+  await audit.record(req, { action: 'STOCK_IN', entityType: 'Warehouse', entityId: warehouseId, newValues: { type, lines: items.length, reason: notes } });
   return created(res, { warehouseId, type, movements: result });
 });
 
@@ -320,24 +334,4 @@ const recomputeCaches = asyncHandler(async (req, res) => {
   return ok(res, result);
 });
 
-// Admin maintenance: delete a single mistaken ledger entry (e.g. a damage or
-// stock-count loss recorded by mistake) and rebuild caches so stock and the
-// shrinkage/profit math reflect the removal. Irreversible — use carefully.
-const deleteMovement = asyncHandler(async (req, res) => {
-  const tx = await prisma.inventoryTransaction.findUnique({
-    where: { id: req.params.id },
-    include: { product: { select: { name: true } } },
-  });
-  if (!tx) throw ApiError.notFound('Ledger entry not found');
-  await prisma.inventoryTransaction.delete({ where: { id: req.params.id } });
-  await inventory.recomputeAllCaches(prisma);
-  await audit.record(req, {
-    action: 'DELETE',
-    entityType: 'InventoryTransaction',
-    entityId: req.params.id,
-    oldValues: { type: tx.type, product: tx.product?.name, baseQuantity: tx.baseQuantity, notes: tx.notes },
-  });
-  return ok(res, { deleted: true, id: req.params.id, type: tx.type, product: tx.product?.name, baseQuantity: tx.baseQuantity });
-});
-
-module.exports = { stockIn, adjust, damage, balances, movements, recomputeCaches, deleteMovement };
+module.exports = { stockIn, adjust, damage, balances, movements, recomputeCaches };

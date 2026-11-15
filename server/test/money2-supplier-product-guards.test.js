@@ -234,6 +234,9 @@ test('receiving an order already received answers 409; a new order without a cur
       create: async ({ data }) => { created = data; return { id: 'new', ...data }; },
       findUnique: async () => ({ id: 'new', ...created }),
     },
+    // A new order checks its supplier and products are not switched off (audit purc08).
+    supplier: { findUnique: async () => ({ name: 'S', isActive: true }) },
+    product: { findMany: async () => [] },
   };
   stub('../src/config/prisma', { $transaction: async (fn) => fn(tx) });
   stub('../src/services/inventory.service', { convertToBase: async (_t, _p, _u, q) => ({ baseQuantity: q }) });

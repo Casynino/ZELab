@@ -35,13 +35,19 @@ const locationSchema = z
     message: 'warehouseId or salesRepId is required to match the location type',
   });
 
+// Opening stock, admin only (audit purc05, 15 Nov 2026). Bought stock comes in only by receiving its purchase order,
+// so a PURCHASE_RECEIPT is not taken here; a reason says where the boxes came from, and `clientKey` (one per press of
+// the form) stops a retry adding them twice.
 const stockIn = {
   body: z.object({
     warehouseId: id,
-    type: z.enum(['STOCK_IN', 'PURCHASE_RECEIPT']).optional(),
+    type: z.enum(['STOCK_IN'], {
+      errorMap: () => ({ message: 'Bought stock comes in by receiving its purchase order (Inventory → Purchases → Receive), not here.' }),
+    }).optional(),
     items: z.array(movementItem).min(1),
-    notes: z.string().max(500).optional(),
+    notes: z.string().trim().min(1, 'Say where this stock came from').max(500),
     occurredAt: z.string().datetime().optional(),
+    clientKey: z.string().trim().min(8).max(80).optional(),
   }),
 };
 

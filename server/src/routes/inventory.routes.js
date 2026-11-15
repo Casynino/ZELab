@@ -16,10 +16,13 @@ router.use(authenticate);
 router.get('/balances', warehouseStaff, validate(balanceQuery), ctrl.balances);
 router.get('/movements', warehouseStaff, validate(movementQuery), ctrl.movements);
 
-router.post('/stock-in', warehouseStaff, validate(stockIn), ctrl.stockIn);
+// Opening stock is the admin's: stock enters through a purchase order or an explained entry by the admin (audit purc05).
+router.post('/stock-in', requireAdmin, validate(stockIn), ctrl.stockIn);
 router.post('/adjustments', warehouseStaff, validate(adjustment), ctrl.adjust);
 router.post('/damage', warehouseStaff, validate(damage), ctrl.damage);
 router.post('/recompute-caches', requireAdmin, ctrl.recomputeCaches);
-router.delete('/movements/:id', requireAdmin, ctrl.deleteMovement);
+// No route deletes a ledger row (audit purc03, 15 Nov 2026): deleting one half of a transfer or a PO receipt made
+// or destroyed stock while its document stayed complete. A mistaken entry is put right with a new one — an
+// Adjust in the other direction, with its reason — and both stay in the ledger.
 
 module.exports = router;

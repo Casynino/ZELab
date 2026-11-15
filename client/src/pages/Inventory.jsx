@@ -5,26 +5,34 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { PackagePlus, SlidersHorizontal, Boxes, Warehouse, Truck, TrendingDown, PackageX } from 'lucide-react';
 import api, { unwrap, apiError } from '@/lib/api';
+import { useAuth } from '@/context/AuthContext';
+import { wentThrough } from '@/lib/once';
 import { pageQueries, keepOnPageTurn } from '@/lib/pageQueries';
 import { refreshAfter } from '@/lib/afterWrite';
 import { useProducts, useWarehouses, useSalesReps, useDebounce } from '@/lib/hooks';
 import { formatCurrency, formatNumber, formatDateTime, pluralizeUnit, unitWord, sharePercents } from '@/lib/format';
 import { sortByCanonical } from '@/lib/productOrder';
-import { MOVEMENT_META } from '@/lib/constants';
+import { MOVEMENT_META, ROLES } from '@/lib/constants';
 import ProductPicker, {
   useHomeWarehouse, useStockAt, saveStockWarehouse, PlaceLine, Chips, Caution, Segmented, ReasonField, MoreToggle, DiscardFooter,
   REP_WARNING, changeBtn,
 } from '@/components/ProductPicker';
 import { pickerRows, pickedItems, pickedBoxes, shortPlace, buttonPlace, boxWord, ADJUST_REASONS, DAMAGE_REASONS } from '@/lib/stockPick';
 import {
-  PageHeader, Card, PageSpinner, EmptyState, Badge, Button, Modal, Field, Select, Textarea,
+  PageHeader, Card, PageSpinner, EmptyState, Badge, Button, Modal, Select,
   SearchInput, Pagination, LoadError, Table, THead, TBody, TR, TH, TD,
 } from '@/components/ui';
 
-// Receive stock, Adjust and Record damage — the quick way (Nino, 11 Nov 2026: "make it for me to just pick
+// Opening stock, Adjust and Record damage — the quick way (Nino, 11 Nov 2026: "make it for me to just pick
 // and add the quantity"). The warehouse is already chosen (the Dar es Salaam one, or the one this device last
 // used) on one quiet line with Change; every product is listed with a  −  qty  +  in its box, as ItemLines
 // chose it. The requests are the old ones, field for field.
+//
+// Opening stock is the admin's, with a reason, once per press (audit purc05, 15 Nov 2026): it was "Receive stock",
+// open to staff, and read like receiving cargo — boxes added here while their purchase order stayed In transit
+// could later be received again on the order. Bought cargo is received on its order (the Purchases tab).
+const OPENING_REASONS = ['Opening stock', 'Other'];
+const newKey = () => (globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `k-${Date.now()}-${Math.round(Math.random() * 1e9)}`);
 function ReceiveModal({ onClose }) {
   const qc = useQueryClient();
   const { data: products = [], isLoading: productsLoading } = useProducts();
@@ -33,9 +41,10 @@ function ReceiveModal({ onClose }) {
   const [picked, setPicked] = useState(''); // '' = the home warehouse
   const [editPlace, setEditPlace] = useState(false);
   const [qty, setQty] = useState({});
-  const [notes, setNotes] = useState('');
+  const [reason, setReason] = useState('');
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const sending = useRef(false);
+  const key = useRef(newKey()); // one per opening of the window: a retry of the same entry is recognised
 
   const warehouse = active.find((w) => w.id === picked) || home;
   const warehouseId = warehouse?.id || '';
@@ -49,15 +58,20 @@ function ReceiveModal({ onClose }) {
     mutationFn: () => api.post('/inventory/stock-in', {
       warehouseId,
       items,
-      notes: notes || undefined,
+      notes: reason.trim(),
+      clientKey: key.current,
     }),
     // The Dashboard's low / out of stock and stock value move too (audit freshness-4).
-    onSuccess: () => { saveStockWarehouse(warehouseId); toast.success('Stock received'); refreshAfter(qc, 'stock'); onClose(); },
-    onError: (e) => toast.error(apiError(e)),
+    onSuccess: () => { saveStockWarehouse(warehouseId); toast.success('Stock added'); refreshAfter(qc, 'stock'); onClose(); },
+    onError: (e) => {
+      // The same press already went through (a double tap, or a retry after a lost answer): done, not an error.
+      if (wentThrough(e)) { toast.success('Already added — the stock is in'); refreshAfter(qc, 'stock'); onClose(); return; }
+      toast.error(apiError(e));
+    },
     onSettled: () => { sending.current = false; },
   });
 
-  const canSubmit = !!warehouseId && items.length > 0;
+  const canSubmit = !!warehouseId && items.length > 0 && !!reason.trim();
   const submit = () => {
     if (sending.current || save.isPending || !canSubmit) return;
     sending.current = true;
@@ -70,23 +84,29 @@ function ReceiveModal({ onClose }) {
   const pick = (next) => { setQty(next); setConfirmDiscard(false); };
 
   return (
-    <Modal open onClose={requestClose} size="lg" title="Receive stock"
+    <Modal open onClose={requestClose} size="lg" title="Opening stock"
       footer={confirmDiscard ? (
-        <DiscardFooter what="delivery" detail={`${formatNumber(boxes)} ${boxWord(boxes)} picked will be lost.`} onDiscard={onClose} onKeep={() => setConfirmDiscard(false)} />
+        <DiscardFooter what="entry" detail={`${formatNumber(boxes)} ${boxWord(boxes)} picked will be lost.`} onDiscard={onClose} onKeep={() => setConfirmDiscard(false)} />
       ) : (
         <>
           <div className="mr-auto min-w-0 flex-1 basis-0 text-sm">
-            {items.length === 0 ? <span className="text-muted">Tap + on what arrived</span> : (
-              <div className="truncate text-muted">{items.length} {items.length === 1 ? 'product' : 'products'}</div>
+            {items.length === 0 ? <span className="text-muted">Tap + on each product</span> : (
+              <>
+                <div className="truncate text-muted">{items.length} {items.length === 1 ? 'product' : 'products'}</div>
+                {!reason.trim() && <div className="text-xs text-amber-300">Pick or write a reason</div>}
+              </>
             )}
           </div>
           <Button variant="secondary" className="hidden sm:inline-flex" onClick={requestClose}>Cancel</Button>
           <Button data-picker-submit="" className="h-12 w-full text-base sm:h-auto sm:w-auto sm:text-sm" loading={save.isPending} disabled={!canSubmit} onClick={submit}>
-            {items.length && warehouse ? `Receive ${formatNumber(boxes)} ${boxWord(boxes)} into ${buttonPlace(warehouse.name)}` : 'Receive stock'}
+            {items.length && warehouse ? `Add ${formatNumber(boxes)} ${boxWord(boxes)} to ${buttonPlace(warehouse.name)}` : 'Add stock'}
           </Button>
         </>
       )}>
       <div className="space-y-2.5 sm:space-y-4 max-sm:min-h-[calc(100dvh_-_17rem)]">
+        <p className="text-xs leading-relaxed text-muted">
+          For stock you already hold that is not in the system yet. Cargo you bought is received on its purchase order, in the Purchases tab.
+        </p>
         <PlaceLine
           parts={[{ label: 'Into warehouse', kind: 'warehouse', name: warehouse ? warehouse.name : warehousesLoading ? '…' : 'No active warehouse', sub: warehouse?.region, amber: away, empty: !warehouse }]}
           open={editPlace}
@@ -100,7 +120,7 @@ function ReceiveModal({ onClose }) {
         <ProductPicker rows={rows} value={qty} onChange={pick} stock={warehouseId ? stock : null}
           placeName={warehouse ? shortPlace(warehouse.name) : 'here'} loading={productsLoading} emptyText="No products yet." />
 
-        <Field label="Notes"><Textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional" /></Field>
+        <ReasonField value={reason} onChange={setReason} chips={OPENING_REASONS} />
       </div>
     </Modal>
   );
@@ -297,7 +317,7 @@ function Balances() {
       ) : isError && !data ? (
         <Card><LoadError what="the stock" onRetry={refetch} /></Card>
       ) : !rows.length ? (
-        <Card><EmptyState title="No stock on hand" message="Receive stock to get started." icon={Boxes} /></Card>
+        <Card><EmptyState title="No stock on hand" message="Receive a purchase order, or add opening stock, to get started." icon={Boxes} /></Card>
       ) : (
         <>
           {(() => {
@@ -720,6 +740,8 @@ export default function Inventory() {
   const asked = params.get('tab');
   const tab = INVENTORY_TABS.some(([k]) => k === asked) ? asked : 'balances';
   const [modal, setModal] = useState(null); // 'receive' | 'adjust' | 'damage'
+  // Opening stock is the admin's (the server refuses anyone else).
+  const isAdmin = useAuth().user?.role === ROLES.ADMIN;
 
   // Fetch the inner pages' code while the owner reads the balances, so a tab click never waits for it.
   // Only ahead of the click: one that fails on a weak line is dropped, and the tab asks again when opened.
@@ -754,7 +776,7 @@ export default function Inventory() {
       <PageHeader title="Inventory" subtitle="Live balances and the full movement ledger.">
         <Button variant="secondary" onClick={() => setModal('damage')}>Record damage</Button>
         <Button variant="secondary" onClick={() => setModal('adjust')}><SlidersHorizontal className="h-4 w-4" /> Adjust</Button>
-        <Button onClick={() => setModal('receive')}><PackagePlus className="h-4 w-4" /> Receive stock</Button>
+        {isAdmin && <Button onClick={() => setModal('receive')}><PackagePlus className="h-4 w-4" /> Opening stock</Button>}
       </PageHeader>
 
       {tab === 'balances' ? <Balances /> : <Movements />}
