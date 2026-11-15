@@ -60,6 +60,8 @@ const settle = asyncHandler(async (req, res) => {
 // Doctor approves. (Ownership is enforced in the service for reps.)
 const submitSettlement = asyncHandler(async (req, res) => {
   const sub = await submission.submit(req.params.id, req.body, req.user);
+  // A repeat of a press already saved (same window key) hands back the first one, recorded once.
+  if (sub.replayed) return ok(res, sub);
   await audit.record(req, {
     action: 'SUBMIT_SETTLEMENT',
     entityType: 'SettlementSubmission',
@@ -72,6 +74,7 @@ const submitSettlement = asyncHandler(async (req, res) => {
 // Several products at once. One audit row per submission, so each can be traced on its own.
 const submitSettlements = asyncHandler(async (req, res) => {
   const subs = await submission.submitMany(req.params.id, req.body, req.user);
+  if (subs.length && subs.every((x) => x.replayed)) return ok(res, subs); // already saved by the first press
   for (const sub of subs) {
     // eslint-disable-next-line no-await-in-loop
     await audit.record(req, {

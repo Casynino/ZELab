@@ -9,6 +9,12 @@ const COST_KEYS = new Set([
   'cost', 'landedUnitCost', 'cogs', 'costOfSold', 'inventoryValue', 'grossMargin', 'netProfit',
 ]);
 
+// CallMeBot keys (audit ui-r02 / perm02): anyone holding a rep's key and number can send his phone WhatsApp
+// messages that look like ZELab's alerts. Every rep row a service includes carries it, so it went to warehouse
+// staff (every rep's) and to each rep (his own) in ordinary lists. Only the owner sets and reads them — on the
+// rep's profile and in Settings — so they leave every other answer here.
+const SECRET_KEYS = new Set(['whatsappApiKey', 'apiKey', 'apikey', 'toApiKey']);
+
 function stripWhere(value, drop) {
   if (Array.isArray(value)) return value.map((v) => stripWhere(v, drop));
   if (value && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
@@ -25,15 +31,17 @@ const stripKeys = (value, keys) => stripWhere(value, (k) => keys.has(k));
 
 const stripCosts = (value) => stripKeys(value, COST_KEYS);
 
+const stripSecrets = (value) => stripKeys(value, SECRET_KEYS);
+
 // A rep also never sees the stock-control levels (audit perm06): they came along inside the product of every
-// stock request and return, though GET /products already left them out.
-const REP_KEYS = new Set([...COST_KEYS, 'minStockLevel', 'reorderQuantity']);
+// stock request and return, though GET /products already left them out. Nor anyone's WhatsApp key.
+const REP_KEYS = new Set([...COST_KEYS, ...SECRET_KEYS, 'minStockLevel', 'reorderQuantity']);
 
 // Warehouse staff see no purchase price, cost, profit or margin either (audit perm05 / ui-r03 / purc07, 15 Nov 2026:
 // "what it cost is the owner's" — the purchase-order rule, now on every answer): products, sales, inventory and the
 // dashboard carried them. Matched by name as well as by the list, so a figure under another name (costMonth,
-// profitMonth, marginWeek, stockAtCost…) is covered too, and so is stock valued at cost.
-const STAFF_KEYS = new Set([...COST_KEYS, 'costValue', 'stockPotential']);
+// profitMonth, marginWeek, stockAtCost…) is covered too, and so is stock valued at cost. No WhatsApp keys either.
+const STAFF_KEYS = new Set([...COST_KEYS, ...SECRET_KEYS, 'costValue', 'stockPotential']);
 const staffDrop = (k) => STAFF_KEYS.has(k) || /cost|profit|margin/i.test(k);
 
 // Applied to every JSON answer (app.js): a rep gets the rep view; anyone else who is not the owner gets the staff view.
@@ -60,4 +68,4 @@ function stripProductStock(product) {
 
 const productsForRole = (req, data) => (req.user && req.user.role === 'SALES_REP' ? stripProductStock(data) : data);
 
-module.exports = { stripCosts, forRole, COST_KEYS, stripProductStock, productsForRole, PRODUCT_STOCK_KEYS };
+module.exports = { stripCosts, stripSecrets, forRole, COST_KEYS, SECRET_KEYS, stripProductStock, productsForRole, PRODUCT_STOCK_KEYS };

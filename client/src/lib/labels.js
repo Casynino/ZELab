@@ -12,7 +12,10 @@ export function timeLeftLabel(hours, empty = '—') {
   const h = Number(hours);
   if (h < 0) {
     const over = Math.abs(h);
-    return over < 1 ? 'just overdue' : `${Math.floor(over)}h overdue`;
+    // Past a day it counts days, as "6d left" does on the other side of the deadline: "234h overdue" read
+    // as noise next to "6d left" on the same list (audit ui-r10).
+    if (over < 1) return 'just overdue';
+    return over < 24 ? `${Math.floor(over)}h overdue` : `${Math.floor(over / 24)}d overdue`;
   }
   if (h < 1) return 'due now';
   if (h < 24) return `${Math.floor(h)}h left`;

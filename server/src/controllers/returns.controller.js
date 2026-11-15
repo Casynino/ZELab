@@ -20,6 +20,7 @@ const create = asyncHandler(async (req, res) => {
     payload.customerId = null;
   }
   const ret = await returnsService.createReturn(payload, req.user);
+  if (ret.replayed) return ok(res, ret); // the same press again: already sent and recorded
   await audit.record(req, {
     action: 'CREATE',
     entityType: 'Return',

@@ -113,6 +113,8 @@ const transferQuery = {
 
 const returnCreate = {
   body: z.object({
+    // One per opened Return window: a double tap or a retry after a lost answer sends nothing new.
+    clientKey: z.string().trim().min(8).max(80).optional(),
     type: z.enum(['CUSTOMER_RETURN', 'SALES_RETURN']),
     customerId: id.optional().nullable(),
     salesRepId: id.optional().nullable(),

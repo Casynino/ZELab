@@ -1,5 +1,5 @@
 import { LIVE } from '@/lib/polling';
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import clsx from 'clsx';
@@ -8,6 +8,8 @@ import { Plus, Search, X, CheckCircle, XCircle, Eye, Clock, CheckCircle2, Packag
 import api, { unwrap, apiError } from '@/lib/api';
 import { pageQueries, keepOnPageTurn } from '@/lib/pageQueries';
 import { useOnce } from '@/lib/useOnce';
+import { newClientKey } from '@/lib/once';
+import { useOlderPages, withOlder } from '@/lib/useOlderPages';
 import { refreshAfter } from '@/lib/afterWrite';
 import { useAuth } from '@/context/AuthContext';
 import { useProducts, useCustomers, useSalesReps, useWarehouses, useDebounce } from '@/lib/hooks';
@@ -19,7 +21,7 @@ import {
   Pagination, Table, THead, TBody, TR, TH, TD,
 } from '@/components/ui';
 import NumberedLines from '@/components/NumberedLines';
-import CollapsibleList from '@/components/CollapsibleList';
+import CollapsibleList, { ShowOlder } from '@/components/CollapsibleList';
 import SaleRefund from '@/components/SaleRefund';
 
 function defaultPkg(product) {
@@ -341,6 +343,10 @@ function ReturnModal({ onClose }) {
   const totalBoxes = Object.values(cart).reduce((s, q) => s + q, 0);
   const hasCart = totalBoxes > 0;
 
+  // One press at a time, and one key per window: a repeat after a lost answer comes back as the same
+  // return instead of a second one (audit ui-r00).
+  const sendOnce = useOnce();
+  const key = useRef(newClientKey());
   const create = useMutation({
     mutationFn: () => {
       const items = Object.entries(cart).map(([productId, quantity]) => {
@@ -348,7 +354,7 @@ function ReturnModal({ onClose }) {
         const pkg = defaultPkg(product);
         return { productId, packagingUnitId: pkg?.packagingUnitId, quantity };
       });
-      const payload = { type, items, reason: reason || undefined, customerId: customerId || null };
+      const payload = { clientKey: key.current, type, items, reason: reason || undefined, customerId: customerId || null };
       if (!isRep && salesRepId) payload.salesRepId = salesRepId;
       if (warehouseId) payload.warehouseId = warehouseId;
       return api.post('/returns', payload);
@@ -365,6 +371,7 @@ function ReturnModal({ onClose }) {
       onClose();
     },
     onError: (e) => toast.error(apiError(e)),
+    onSettled: sendOnce.done,
   });
 
   const valid = hasCart && (
@@ -385,7 +392,7 @@ function ReturnModal({ onClose }) {
         className="h-9 shrink-0 rounded-full px-4 text-[13px] font-medium text-muted transition hover:text-foreground active:scale-[0.97]">
         Cancel
       </button>
-      <Button className="h-9 flex-1 justify-center rounded-full px-4 text-[13px] font-semibold" loading={create.isPending} disabled={!valid} onClick={() => create.mutate()}>
+      <Button className="h-9 flex-1 justify-center rounded-full px-4 text-[13px] font-semibold" loading={create.isPending} disabled={!valid || create.isPending} onClick={() => sendOnce.run(() => create.mutate())}>
         {hasCart ? `Return ${formatNumber(totalBoxes)} box${totalBoxes !== 1 ? 'es' : ''}` : 'Return'}
       </Button>
     </div>
@@ -619,9 +626,10 @@ function HistoryRow({ r, onView }) {
 // showed me for requests — nice, not this"): a premium New return card, the returns still waiting as soft
 // cards, the rest in a History list that opens and closes. The tiles and the paragraph under them are gone;
 // the owner's and the warehouse's page is untouched.
-function RepReturnsView({ all, isLoading, failed = false, onRetry, onNew, onView, onCancel, cancellingId = null }) {
+function RepReturnsView({ all, total, older, isLoading, failed = false, onRetry, onNew, onView, onCancel, cancellingId = null }) {
   const pending = all.filter((r) => r.status === 'PENDING');
   const done = all.filter((r) => r.status !== 'PENDING');
+  const doneTotal = Math.max(done.length, (total ?? 0) - pending.length); // all of them, not only those loaded
   return (
     <div>
       <button
@@ -696,7 +704,7 @@ function RepReturnsView({ all, isLoading, failed = false, onRetry, onNew, onView
           )}
 
           {done.length > 0 && (
-            <CollapsibleList title="History" count={done.length} defaultOpen={pending.length === 0}>
+            <CollapsibleList title="History" count={doneTotal} defaultOpen={pending.length === 0}>
               {done.map((r) => {
                 const meta = statusMeta(r.status);
                 const tone = meta.cls?.split(' ').find((c) => c.startsWith('text-')) || 'text-muted';
@@ -719,6 +727,7 @@ function RepReturnsView({ all, isLoading, failed = false, onRetry, onNew, onView
                   </button>
                 );
               })}
+              {older?.hasMore && <ShowOlder loading={older.loading} onClick={older.more} />}
             </CollapsibleList>
           )}
         </div>
@@ -751,6 +760,15 @@ export default function Returns() {
     placeholderData: keepOnPageTurn({ type: typeFilter }),
     refetchInterval: LIVE,
   });
+  // A rep's list is one page of the newest hundred; older ones load on "Show older" (audit ui-r05). Staff
+  // page through with the pager instead, so for them this never fetches.
+  const older = useOlderPages({
+    key: ['returns', 'rep-older', typeFilter],
+    url: '/returns',
+    params: { limit: 100, type: typeFilter || undefined },
+    total: isRep ? data?.meta?.total : 0,
+    firstCount: (data?.data || []).length,
+  });
 
   // Per row: one press goes through until it has an answer (audit admin-ops-3).
   const once = useOnce();
@@ -780,7 +798,7 @@ export default function Returns() {
     const toCancel = all.find((r) => r.id === confirmCancelId);
     return (
       <div>
-        <RepReturnsView all={all} isLoading={isLoading} failed={isError && !data} onRetry={refetch} onNew={() => setOpen(true)} onView={setViewingId} onCancel={setConfirmCancelId} cancellingId={cancel.isPending ? cancel.variables : null} />
+        <RepReturnsView all={withOlder(all, older.rows)} total={data?.meta?.total} older={older} isLoading={isLoading} failed={isError && !data} onRetry={refetch} onNew={() => setOpen(true)} onView={setViewingId} onCancel={setConfirmCancelId} cancellingId={cancel.isPending ? cancel.variables : null} />
         {open && <ReturnModal onClose={() => setOpen(false)} />}
         {viewingId && <ReturnDetailModal returnId={viewingId} canDecide={false} onClose={() => setViewingId(null)} />}
         {/* One tap used to cancel at once (audit C34): the same second step as cancelling a stock request. */}

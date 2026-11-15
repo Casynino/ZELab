@@ -29,3 +29,18 @@ export default function CollapsibleList({ title, count, defaultOpen = false, var
     </section>
   );
 }
+
+// The last row of a history list that has older rows still on the server (audit ui-r05): one quiet line,
+// the same width as the rows above it.
+export function ShowOlder({ loading = false, onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={loading}
+      className="flex w-full items-center justify-center px-4 py-3 text-[13px] font-medium text-muted transition hover:bg-white/[0.04] hover:text-foreground disabled:opacity-60"
+    >
+      {loading ? 'Loading…' : 'Show older'}
+    </button>
+  );
+}

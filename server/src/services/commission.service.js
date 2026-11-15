@@ -107,6 +107,17 @@ function pickRate(rates, brandKey, whenMs) {
   return (best || fallback)?.perBox ?? 0;
 }
 
+// The moment a box is priced at: its order's issue date — but never before its product existed. A box can
+// only have joined an older order later (Add stock), and a product added after that order opened had no rate
+// on the order's date, so it fell to the no-brand fallback: Pepa (6,000 a box from 15 Nov 2026) paid 5,000
+// on any order opened before then (audit reps01). For every product that existed when its order opened this
+// is the order's date, so nothing already earned is re-priced.
+function rateMoment(orderWhen, productCreatedAt) {
+  const order = new Date(orderWhen || Date.now()).getTime();
+  const born = productCreatedAt ? new Date(productCreatedAt).getTime() : 0;
+  return Number.isFinite(born) && born > order ? born : order;
+}
+
 // ── Admin writes ─────────────────────────────────────────────────────────────
 
 async function listRates() {
@@ -177,10 +188,11 @@ async function ratesOn(when = new Date()) {
   }));
 }
 
-// Kept for callers that price a single box by brand NAME.
-async function rateForBrandAt(brandName, when) {
+// Kept for callers that price a single box by brand NAME. `productCreatedAt`, when given, keeps a box from
+// being priced before its product existed (see rateMoment).
+async function rateForBrandAt(brandName, when, productCreatedAt = null) {
   const rates = await allRates();
-  return pickRate(rates, normalizeBrand(brandName), new Date(when || Date.now()).getTime());
+  return pickRate(rates, normalizeBrand(brandName), rateMoment(when, productCreatedAt));
 }
 
 // What a rep has EARNED: every settled box priced with its own order's rule and
@@ -205,7 +217,7 @@ async function earnedForRep(salesRepId, { since = null } = {}) {
       },
       select: {
         baseQuantity: true,
-        product: { select: { brand: { select: { name: true } } } },
+        product: { select: { createdAt: true, brand: { select: { name: true } } } },
         sale: { select: { soldAt: true, settlement: { select: { issuedAt: true } } } },
       },
     }),
@@ -228,7 +240,7 @@ function priceItems(items, rates) {
     // The order's issue date decides the rate. A sale whose settlement vanished
     // falls back to its own date, which is never earlier.
     const when = it.sale?.settlement?.issuedAt || it.sale?.soldAt || new Date();
-    const rate = pickRate(rates, normalizeBrand(brand), new Date(when).getTime());
+    const rate = pickRate(rates, normalizeBrand(brand), rateMoment(when, it.product?.createdAt));
     const amount = qty * rate;
     earned += amount;
     boxes += qty;
@@ -272,11 +284,11 @@ async function rateForProductOnOrder(settlementId, productId) {
       ? prisma.settlement.findUnique({ where: { id: settlementId }, select: { issuedAt: true } }).catch(() => null)
       : null,
     productId
-      ? prisma.product.findUnique({ where: { id: productId }, select: { brand: { select: { name: true } } } }).catch(() => null)
+      ? prisma.product.findUnique({ where: { id: productId }, select: { createdAt: true, brand: { select: { name: true } } } }).catch(() => null)
       : null,
   ]);
   const when = stl?.issuedAt ? new Date(stl.issuedAt).getTime() : Date.now();
-  return pickRate(rates, normalizeBrand(prod?.brand?.name), when);
+  return pickRate(rates, normalizeBrand(prod?.brand?.name), rateMoment(when, prod?.createdAt));
 }
 
 // Commission earned inside a date window (by sale date), priced per box with
@@ -296,7 +308,7 @@ async function earnedBetween(start, end) {
     },
     select: {
       baseQuantity: true,
-      product: { select: { brand: { select: { name: true } } } },
+      product: { select: { createdAt: true, brand: { select: { name: true } } } },
       sale: { select: { salesRepId: true, soldAt: true, settlement: { select: { issuedAt: true } } } },
     },
   });
@@ -304,7 +316,7 @@ async function earnedBetween(start, end) {
   const byRep = new Map();
   for (const it of items) {
     const when = it.sale?.settlement?.issuedAt || it.sale?.soldAt || new Date();
-    const rate = pickRate(rates, normalizeBrand(it.product?.brand?.name), new Date(when).getTime());
+    const rate = pickRate(rates, normalizeBrand(it.product?.brand?.name), rateMoment(when, it.product?.createdAt));
     const amount = (it.baseQuantity || 0) * rate;
     total += amount;
     const id = it.sale.salesRepId;
@@ -331,13 +343,13 @@ async function earnedLinesForRep(salesRepId, start, end) {
     },
     select: {
       baseQuantity: true,
-      product: { select: { name: true, brand: { select: { name: true } } } },
+      product: { select: { name: true, createdAt: true, brand: { select: { name: true } } } },
       sale: { select: { soldAt: true, settlement: { select: { issuedAt: true } } } },
     },
   });
   return items.map((it) => {
     const when = it.sale?.settlement?.issuedAt || it.sale?.soldAt || new Date();
-    const rate = pickRate(rates, normalizeBrand(it.product?.brand?.name), new Date(when).getTime());
+    const rate = pickRate(rates, normalizeBrand(it.product?.brand?.name), rateMoment(when, it.product?.createdAt));
     const boxes = it.baseQuantity || 0;
     return {
       soldAt: it.sale?.soldAt,

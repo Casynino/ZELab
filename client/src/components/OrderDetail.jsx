@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { motion, useReducedMotion } from 'motion/react';
@@ -7,7 +7,7 @@ import api, { unwrap, apiError } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 import { useProducts, useWarehouses } from '@/lib/hooks';
 import { useOnce } from '@/lib/useOnce';
-import { wentThrough } from '@/lib/once';
+import { wentThrough, newClientKey } from '@/lib/once';
 import { refreshAfter } from '@/lib/afterWrite';
 import { ROLES, SETTLEMENT_STATUS_META } from '@/lib/constants';
 import { formatCurrency, formatNumber, formatDateTime, formatDate, unitWord } from '@/lib/format';
@@ -119,15 +119,23 @@ function SettleOneModal({ order, onClose, onDone }) {
   // The confirmation quotes the submission back, so the numbers are captured
   // before the form resets under it.
   const [sent, setSent] = useState(null);
+  // One press goes through until it has an answer, and the window's key makes a repeat of it (a retry after
+  // a lost answer) come back as the same settlement instead of a second one (audit ui-r00).
+  const once = useOnce();
+  const key = useRef(newClientKey());
   const settle = useMutation({
-    mutationFn: () => api.post(`/settlements/${order.id}/settle-boxes`, { productId, boxes: Number(boxes), accountId: accountId || undefined }),
-    onSuccess: () => {
-      setSent({ amount: value, boxes: Number(boxes), productName: line?.name });
+    mutationFn: () => api.post(`/settlements/${order.id}/settle-boxes`, { productId, boxes: Number(boxes), accountId: accountId || undefined, clientKey: key.current }),
+    // The receipt quotes what the server recorded: the same as typed, except when this was a repeat of a press
+    // already saved (same window key), which hands back that first settlement.
+    onSuccess: (res) => {
+      const d = res?.data?.data;
+      setSent({ amount: d?.amount != null ? Number(d.amount) : value, boxes: d?.boxes ?? Number(boxes), productName: d?.productName || line?.name });
       onDone();
     },
     // A lost answer may still have gone through: reload the order so the sheet shows what is left (audit
     // backend-integrity-5), and the server's refusal of a retry says the boxes are already waiting.
     onError: (e) => { toast.error(apiError(e)); onDone(); },
+    onSettled: once.done,
   });
 
   // Once it is sent the form is over: no footer buttons, nothing left to fill
@@ -149,7 +157,7 @@ function SettleOneModal({ order, onClose, onDone }) {
            competing with the button that matters. */
         <div className={BAR_CLS}>
           <button type="button" onClick={onClose} className={CANCEL_CLS}>Cancel</button>
-          <Button className={PRIMARY_CLS} loading={settle.isPending} disabled={!ready} onClick={() => settle.mutate()}>
+          <Button className={PRIMARY_CLS} loading={settle.isPending} disabled={!ready || settle.isPending} onClick={() => once.run(() => settle.mutate())}>
             {ready ? `Settle ${formatCurrency(value)}` : 'Settle'}
           </Button>
         </div>
@@ -301,16 +309,28 @@ function SettleManyModal({ order, onClose, onDone }) {
   const brandsChosen = groups.filter((g) => chosenIn(g).length > 0);
 
   const [sent, setSent] = useState(null);
+  const once = useOnce(); // one press at a time, and one key per window (audit ui-r00)
+  const key = useRef(newClientKey());
   const settle = useMutation({
     mutationFn: () => api.post(`/settlements/${order.id}/settle-many`, {
       items: chosen.map((l) => ({ productId: l.productId, boxes: cart[l.productId], accountId: accountFor(l.brandId || '') || undefined })),
+      clientKey: key.current,
     }),
-    onSuccess: () => {
-      setSent({ amount: total, boxes: totalBoxes, productName: chosen.length > 1 ? `${chosen.length} products` : chosen[0]?.name });
+    onSuccess: (res) => {
+      // What the server recorded (a repeated press gets the first one's lines back), else what was typed.
+      const rows = Array.isArray(res?.data?.data) && res.data.data.length ? res.data.data : null;
+      setSent(rows
+        ? {
+          amount: rows.reduce((n, r) => n + Number(r.amount || 0), 0),
+          boxes: rows.reduce((n, r) => n + Number(r.boxes || 0), 0),
+          productName: rows.length > 1 ? `${rows.length} products` : rows[0].productName,
+        }
+        : { amount: total, boxes: totalBoxes, productName: chosen.length > 1 ? `${chosen.length} products` : chosen[0]?.name });
       onDone();
     },
     // A lost answer may still have gone through: reload the order (audit backend-integrity-5).
     onError: (e) => { toast.error(apiError(e)); onDone(); },
+    onSettled: once.done,
   });
 
   if (sent) {
@@ -327,7 +347,7 @@ function SettleManyModal({ order, onClose, onDone }) {
       footer={
         <div className={BAR_CLS}>
           <button type="button" onClick={onClose} className={CANCEL_CLS}>Cancel</button>
-          <Button className={PRIMARY_CLS} loading={settle.isPending} disabled={!ready} onClick={() => settle.mutate()}>
+          <Button className={PRIMARY_CLS} loading={settle.isPending} disabled={!ready || settle.isPending} onClick={() => once.run(() => settle.mutate())}>
             {ready ? `Settle ${formatCurrency(total)}` : 'Settle'}
           </Button>
         </div>
@@ -431,6 +451,8 @@ function RecordReturnModal({ order, onClose, onDone }) {
   const totalBoxes = Object.values(cart).reduce((s, q) => s + q, 0);
   const hasCart = totalBoxes > 0;
 
+  const once = useOnce(); // one press at a time, and one key per window (audit ui-r00)
+  const key = useRef(newClientKey());
   const create = useMutation({
     mutationFn: () => {
       const items = Object.entries(cart).map(([productId, quantity]) => {
@@ -439,6 +461,7 @@ function RecordReturnModal({ order, onClose, onDone }) {
         return { productId, packagingUnitId: pkg?.packagingUnitId, quantity };
       });
       return api.post('/returns', {
+        clientKey: key.current,
         type: 'SALES_RETURN',
         salesRepId: order.salesRepId,
         warehouseId,
@@ -449,12 +472,13 @@ function RecordReturnModal({ order, onClose, onDone }) {
     },
     onSuccess: () => { toast.success('Return sent'); onDone(); onClose(); },
     onError: (e) => { toast.error(apiError(e)); onDone(); },
+    onSettled: once.done,
   });
 
   const footer = (
     <div className={BAR_CLS}>
       <button type="button" onClick={onClose} className={CANCEL_CLS}>Cancel</button>
-      <Button className={PRIMARY_CLS} loading={create.isPending} disabled={!warehouseId || !hasCart} onClick={() => create.mutate()}>
+      <Button className={PRIMARY_CLS} loading={create.isPending} disabled={!warehouseId || !hasCart || create.isPending} onClick={() => once.run(() => create.mutate())}>
         {hasCart ? `Return ${formatNumber(totalBoxes)} box${totalBoxes !== 1 ? 'es' : ''}` : 'Return boxes'}
       </Button>
     </div>

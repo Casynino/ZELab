@@ -491,7 +491,7 @@ async function profitOverview(opts = 'month') {
         },
       },
     }),
-    prisma.product.findMany({ select: { id: true, name: true, purchasePrice: true, sellingPrice: true, brand: { select: { id: true, name: true } } } }),
+    prisma.product.findMany({ select: { id: true, name: true, purchasePrice: true, sellingPrice: true, createdAt: true, brand: { select: { id: true, name: true } } } }),
     prisma.salesRepresentative.findMany({ include: { user: { select: { name: true } } } }),
     inventory.valuation(prisma),
   ]);
@@ -538,7 +538,7 @@ async function profitOverview(opts = 'month') {
     // — so it is a real cost of these very boxes, not of some later payout.
     // Direct warehouse sales have no settlement and no commission.
     const comm = it.sale?.settlementId
-      ? it.baseQuantity * (await commission.rateForBrandAt(p.brand?.name, it.sale.settlement?.issuedAt || it.sale.settlement?.createdAt))
+      ? it.baseQuantity * (await commission.rateForBrandAt(p.brand?.name, it.sale.settlement?.issuedAt || it.sale.settlement?.createdAt, p.createdAt))
       : 0;
     revenue += rev;
     cost += c;

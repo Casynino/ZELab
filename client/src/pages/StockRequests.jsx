@@ -12,18 +12,20 @@ import api, { unwrap, apiError } from '@/lib/api';
 import { useSearchParams } from 'react-router-dom';
 import { pageQueries, keepOnPageTurn } from '@/lib/pageQueries';
 import { useOnce } from '@/lib/useOnce';
+import { newClientKey } from '@/lib/once';
+import { useOlderPages, withOlder } from '@/lib/useOlderPages';
 import { refreshAfter } from '@/lib/afterWrite';
 import { pickParam, pageParam, withParams } from '@/lib/urlParams';
 import { useAuth } from '@/context/AuthContext';
 import { useProducts } from '@/lib/hooks';
 import { ROLES, REQUEST_STATUS_META } from '@/lib/constants';
-import { formatDate, formatDateTime, formatCurrency, formatNumber } from '@/lib/format';
+import { formatDate, formatDateTime, formatCurrency, formatNumber, unitWord } from '@/lib/format';
 import {
   PageHeader, Card, PageSpinner, EmptyState, Badge, Button, Modal, Field, Input, NumberInput,
   Pagination, LoadError, Table, THead, TBody, TR, TH, TD,
 } from '@/components/ui';
 import NumberedLines from '@/components/NumberedLines';
-import CollapsibleList from '@/components/CollapsibleList';
+import CollapsibleList, { ShowOlder } from '@/components/CollapsibleList';
 import { repRegions, shortRegion } from '@/lib/repRegions';
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -94,6 +96,10 @@ function CartOrderSheet({ onClose, existing }) {
   const [search, setSearch] = useState('');
   const [notes, setNotes] = useState(existing?.notes || '');
   const qc = useQueryClient();
+  // One press goes through until it has an answer, and the window's key makes a repeat of a new request (a
+  // retry after a lost answer) come back as the same request, not a second one (audit ui-r01).
+  const once = useOnce();
+  const key = useRef(newClientKey());
   // The city each box is for (Nino, 11 Nov 2026). One city: it is shown, already chosen, nothing to tap.
   // Two or more: the city words are tabs — the boxes set while a city is chosen are that city's, so one
   // request can carry boxes for several cities ("tell which box belongs to which city, but keep it simple").
@@ -199,7 +205,7 @@ function CartOrderSheet({ onClose, existing }) {
       };
       return editing
         ? api.put(`/stock-requests/${existing.id}`, body)
-        : api.post('/stock-requests', body);
+        : api.post('/stock-requests', { ...body, clientKey: key.current });
     },
     onSuccess: () => {
       toast.success(editing ? 'Order updated' : 'Request sent');
@@ -208,6 +214,7 @@ function CartOrderSheet({ onClose, existing }) {
       onClose();
     },
     onError: (e) => toast.error(apiError(e)),
+    onSettled: once.done,
   });
 
   // The same pill bar as the Settle and Return windows (Nino, 11 Nov 2026: "say Request, not Submit for
@@ -244,7 +251,7 @@ function CartOrderSheet({ onClose, existing }) {
               cityRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
               return;
             }
-            create.mutate();
+            once.run(() => create.mutate());
           }}
         >
           {create.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
@@ -399,7 +406,7 @@ function CartOrderSheet({ onClose, existing }) {
             items={cartEntries.map((e) => ({
               key: `${e.city}|${e.productId}`,
               name: e.product.name,
-              detail: `${e.qty} ${e.pkg?.packagingUnit?.name || 'box'} × ${formatCurrency(e.price)}${multiCity && e.city ? ` · ${shortRegion(e.city)}` : ''}`,
+              detail: `${e.qty} ${unitWord(e.qty, e.pkg?.packagingUnit?.name || 'Box')} × ${formatCurrency(e.price)}${multiCity && e.city ? ` · ${shortRegion(e.city)}` : ''}`,
               value: formatCurrency(e.lineTotal),
             }))}
           />
@@ -556,7 +563,7 @@ function OrderDetailModal({ request, isRep, staff, onClose, onEdit }) {
             return {
               key: i.id,
               name: i.product.name,
-              detail: `${fulfilled ? 'Approved' : 'Requested'} ${qty} ${i.packagingUnit.name} × ${formatCurrency(i.unitPrice)}${requestCities(request).length > 1 && i.region ? ` · ${shortRegion(i.region)}` : ''}`,
+              detail: `${fulfilled ? 'Approved' : 'Requested'} ${qty} ${unitWord(qty, i.packagingUnit.name)} × ${formatCurrency(i.unitPrice)}${requestCities(request).length > 1 && i.region ? ` · ${shortRegion(i.region)}` : ''}`,
               value: formatCurrency(lineTotal),
               extra: editable && (
                 <div className="mt-2 flex items-center gap-2 text-xs text-faint">
@@ -672,6 +679,14 @@ function RepRequestsView({ onView }) {
     ...pageQueries.stockRequestsMine(),
     refetchInterval: STEADY,
   });
+  const firstHistory = (data?.data || []).filter((r) => r.status !== 'PENDING');
+  const older = useOlderPages({
+    key: ['stock-requests', 'rep-all'],
+    url: '/stock-requests',
+    params: { decided: 'true', limit: 100 },
+    total: data?.meta?.historyTotal,
+    firstCount: firstHistory.length,
+  });
 
   if (isLoading) return <PageSpinner />;
   // A request that never came back is not "No requests yet" (audit #68).
@@ -679,7 +694,8 @@ function RepRequestsView({ onView }) {
 
   const all = data?.data || [];
   const active = all.filter((r) => r.status === 'PENDING');
-  const completed = all.filter((r) => r.status !== 'PENDING');
+  const completed = withOlder(firstHistory, older.rows);
+  const historyTotal = Math.max(data?.meta?.historyTotal ?? 0, completed.length);
 
   // One short heading per list, no icons and no badge. The active list is not drawn when nothing is
   // waiting — the page then goes straight from the New request button to the history.
@@ -712,8 +728,9 @@ function RepRequestsView({ onView }) {
       )}
 
       {completed.length > 0 && (
-        <CollapsibleList title="History" count={completed.length} defaultOpen={active.length === 0}>
+        <CollapsibleList title="History" count={historyTotal} defaultOpen={active.length === 0}>
           {completed.map((r) => <RepRequestRow key={r.id} r={r} onClick={() => onView(r)} />)}
+          {older.hasMore && <ShowOlder loading={older.loading} onClick={older.more} />}
         </CollapsibleList>
       )}
     </div>

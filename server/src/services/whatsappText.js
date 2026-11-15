@@ -463,7 +463,9 @@ const repTexts = {
     extensionCancelled && 'The extension is yours again. You can take it whenever this order is not overdue.',
     overdueNow && 'That time has already passed, so the order is overdue now. The daily fine runs from today. A return waiting for approval pauses it. Settle or return to stop it.',
   ),
-  RETURN_APPROVED: ({ number, boxes: n }) => rep('RETURN APPROVED', lines(`Return: ${number}`, `Quantity: ${boxes(n)}`), 'Added back to inventory.'),
+  // `closed` when this return accounted for the order's last box: said here, in the same message, as
+  // SETTLEMENT APPROVED does (audit reps07).
+  RETURN_APPROVED: ({ number, boxes: n, closed, order }) => rep('RETURN APPROVED', lines(`Return: ${number}`, `Quantity: ${boxes(n)}`), 'Added back to inventory.', closed && order && `Order ${order} is now fully closed.`),
   RETURN_REJECTED: ({ number, boxes: n, reason }) => rep('RETURN REJECTED', lines(`Return: ${number}`, `Quantity: ${boxes(n)}`), reason ? `Reason: ${reason}` : 'Please contact the administrator.'),
   RETURN_CANCELLED: ({ number }) => rep('RETURN CANCELLED', `Return: ${number}`, 'The boxes remain on your order. Settle or resubmit the return.'),
   RETURN_EXPIRED: ({ number, fine, hours }) => rep(
