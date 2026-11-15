@@ -84,15 +84,20 @@ export default function WalletCard({
       {/* The balance, and the one action beside it. They wrap onto two lines only
           when a very long figure meets a very narrow phone. */}
       <div className="-mt-0.5 flex flex-wrap items-center justify-between gap-x-3">
-        <p
-          className={clsx(
-            'min-w-0 text-[27px] font-bold leading-none tabular-nums',
-            negative ? 'text-rose-300' : 'text-white',
-            hidden && 'tracking-[0.18em]',
-          )}
-        >
-          {hidden ? DOTS : balance}
-        </p>
+        {/* A small arrow right after the figure says the card opens (Nino, 15 Nov 2026: no word on the
+            card, just a way to see it can be opened) — the way a banking app marks a tappable balance. */}
+        <span className="flex min-w-0 items-center gap-1">
+          <span
+            className={clsx(
+              'min-w-0 text-[27px] font-bold leading-none tabular-nums',
+              negative ? 'text-rose-300' : 'text-white',
+              hidden && 'tracking-[0.18em]',
+            )}
+          >
+            {hidden ? DOTS : balance}
+          </span>
+          {onOpen && <ChevronRight className="h-6 w-6 shrink-0 text-white/35" strokeWidth={2.2} aria-hidden="true" />}
+        </span>
         {/* A word, not a pill: bold white and an arrow, no fill, no outline. The
             height is only for the thumb — nothing of it shows. */}
         <button
@@ -121,14 +126,6 @@ export default function WalletCard({
             style={{ width: `${pct}%` }}
           />
         </div>
-      )}
-
-      {/* Where the card leads: every transaction and the totals. */}
-      {onOpen && (
-        <p className="mt-3.5 flex items-center justify-between text-[12px] text-white/55">
-          <span>Transactions</span>
-          <ChevronRight className="h-4 w-4" aria-hidden="true" />
-        </p>
       )}
 
       {/* Supporting figures, where a page still passes them: small, plain, no lines or boxes around them. */}
