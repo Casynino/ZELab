@@ -158,25 +158,18 @@ export default function BusinessWallet({ accounts, totalFunds, today }) {
       >
         <div className="flex flex-col gap-3 p-4 sm:p-5 lg:flex-row lg:items-center lg:gap-6">
           <div className="min-w-0 lg:w-[17rem] lg:shrink-0">
+            {/* No "Open accounts" words: the moving swipe arrows are the sign that the card opens (Nino, 16 Nov
+                2026: "no need to say open accounts there, just put those swipe icons"). */}
             <div className="flex items-center justify-between gap-2">
               <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-faint">In the accounts</p>
-              <button type="button" onClick={toAccounts}
-                className="cursor-pointer text-[11px] font-semibold text-brand-600 transition hover:text-brand-600 lg:hidden">
-                Open accounts →
-              </button>
+              <ChevronsRight className="wallet-nudge h-4 w-4 shrink-0 text-white/60 lg:hidden" strokeWidth={2.4} aria-hidden="true" />
             </div>
             <p className="mt-1 text-[26px] font-bold leading-none tracking-tight text-foreground sm:text-[32px]">
               {formatCurrency(total)}
             </p>
-            {/* Today's move, and the arrow that says the card opens (as on a rep's wallet; no Withdraw here). */}
-            <div className="mt-2.5 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
-              <span title={`In ${formatCurrency(today.moneyIn || 0)} · out ${formatCurrency(today.moneyOut || 0)}`}>
-                <TodayMove net={net} />
-              </span>
-              <span className="flex items-center gap-1 text-[11px] font-medium text-muted">
-                <ChevronsRight className="wallet-nudge h-3.5 w-3.5 shrink-0" strokeWidth={2.4} aria-hidden="true" />
-                Swipe for details
-              </span>
+            {/* Today's move in the balance (no Withdraw here: the business is not a rep). */}
+            <div className="mt-2.5" title={`In ${formatCurrency(today.moneyIn || 0)} · out ${formatCurrency(today.moneyOut || 0)}`}>
+              <TodayMove net={net} />
             </div>
           </div>
 
@@ -189,17 +182,33 @@ export default function BusinessWallet({ accounts, totalFunds, today }) {
                 ))}
               </div>
             )}
-            {/* Four at most on the card (live has three: M-Pesa, Airtel Money, Cash); the details list them all. */}
-            <ul className="mt-2 grid grid-cols-1 gap-x-6 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
-              {all.slice(0, 4).map((a) => <AccountLine key={a.id} a={a} />)}
-            </ul>
-            {all.length > 4 && <p className="mt-1 text-[11px] text-faint">+{all.length - 4} more accounts</p>}
+            {/* The accounts side by side, set out like the Money in / Money out / Opening figures on an account's
+                card (Nino, 16 Nov 2026: "that is how I want to list the accounts"): the name small on top, the
+                balance under it, no lines or boxes. Four at most (live has three: Airtel Money, M-Pesa, Cash);
+                the details list them all. */}
+            <div className="mt-3 flex flex-wrap justify-between gap-x-4 gap-y-2.5">
+              {all.slice(0, 4).map((a) => {
+                const empty = a.share == null;
+                return (
+                  <div key={a.id} className="min-w-0 max-w-[11rem]">
+                    <p className="flex items-center gap-1.5 text-[10px] text-white/45">
+                      <span aria-hidden className={clsx('h-1.5 w-1.5 shrink-0 rounded-full', empty ? 'bg-white/25' : BAR[a._i % BAR.length])} />
+                      <span className="truncate">{a.name}</span>
+                      {!empty && <span className="tabular-nums text-white/35">{a.share}%</span>}
+                    </p>
+                    <p className={clsx('mt-px whitespace-nowrap text-[12.5px] font-medium tabular-nums',
+                      a.balance < 0 ? 'text-rose-300' : empty ? 'text-white/55' : 'text-white/85')}>
+                      {formatCurrency(a.balance)}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
+            {all.length > 4 && <p className="mt-1.5 text-[11px] text-faint">+{all.length - 4} more accounts</p>}
           </div>
 
-          <button type="button" onClick={toAccounts}
-            className="hidden shrink-0 cursor-pointer text-xs font-semibold text-brand-600 transition hover:text-brand-600 lg:block">
-            Open accounts →
-          </button>
+          {/* On a wide screen the sign sits at the card's far end, where "Open accounts" was. */}
+          <ChevronsRight className="wallet-nudge hidden h-5 w-5 shrink-0 text-white/60 lg:block" strokeWidth={2.4} aria-hidden="true" />
         </div>
       </div>
 
