@@ -2961,7 +2961,25 @@ function SuppliersTab({ accounts }) {
       {/* The returned card only appears once something has gone back, so a
           business that has never returned stock sees the four cards it always
           saw. */}
-      <div className={anyReturns ? 'grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-5' : 'grid grid-cols-2 gap-3 xl:grid-cols-4'}>
+      {/* A phone: the five figures as one short list, the figure on the right (as on the Overview). */}
+      <ul className="glass-list divide-y divide-white/[0.06] sm:hidden">
+        {[
+          { label: 'Suppliers', note: 'who you buy from', value: formatNumber(suppliers.length - removed.length), tone: 'text-foreground' },
+          { label: 'Total purchased', note: 'all stock ever bought', value: formatCurrency(totals.purchased), tone: 'text-foreground' },
+          anyReturns && { label: 'Goods returned', note: `bill is ${formatCurrency(netPurchased)} after them`, value: formatCurrency(totals.returned), tone: 'text-amber-300' },
+          { label: 'Total paid', note: netPurchased > 0 ? `${Math.round((totals.paid / netPurchased) * 100)}% of the bill` : 'nothing yet', value: formatCurrency(totals.paid), tone: 'text-emerald-300' },
+          { label: 'Still owed', note: totals.out > 0 ? 'they are financing your stock' : 'all settled', value: formatCurrency(totals.out), tone: totals.out > 0 ? 'text-rose-300' : 'text-emerald-300' },
+        ].filter(Boolean).map((r) => (
+          <li key={r.label} className="flex items-center justify-between gap-3 px-4 py-2.5">
+            <span className="min-w-0">
+              <span className="block truncate text-[13px] font-medium text-foreground">{r.label}</span>
+              <span className="block truncate text-[11px] text-white/50">{r.note}</span>
+            </span>
+            <span className={`shrink-0 whitespace-nowrap text-[14px] font-semibold tabular-nums ${r.tone}`}>{r.value}</span>
+          </li>
+        ))}
+      </ul>
+      <div className={anyReturns ? 'hidden grid-cols-2 gap-3 sm:grid lg:grid-cols-3 xl:grid-cols-5' : 'hidden grid-cols-2 gap-3 sm:grid xl:grid-cols-4'}>
         <TintCard label="Suppliers" value={formatNumber(suppliers.length - removed.length)} icon={Factory} tone="slate" sub="who you buy from" />
         <TintCard label="Total purchased" value={formatCurrency(totals.purchased)} icon={Package} tone="slate" sub="all stock ever bought" />
         {anyReturns && (
@@ -2974,12 +2992,68 @@ function SuppliersTab({ accounts }) {
           sub={totals.out > 0 ? 'they are financing your stock' : 'all settled'} />
       </div>
       <Card>
-        <div className="flex items-center justify-between border-b border-border p-4">
-          <div className="text-sm text-faint">Purchases are created in <b>Imports &amp; POs</b>; record payments here.</div>
-          <Button onClick={() => setAddOpen(true)}><Plus className="h-4 w-4" /> Supplier</Button>
+        <div className="flex items-center justify-between gap-3 border-b border-border p-4">
+          <div className="text-[12px] text-faint sm:text-sm">Purchases are created in <b>Imports &amp; POs</b>; record payments here.</div>
+          <Button className="shrink-0 px-3 py-1.5 text-xs sm:px-4 sm:py-2 sm:text-sm" onClick={() => setAddOpen(true)}><Plus className="h-4 w-4" /> Supplier</Button>
         </div>
         {!suppliers.length ? <EmptyState title="No suppliers yet" message="Add your suppliers to start tracking purchases and payments." icon={Factory} /> : (
-          <Table stack="wide">
+          <>
+          {/* Phone, tablet and small laptop (Nino, 16 Nov 2026: "not well on the phone"): one short row per
+              supplier instead of the table stacked into tall cards of capital-letter labels. What is owed on the
+              right; under the name its brand, country and orders, the share paid, then bought · paid · returned. */}
+          <ul className="divide-y divide-white/[0.06] xl:hidden">
+            {shown.map((s) => {
+              const billed = s.totalPurchased - (s.totalReturned || 0);
+              const out = Number(s.outstanding) || 0;
+              return (
+                <li key={s.id}>
+                  <button type="button" onClick={() => setViewing(s.id)}
+                    className="w-full cursor-pointer px-4 py-3 text-left transition hover:bg-white/[0.03] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/30">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="flex items-center gap-2 truncate text-[14px] font-semibold text-foreground">
+                          <span className="truncate">{s.name}</span>
+                          {s.isActive === false && <Badge className="bg-white/[0.06] text-muted">Inactive</Badge>}
+                        </p>
+                        <p className="mt-0.5 truncate text-[11.5px] text-faint">
+                          {[s.brandName, s.country, `${formatNumber(s.poCount)} order${s.poCount === 1 ? '' : 's'}`].filter(Boolean).join(' · ')}
+                        </p>
+                      </div>
+                      <div className="shrink-0 text-right">
+                        {out > 0.5 ? (
+                          <>
+                            <p className="text-[14px] font-semibold tabular-nums text-rose-300">{formatCurrency(out)}</p>
+                            <p className="text-[11px] text-faint">owed</p>
+                          </>
+                        ) : out < -0.5 ? (
+                          <>
+                            <p className="text-[14px] font-semibold tabular-nums text-emerald-300">{formatCurrency(-out)}</p>
+                            <p className="text-[11px] text-faint">in credit</p>
+                          </>
+                        ) : (
+                          <p className="text-[12.5px] font-semibold text-emerald-300">Paid up</p>
+                        )}
+                      </div>
+                    </div>
+                    {billed > 0 && (
+                      <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-white/[0.07]">
+                        <div className={out > 0 ? 'h-full bg-amber-500' : 'h-full bg-emerald-500'}
+                          style={{ width: `${Math.min(100, Math.max(2, (s.totalPaid / billed) * 100))}%` }} />
+                      </div>
+                    )}
+                    <p className="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[11.5px] text-white/50">
+                      <span className="whitespace-nowrap">Bought <span className="tabular-nums text-white/80">{formatCurrency(s.totalPurchased)}</span></span>
+                      <span className="whitespace-nowrap">Paid <span className="tabular-nums text-emerald-300">{formatCurrency(s.totalPaid)}</span></span>
+                      {s.totalReturned > 0 && (
+                        <span className="whitespace-nowrap">Returned <span className="tabular-nums text-amber-300">−{formatCurrency(s.totalReturned)}</span></span>
+                      )}
+                    </p>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+          <Table stack="wide" className="hidden xl:block">
             <THead><TR><TH>Supplier</TH><TH className="hidden xl:table-cell">Brand</TH><TH className="hidden xl:table-cell">Country</TH><TH>Orders</TH><TH>Purchased</TH>{anyReturns && <TH>Returned</TH>}<TH>Paid</TH><TH>Outstanding</TH></TR></THead>
             <TBody>
               {shown.map((s) => {
@@ -3020,6 +3094,7 @@ function SuppliersTab({ accounts }) {
               })}
             </TBody>
           </Table>
+          </>
         )}
         {removed.length > 0 && (
           <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border px-4 py-3 text-xs text-faint">
