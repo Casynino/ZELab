@@ -128,7 +128,9 @@ export default function BusinessWallet({ accounts, totalFunds, today }) {
   const [open, setOpen] = useState(false);
   const total = Number(totalFunds) || 0;
   const { held, rest } = pockets(accounts);
-  const all = [...held, ...rest];
+  // Only the accounts holding money (Nino, 16 Nov 2026: "only show the accounts with money — Cash should not be
+  // visible" when it holds nothing). One below zero still shows, in rose: that is something to see.
+  const all = [...held, ...rest.filter((a) => a.balance !== 0)];
   const net = today.netCash || 0;
   const toAccounts = (e) => { e?.stopPropagation(); setOpen(false); navigate('/finance?tab=accounts'); };
 
@@ -184,7 +186,7 @@ export default function BusinessWallet({ accounts, totalFunds, today }) {
             )}
             {/* The accounts side by side, set out like the Money in / Money out / Opening figures on an account's
                 card (Nino, 16 Nov 2026: "that is how I want to list the accounts"): the name small on top, the
-                balance under it, no lines or boxes. Four at most (live has three: Airtel Money, M-Pesa, Cash);
+                balance under it, no lines or boxes. Four at most (on live, M-Pesa and Airtel Money while Cash is empty);
                 the details list them all. */}
             <div className="mt-3 flex flex-wrap justify-between gap-x-4 gap-y-2.5">
               {all.slice(0, 4).map((a) => {
@@ -205,6 +207,7 @@ export default function BusinessWallet({ accounts, totalFunds, today }) {
               })}
             </div>
             {all.length > 4 && <p className="mt-1.5 text-[11px] text-faint">+{all.length - 4} more accounts</p>}
+            {!all.length && <p className="text-[12px] text-muted">No account holds money right now.</p>}
           </div>
 
           {/* On a wide screen the sign sits at the card's far end, where "Open accounts" was. */}
@@ -230,7 +233,7 @@ export default function BusinessWallet({ accounts, totalFunds, today }) {
               <ul className="divide-y divide-white/[0.05]">
                 {all.map((a) => <AccountLine key={a.id} a={a} roomy />)}
               </ul>
-            ) : <p className="py-3 text-center text-[12px] text-muted">No accounts yet.</p>}
+            ) : <p className="py-3 text-center text-[12px] text-muted">No account holds money right now.</p>}
           </section>
 
           <section>
