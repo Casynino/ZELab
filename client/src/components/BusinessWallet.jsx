@@ -55,17 +55,18 @@ function AccountLine({ a, roomy = false }) {
   );
 }
 
-// Today's move in the balance: up in green, down in rose, with the arrow pointing the way it went.
+// Today's move in the balance, as one small plain line under the total: a little arrow and the amount, green up,
+// rose down (Nino, 16 Nov 2026: "clean and nice, not with the shade around, and not big").
 function TodayMove({ net }) {
   const up = net > 0;
   const down = net < 0;
   const Icon = up ? TrendingUp : down ? TrendingDown : Minus;
   return (
     <span className={clsx(
-      'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11.5px] font-semibold tabular-nums',
-      up ? 'bg-emerald-500/15 text-emerald-300' : down ? 'bg-rose-500/15 text-rose-300' : 'bg-white/[0.06] text-muted',
+      'inline-flex items-center gap-1 text-[12px] font-medium tabular-nums',
+      up ? 'text-emerald-400' : down ? 'text-rose-300' : 'text-faint',
     )}>
-      <Icon className="h-3.5 w-3.5" strokeWidth={2.4} />
+      <Icon className="h-3.5 w-3.5" strokeWidth={2.2} />
       {net === 0 ? 'No change today' : <>{up ? '+' : '−'}{formatCurrency(Math.abs(net))} today</>}
     </span>
   );
@@ -170,7 +171,7 @@ export default function BusinessWallet({ accounts, totalFunds, today }) {
               {formatCurrency(total)}
             </p>
             {/* Today's move in the balance (no Withdraw here: the business is not a rep). */}
-            <div className="mt-2.5" title={`In ${formatCurrency(today.moneyIn || 0)} · out ${formatCurrency(today.moneyOut || 0)}`}>
+            <div className="mt-1.5" title={`In ${formatCurrency(today.moneyIn || 0)} · out ${formatCurrency(today.moneyOut || 0)}`}>
               <TodayMove net={net} />
             </div>
           </div>
