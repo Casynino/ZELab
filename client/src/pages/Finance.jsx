@@ -589,6 +589,59 @@ function Term({ label, sign, value, tone, dot, caption, big, wide }) {
 }
 const Op = ({ children, wide }) => <span className={`hidden self-center px-1 pt-3 text-lg font-light text-white/30 ${wide === 'lg' ? 'lg:block' : wide ? 'xl:block' : 'sm:block'}`} aria-hidden="true">{children}</span>;
 
+// The header on a phone (Nino, 16 Nov 2026: "on the phone it looks overwhelming"): the cash first, then the sum as
+// a short list read top to bottom — sales, less the goods and the expenses, what was earned — one row each, the
+// figure on the right. The same figures and the same order as the wide header; only the layout differs.
+function PhoneSum({ data, cs, cashHeld, yoursPct, dueNow, margin }) {
+  const rows = [
+    { key: 'sales', label: 'Sales', note: `${formatNumber(data.boxesSold ?? 0)} boxes`, value: data.revenue, dot: 'bg-sky-400' },
+    (data.noCost?.revenue ?? 0) > 0 && { key: 'nocost', label: '− No buying price', note: 'not in profit', value: data.noCost.revenue, dot: 'bg-white/40', tone: 'text-amber-300' },
+    { key: 'cogs', label: '− Cost of goods', value: data.cogs, dot: 'bg-rose-400' },
+    { key: 'exp', label: '− Expenses', value: data.expenses, dot: 'bg-amber-400' },
+    (data.stockLoss ?? 0) > 0 && { key: 'loss', label: '− Stock lost', value: data.stockLoss, dot: 'bg-orange-400' },
+  ].filter(Boolean);
+  return (
+    <div className="stat-glass p-4 sm:hidden">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[11px] font-medium text-white/55">Cash you hold</p>
+          <p className="mt-0.5 whitespace-nowrap text-[22px] font-bold leading-tight tabular-nums text-foreground">{formatCurrency(cashHeld)}</p>
+          {cs && (
+            <p className="mt-0.5 text-[11px] text-white/50">
+              {dueNow > 0 ? <>yours <span className="tabular-nums text-emerald-300">{formatCurrency(cs.yours)}</span></> : 'all of it yours'}
+            </p>
+          )}
+        </div>
+        {yoursPct != null && <Ring pct={yoursPct} size={44} stroke={4} />}
+      </div>
+
+      <ul className="mt-3 space-y-2 border-t border-white/[0.07] pt-3">
+        {rows.map((r) => (
+          <li key={r.key} className="flex items-baseline justify-between gap-3">
+            <span className="flex min-w-0 items-center gap-1.5 text-[12.5px] text-white/65">
+              <span className={`h-1.5 w-1.5 shrink-0 self-center rounded-full ${r.dot}`} />
+              {r.label}
+              {r.note && <span className="truncate text-[11px] text-white/40">{r.note}</span>}
+            </span>
+            <span className={`shrink-0 whitespace-nowrap text-[13.5px] font-semibold tabular-nums ${r.tone || 'text-foreground'}`}>{formatCurrency(r.value)}</span>
+          </li>
+        ))}
+        <li className="flex items-baseline justify-between gap-3 border-t border-white/[0.07] pt-2">
+          <span className="flex min-w-0 items-center gap-1.5 text-[12.5px] font-medium text-foreground">
+            <span className="h-1.5 w-1.5 shrink-0 self-center rounded-full bg-emerald-400" />
+            = Earned
+            {margin != null && <span className="text-[11px] font-normal text-white/40">{margin}% of sales</span>}
+          </span>
+          <span className={`shrink-0 whitespace-nowrap text-[16px] font-bold tabular-nums ${data.netProfit >= 0 ? 'text-emerald-300' : 'text-rose-300'}`}>{formatCurrency(data.netProfit)}</span>
+        </li>
+      </ul>
+      <p className="mt-1.5 text-right text-[11px] text-white/45">
+        reps earned <span className="tabular-nums text-amber-300/90">{formatCurrency(data.commissionAccrued ?? 0)}</span>
+      </p>
+    </div>
+  );
+}
+
 function Overview({ onNavigate, onOwnerMoney }) {
   const [period, setPeriod] = usePeriod();
   const { data, isLoading, isError, refetch } = useQuery({
@@ -717,17 +770,19 @@ function Overview({ onNavigate, onOwnerMoney }) {
     <div className="space-y-4">
       {/* ── The period and his two money buttons ── */}
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="inline-flex rounded-full bg-white/[0.04] p-1 ring-1 ring-inset ring-white/10" role="tablist" aria-label="Period">
+        {/* On a phone the four periods share the width evenly and the two buttons sit half and half under them
+            (Nino, 16 Nov 2026: the phone looked "overwhelming"); from a tablet up, as before. */}
+        <div className="flex w-full rounded-full bg-white/[0.04] p-1 ring-1 ring-inset ring-white/10 sm:inline-flex sm:w-auto" role="tablist" aria-label="Period">
           {PERIODS.map(([k, label]) => (
             <button key={k} type="button" role="tab" aria-selected={period === k} onClick={() => setPeriod(k)}
-              className={`min-h-11 cursor-pointer rounded-full px-3 py-1 text-xs font-semibold transition sm:min-h-0 sm:px-3.5 sm:text-[13px] ${period === k ? 'bg-white/[0.14] text-foreground shadow-sm' : 'text-muted hover:text-foreground'}`}>{label}</button>
+              className={`min-h-10 flex-1 cursor-pointer rounded-full px-2 py-1 text-xs font-semibold transition sm:min-h-0 sm:flex-none sm:px-3.5 sm:text-[13px] ${period === k ? 'bg-white/[0.14] text-foreground shadow-sm' : 'text-muted hover:text-foreground'}`}>{label}</button>
           ))}
         </div>
-        <div className="flex gap-2">
-          <Button variant="secondary" className="min-h-11 px-3 py-1.5 text-xs sm:min-h-0" onClick={() => onOwnerMoney?.('in')} title="Cash of your own going into an account — owed back to you">
+        <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto">
+          <Button variant="secondary" className="min-h-10 justify-center px-3 py-1.5 text-xs sm:min-h-0" onClick={() => onOwnerMoney?.('in')} title="Cash of your own going into an account — owed back to you">
             <ArrowDownLeft className="h-3.5 w-3.5" /> Put my money in
           </Button>
-          <Button variant="secondary" className="min-h-11 px-3 py-1.5 text-xs sm:min-h-0" onClick={() => onOwnerMoney?.('out')}>
+          <Button variant="secondary" className="min-h-10 justify-center px-3 py-1.5 text-xs sm:min-h-0" onClick={() => onOwnerMoney?.('out')}>
             <ArrowUpRight className="h-3.5 w-3.5" /> Take profit out
           </Button>
         </div>
@@ -736,7 +791,8 @@ function Overview({ onNavigate, onOwnerMoney }) {
       {/* ── Header strip: the period · sales − goods − expenses = earned · the cash ring ── */}
       {/* One row only from 2xl (1536px): below that the sum is too narrow for its figures, so it keeps its own
           full-width row under the period and the ring. */}
-      <div className="stat-glass grid grid-cols-1 gap-4 p-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:px-5 2xl:grid-cols-[minmax(0,11rem)_minmax(0,1fr)_auto] 2xl:gap-6">
+      <PhoneSum data={data} cs={cs} cashHeld={cashHeld} yoursPct={yoursPct} dueNow={dueNow} margin={margin} />
+      <div className="stat-glass hidden gap-4 p-4 sm:grid sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:px-5 2xl:grid-cols-[minmax(0,11rem)_minmax(0,1fr)_auto] 2xl:gap-6">
         <div className="min-w-0">
           <p className="hidden text-[10px] font-semibold uppercase tracking-[0.16em] text-white/45 sm:block">Overview</p>
           <p className="text-[15px] font-semibold leading-tight text-foreground sm:mt-1 sm:whitespace-nowrap">{periodTitle}</p>
@@ -801,7 +857,33 @@ function Overview({ onNavigate, onOwnerMoney }) {
       {/* ── Six small figures ── */}
       {/* Colour only where it carries meaning: in green, out red, an amount owed amber. */}
       {/* Six across only from 2xl: at xl a laptop with the sidebar open cut the figures off (ui-ad06). */}
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 2xl:grid-cols-6">
+      {/* A phone: the six as one plain list, name and a short note on the left, the figure on the right. */}
+      <ul className="glass-list divide-y divide-white/[0.06] sm:hidden">
+        {[
+          { label: 'Money in', note: `collected ${words}`, value: formatCurrency(flow.moneyIn), tone: 'text-emerald-300', tab: 'cashflow' },
+          { label: 'Money out', note: `paid ${words}`, value: formatCurrency(flow.moneyOut), tone: 'text-rose-300', tab: 'cashflow' },
+          { label: 'Net movement', note: `accounts ${net >= 0 ? 'gained' : 'lost'}`, value: formatCurrency(net), tone: net >= 0 ? 'text-foreground' : 'text-rose-300', tab: 'cashflow' },
+          {
+            label: `You owe ${supplierLabel}`,
+            note: dueNow > 0 ? <span className="text-rose-300">{formatCurrency(dueNow)} due now</span> : totalOwed > 0 ? 'none due yet' : 'nothing outstanding',
+            value: formatCurrency(totalOwed), tone: totalOwed > 0 ? 'text-amber-300' : 'text-foreground', tab: 'suppliers',
+          },
+          { label: 'Your money in it', note: 'owed back to you', value: formatCurrency(om.owedBackToOwner || 0), tone: 'text-foreground', tab: null },
+          { label: 'Reps can withdraw', note: 'commission and bonus', value: formatCurrency(data.outstandingCommission), tone: data.outstandingCommission > 0 ? 'text-amber-300' : 'text-foreground', tab: 'commissions' },
+        ].map((r) => (
+          <li key={r.label}>
+            <button type="button" disabled={!r.tab} onClick={() => r.tab && onNavigate?.(r.tab)}
+              className="flex w-full items-center justify-between gap-3 px-4 py-2.5 text-left enabled:cursor-pointer">
+              <span className="min-w-0">
+                <span className="block truncate text-[13px] font-medium text-foreground">{r.label}</span>
+                <span className="block truncate text-[11px] text-white/50">{r.note}</span>
+              </span>
+              <span className={`shrink-0 whitespace-nowrap text-[14px] font-semibold tabular-nums ${r.tone}`}>{r.value}</span>
+            </button>
+          </li>
+        ))}
+      </ul>
+      <div className="hidden grid-cols-2 gap-4 sm:grid sm:grid-cols-3 2xl:grid-cols-6">
         <Tile label="Money in" value={formatCurrency(flow.moneyIn)} tone="text-emerald-300" caption={`collected ${words}`}
           title={`What the business collected ${words}`} onClick={() => onNavigate?.('cashflow')} />
         <Tile label="Money out" value={formatCurrency(flow.moneyOut)} tone="text-rose-300" caption={`paid ${words}`}
