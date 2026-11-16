@@ -1,80 +1,73 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import clsx from 'clsx';
-import { Banknote, ChevronRight, Landmark, Minus, Smartphone, TrendingDown, TrendingUp, Wallet } from 'lucide-react';
-import WalletCard from '@/components/WalletCard';
+import { Banknote, ChevronRight, ChevronsRight, Landmark, Minus, Smartphone, TrendingDown, TrendingUp, Wallet } from 'lucide-react';
 import { Modal } from '@/components/ui';
 import { pageQueries } from '@/lib/pageQueries';
-import { formatCurrency, formatNumber, formatDate, sharePercents } from '@/lib/format';
+import { formatCurrency, formatDate, sharePercents } from '@/lib/format';
 import { TXN_TYPE_LABEL } from '@/lib/financeFigures';
 
-// The business money on the owner's Home, on the same card a rep's wallet wears (Nino, 16 Nov 2026: "copy how
-// the wallet there looks, the way it slides … only the card there with the money, with the details of the
-// money — M-Pesa, Airtel and Cash"). The card says the total and today's move; a swipe or a tap opens the
-// accounts, today's money in and out and the latest movements. On an iPad or a computer the accounts also
-// sit beside the card, where a phone has no room for them.
+// The money on the owner's Home: the "In the accounts" card, its look and colours as they were (Nino, 16 Nov
+// 2026: "the same look, don't change the colour or anything"). Inside, the accounts are set out the way the
+// Accounts page sets them (an icon in the account's colour, the name, the balance, its share), Cash included
+// when it holds nothing; today's move sits under the total with the arrow that says the card opens — no
+// Withdraw, the business is not a rep. A swipe across the card, or a tap, opens the details: today's money in
+// and out, every account and the latest movements.
 //
 // Every figure is the dashboard's own (the accounts and today's flow from Finance); nothing is worked out here
 // but each account's share of the total.
 
 const ICON = { CASH: Banknote, MOBILE_MONEY: Smartphone, BANK: Landmark };
+// One colour per account, by its place in the list: the bar, its icon and its share (the colours this card had).
+const BAR = ['bg-brand-400', 'bg-violet-400', 'bg-cyan-300', 'bg-amber-300'];
+const CHIP = ['bg-brand-500/15 text-brand-400', 'bg-violet-500/15 text-violet-300', 'bg-cyan-400/15 text-cyan-300', 'bg-amber-400/15 text-amber-300'];
+const SHARE = ['text-brand-400', 'text-violet-300', 'text-cyan-300', 'text-amber-300'];
 
-// The money accounts, biggest first. The Commission account is only the record of payouts the owner made from
-// his own pocket before 15 Nov 2026: no money sits in it, so it is not one of them. An account holding nothing
-// (Cash, often) is still listed: it is one of the places the money can be.
-function pockets(accounts, total) {
-  const list = (accounts || []).filter((a) => !a.isCommissionRecord).sort((a, b) => Number(b.balance) - Number(a.balance));
-  const shares = sharePercents(list.map((a) => Math.max(0, Number(a.balance) || 0)), total);
-  return list.map((a, i) => ({ ...a, share: shares[i] }));
+// The money accounts: those holding money first (biggest first), then the empty ones. The Commission account is
+// only the record of payouts the owner made from his own pocket before 15 Nov 2026; no money sits in it.
+function pockets(accounts) {
+  const list = (accounts || []).filter((a) => !a.isCommissionRecord).map((a, i) => ({ ...a, balance: Number(a.balance) || 0, _i: i }));
+  const held = list.filter((a) => a.balance > 0).sort((a, b) => b.balance - a.balance);
+  const rest = list.filter((a) => a.balance <= 0);
+  const above = held.reduce((s, a) => s + a.balance, 0);
+  const shares = sharePercents(held.map((a) => a.balance), above);
+  return { held: held.map((a, k) => ({ ...a, share: shares[k] })), rest, above };
 }
 
-// Today's move in the balance, where a rep's card has its Withdraw button: the same round glass button, an
-// arrow up or down, and the amount under it.
-function TodayMove({ net, hidden }) {
+// One account, as the Accounts page lists it. An empty one is greyed and has no share.
+function AccountLine({ a, roomy = false }) {
+  const Icon = ICON[a.type] || Wallet;
+  const empty = a.share == null;
+  return (
+    <li className={clsx('flex min-w-0 items-center gap-2.5 text-[13px]', roomy ? 'py-2' : 'py-1')}>
+      <span className={clsx('flex h-7 w-7 shrink-0 items-center justify-center rounded-full', empty ? 'bg-white/[0.05] text-white/40' : CHIP[a._i % CHIP.length])}>
+        <Icon className="h-3.5 w-3.5" />
+      </span>
+      <span className={clsx('min-w-0 flex-1 truncate leading-tight', empty ? 'text-white/50' : 'text-muted')}>{a.name}</span>
+      <span className={clsx('shrink-0 whitespace-nowrap font-semibold tabular-nums', a.balance < 0 ? 'text-rose-300' : empty ? 'text-white/60' : 'text-foreground')}>
+        {formatCurrency(a.balance)}
+      </span>
+      <span className={clsx('w-9 shrink-0 text-right text-[11px] font-semibold tabular-nums', empty ? 'text-faint' : SHARE[a._i % SHARE.length])}>
+        {empty ? '—' : `${a.share}%`}
+      </span>
+    </li>
+  );
+}
+
+// Today's move in the balance: up in green, down in rose, with the arrow pointing the way it went.
+function TodayMove({ net }) {
   const up = net > 0;
   const down = net < 0;
   const Icon = up ? TrendingUp : down ? TrendingDown : Minus;
   return (
-    <div className="flex shrink-0 flex-col items-center gap-1" aria-label={net === 0 ? 'No change today' : `${up ? 'Up' : 'Down'} ${formatCurrency(Math.abs(net))} today`}>
-      <span className="flex h-11 w-11 items-center justify-center rounded-full bg-white/[0.12] ring-1 ring-inset ring-white/20 backdrop-blur-sm">
-        <Icon className={clsx('h-[18px] w-[18px]', up ? 'text-emerald-300' : down ? 'text-rose-300' : 'text-white/50')} strokeWidth={2.4} />
-      </span>
-      <span className="text-center leading-tight">
-        <span className={clsx('block whitespace-nowrap text-[11px] font-semibold tabular-nums', up ? 'text-emerald-300' : down ? 'text-rose-300' : 'text-white/55')}>
-          {net === 0 ? 'No change' : hidden ? '•••' : `${up ? '+' : '−'}${formatNumber(Math.abs(net))}`}
-        </span>
-        <span className="block text-[10px] text-white/45">today</span>
-      </span>
-    </div>
-  );
-}
-
-// One account: what it is, its share of the money, its balance.
-function AccountRow({ a, onOpen, compact = false }) {
-  const Icon = ICON[a.type] || Wallet;
-  return (
-    <li>
-      <button type="button" onClick={onOpen}
-        className={clsx(
-          'flex w-full cursor-pointer items-center gap-3 text-left transition hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/30',
-          compact ? 'py-1.5' : 'py-2',
-        )}>
-        <span className={clsx(
-          'flex shrink-0 items-center justify-center rounded-full bg-white/[0.06] text-muted ring-1 ring-inset ring-white/[0.08]',
-          compact ? 'h-7 w-7' : 'h-8 w-8',
-        )}>
-          <Icon className="h-4 w-4" />
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-[13.5px] font-medium leading-snug text-foreground">{a.name}</span>
-          <span className="block text-[11.5px] tabular-nums text-muted">{a.share}% of the money</span>
-        </span>
-        <span className={clsx('shrink-0 text-[13.5px] font-semibold tabular-nums', Number(a.balance) < 0 ? 'text-rose-300' : 'text-foreground')}>
-          {formatCurrency(a.balance)}
-        </span>
-      </button>
-    </li>
+    <span className={clsx(
+      'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11.5px] font-semibold tabular-nums',
+      up ? 'bg-emerald-500/15 text-emerald-300' : down ? 'bg-rose-500/15 text-rose-300' : 'bg-white/[0.06] text-muted',
+    )}>
+      <Icon className="h-3.5 w-3.5" strokeWidth={2.4} />
+      {net === 0 ? 'No change today' : <>{up ? '+' : '−'}{formatCurrency(Math.abs(net))} today</>}
+    </span>
   );
 }
 
@@ -134,42 +127,86 @@ export default function BusinessWallet({ accounts, totalFunds, today }) {
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const total = Number(totalFunds) || 0;
-  const list = pockets(accounts, total);
+  const { held, rest } = pockets(accounts);
+  const all = [...held, ...rest];
   const net = today.netCash || 0;
-  const toAccounts = () => { setOpen(false); navigate('/finance?tab=accounts'); };
+  const toAccounts = (e) => { e?.stopPropagation(); setOpen(false); navigate('/finance?tab=accounts'); };
+
+  // A sideways swipe across the card opens it, as the rep's wallet does; a tap does too. A page scroll does not.
+  const touch = useRef(null);
+  const swiped = useRef(false);
+  const onTouchStart = (e) => { const t = e.touches[0]; touch.current = { x: t.clientX, y: t.clientY }; swiped.current = false; };
+  const onTouchEnd = (e) => {
+    const from = touch.current; touch.current = null;
+    if (!from) return;
+    const t = e.changedTouches[0];
+    if (Math.abs(t.clientX - from.x) > 40 && Math.abs(t.clientY - from.y) < 30) { swiped.current = true; setOpen(true); }
+  };
+  const onClick = () => { if (swiped.current) { swiped.current = false; return; } setOpen(true); };
 
   return (
     <>
-      <div className="mb-3 grid gap-3 sm:mb-4 md:grid-cols-[minmax(0,24rem)_minmax(0,1fr)]">
-        <WalletCard
-          balance={formatCurrency(total)}
-          negative={total < 0}
-          label="ZELab balance"
-          hint="Swipe for details"
-          openLabel="Open the money details"
-          aside={(hidden) => <TodayMove net={net} hidden={hidden} />}
-          onOpen={() => setOpen(true)}
-        />
-
-        {/* Beside the card where there is room: the three biggest accounts, so the card keeps its own size;
-            the rest, today's in and out and the movements are one swipe away, as on a phone. */}
-        <div className="card hidden flex-col justify-center px-4 py-2.5 md:flex">
-          <div className="flex items-center justify-between gap-3">
-            <Heading>Accounts</Heading>
-            <button type="button" onClick={toAccounts} className="cursor-pointer text-[11px] font-semibold text-brand-600 transition hover:underline">
-              {list.length > 3 ? `All ${list.length} →` : 'Open accounts →'}
-            </button>
+      <div
+        role="button"
+        tabIndex={0}
+        aria-label="Open the money details"
+        onClick={onClick}
+        onTouchStart={onTouchStart}
+        onTouchEnd={onTouchEnd}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen(true); } }}
+        className="card wallet-lift mb-3 cursor-pointer overflow-hidden focus:outline-none focus-visible:ring-2 focus-visible:ring-white/30 sm:mb-4"
+      >
+        <div className="flex flex-col gap-3 p-4 sm:p-5 lg:flex-row lg:items-center lg:gap-6">
+          <div className="min-w-0 lg:w-[17rem] lg:shrink-0">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-faint">In the accounts</p>
+              <button type="button" onClick={toAccounts}
+                className="cursor-pointer text-[11px] font-semibold text-brand-600 transition hover:text-brand-600 lg:hidden">
+                Open accounts →
+              </button>
+            </div>
+            <p className="mt-1 text-[26px] font-bold leading-none tracking-tight text-foreground sm:text-[32px]">
+              {formatCurrency(total)}
+            </p>
+            {/* Today's move, and the arrow that says the card opens (as on a rep's wallet; no Withdraw here). */}
+            <div className="mt-2.5 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+              <span title={`In ${formatCurrency(today.moneyIn || 0)} · out ${formatCurrency(today.moneyOut || 0)}`}>
+                <TodayMove net={net} />
+              </span>
+              <span className="flex items-center gap-1 text-[11px] font-medium text-muted">
+                <ChevronsRight className="wallet-nudge h-3.5 w-3.5 shrink-0" strokeWidth={2.4} aria-hidden="true" />
+                Swipe for details
+              </span>
+            </div>
           </div>
-          <ul className="divide-y divide-white/[0.05]">
-            {list.slice(0, 3).map((a) => <AccountRow key={a.id} a={a} onOpen={toAccounts} compact />)}
-          </ul>
+
+          {/* Where it sits: the bar carries the proportions; each account below it, as on the Accounts page. */}
+          <div className="min-w-0 flex-1 border-t border-white/[0.06] pt-3 lg:border-l lg:border-t-0 lg:pl-6 lg:pt-0">
+            {total > 0 && held.length > 0 && (
+              <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-white/[0.07]">
+                {held.map((a) => (
+                  <div key={a.id} className={BAR[a._i % BAR.length]} style={{ width: `${Math.max(0, (a.balance / total) * 100)}%` }} />
+                ))}
+              </div>
+            )}
+            {/* Four at most on the card (live has three: M-Pesa, Airtel Money, Cash); the details list them all. */}
+            <ul className="mt-2 grid grid-cols-1 gap-x-6 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+              {all.slice(0, 4).map((a) => <AccountLine key={a.id} a={a} />)}
+            </ul>
+            {all.length > 4 && <p className="mt-1 text-[11px] text-faint">+{all.length - 4} more accounts</p>}
+          </div>
+
+          <button type="button" onClick={toAccounts}
+            className="hidden shrink-0 cursor-pointer text-xs font-semibold text-brand-600 transition hover:text-brand-600 lg:block">
+            Open accounts →
+          </button>
         </div>
       </div>
 
-      <Modal open={open} onClose={() => setOpen(false)} title="ZELab wallet">
+      <Modal open={open} onClose={() => setOpen(false)} title="In the accounts">
         <div className="space-y-4">
           <div className="rounded-2xl bg-white/[0.03] px-4 py-3.5 ring-1 ring-inset ring-white/[0.06]">
-            <p className="text-[11px] text-muted">ZELab balance</p>
+            <p className="text-[11px] text-muted">Total</p>
             <p className={clsx('mt-0.5 text-[22px] font-bold leading-tight tabular-nums', total < 0 ? 'text-rose-300' : 'text-foreground')}>
               {formatCurrency(total)}
             </p>
@@ -180,9 +217,9 @@ export default function BusinessWallet({ accounts, totalFunds, today }) {
 
           <section>
             <Heading>Accounts</Heading>
-            {list.length ? (
+            {all.length ? (
               <ul className="divide-y divide-white/[0.05]">
-                {list.map((a) => <AccountRow key={a.id} a={a} onOpen={toAccounts} />)}
+                {all.map((a) => <AccountLine key={a.id} a={a} roomy />)}
               </ul>
             ) : <p className="py-3 text-center text-[12px] text-muted">No accounts yet.</p>}
           </section>

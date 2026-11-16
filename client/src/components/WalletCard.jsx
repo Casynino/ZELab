@@ -26,12 +26,6 @@ export default function WalletCard({
   stats = [],         // [{ label, value (formatted), tone? }] — optional; the rep's own card shows none
   onWithdraw,
   onOpen,             // tap the card: every transaction, with the totals (Nino, 15 Nov 2026)
-  // The owner's home wears the same card for the business money (Nino, 16 Nov 2026: "exactly like the rep
-  // wallet"): its own words, and `aside(hidden)` in the Withdraw button's place (today's move in the balance).
-  label = 'Available balance',
-  hint = 'Swipe for history',
-  openLabel = 'Open my wallet history',
-  aside,
 }) {
   const [hidden, setHidden] = useState(readHidden);
   const toggle = () => setHidden((h) => { saveHidden(!h); return !h; });
@@ -57,7 +51,7 @@ export default function WalletCard({
     <section
       role={onOpen ? 'button' : undefined}
       tabIndex={onOpen ? 0 : undefined}
-      aria-label={onOpen ? openLabel : undefined}
+      aria-label={onOpen ? 'Open my wallet history' : undefined}
       onClick={onOpen ? onClick : undefined}
       onTouchStart={onOpen ? onTouchStart : undefined}
       onTouchEnd={onOpen ? onTouchEnd : undefined}
@@ -92,7 +86,7 @@ export default function WalletCard({
       {/* Label, the eye, and the house mark where a bank card keeps its logo. */}
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-1.5">
-          <span className="truncate text-[11px] font-medium tracking-wide text-white/60">{label}</span>
+          <span className="truncate text-[11px] font-medium tracking-wide text-white/60">Available balance</span>
           <button
             type="button"
             onClick={own(toggle)}
@@ -122,11 +116,11 @@ export default function WalletCard({
           {onOpen && (
             <p className="mt-2 flex items-center gap-1 text-[11px] font-medium text-white/55">
               <ChevronsRight className="wallet-nudge h-3.5 w-3.5 shrink-0" strokeWidth={2.4} aria-hidden="true" />
-              {hint}
+              Swipe for history
             </p>
           )}
         </div>
-        {aside ? aside(hidden) : <button
+        <button
           type="button"
           onClick={own(onWithdraw)}
           onTouchStart={(e) => e.stopPropagation()}
@@ -144,7 +138,7 @@ export default function WalletCard({
             <ArrowUpRight className="h-[18px] w-[18px]" strokeWidth={2.4} />
           </span>
           <span className={clsx('text-[11px] font-semibold', canWithdraw ? 'text-white' : 'text-white/45')}>Withdraw</span>
-        </button>}
+        </button>
       </div>
 
       {/* Nothing is written on the card but the figures (Nino, 11 Nov 2026: keep the
@@ -152,7 +146,7 @@ export default function WalletCard({
           go and the greyed Withdraw says why it cannot be pressed; at the minimum
           the line goes and Withdraw lights up. A negative balance only turns the
           figure rose; the page says why, in a line under the card. */}
-      {!aside && !negative && !canWithdraw && (
+      {!negative && !canWithdraw && (
         <div className="mt-3 h-[3px] w-full overflow-hidden rounded-full bg-white/[0.09]">
           <div
             className="h-full rounded-full bg-gradient-to-r from-earn-500 to-earn-300 transition-[width] duration-700 ease-out"
