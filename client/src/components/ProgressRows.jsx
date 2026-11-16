@@ -7,12 +7,8 @@ import { bonusRow, walletRow } from '@/lib/labels';
 // it unlocks. One row type answers it for both, so they read as a pair rather
 // than two unrelated widgets competing for the same screen.
 // `pct` is the headline; `barPct` (when given) is the fill, for a track whose notches use another scale.
-// The admin's home uses the same card for the business (16 Nov 2026): `value` replaces the percentage as the
-// headline, `segments` splits the track (the money by account, the boxes by where they sit), `side` replaces the
-// reward on the right, and with neither `pct` nor `segments` there is no track at all.
-export function Row({ label, pct, barPct, hint, reward, ready, readyLabel, markers = [], onClick, value, segments, side }) {
+function Row({ label, pct, barPct, hint, reward, ready, readyLabel, markers = [], onClick }) {
   const width = Math.max(0, Math.min(100, pct || 0));
-  const track = pct != null || segments;
   const fill = barPct == null ? width : Math.max(0, Math.min(100, barPct));
   const Tag = onClick ? 'button' : 'div';
   return (
@@ -27,19 +23,17 @@ export function Row({ label, pct, barPct, hint, reward, ready, readyLabel, marke
       <div className="flex items-center justify-between gap-3">
         <p className="text-xs font-medium text-muted">{label}</p>
         <span className={clsx(
-          'min-w-0 truncate text-xl font-bold leading-none tabular-nums',
+          'text-xl font-bold leading-none tabular-nums',
           // Gold, not the brand red: red reads as money owed (Nino, 15 Nov 2026).
           ready ? 'text-emerald-400' : 'text-earn-300',
         )}>
-          {value ?? <>{Math.round(width)}<span className="text-xs font-semibold text-faint">%</span></>}
+          {Math.round(width)}<span className="text-xs font-semibold text-faint">%</span>
         </span>
       </div>
 
-      {track && <div className="relative mt-2">
-        <div className="flex h-1 w-full overflow-hidden rounded-full bg-white/[0.07]">
-          {segments ? segments.map((g) => (
-            <div key={g.key} className={clsx('h-full', g.className)} style={{ width: `${Math.max(0, Math.min(100, g.pct))}%` }} />
-          )) : <div
+      <div className="relative mt-2">
+        <div className="h-1 w-full overflow-hidden rounded-full bg-white/[0.07]">
+          <div
             className={clsx(
               'h-full rounded-full transition-[width] duration-700 ease-out',
               ready
@@ -47,7 +41,7 @@ export function Row({ label, pct, barPct, hint, reward, ready, readyLabel, marke
                 : 'bg-gradient-to-r from-earn-500 to-earn-300',
             )}
             style={{ width: `${fill}%` }}
-          />}
+          />
         </div>
         {/* A notch per bonus tier, so the next milestone is visible on the track
             rather than buried on another page. */}
@@ -61,18 +55,18 @@ export function Row({ label, pct, barPct, hint, reward, ready, readyLabel, marke
             style={{ left: `calc(${Math.min(100, m.at)}% - 1px)` }}
           />
         ))}
-      </div>}
+      </div>
 
       <div className="mt-1.5 flex items-baseline justify-between gap-3">
         {/* It may carry a figure ("TSh 150,000 ready — or push on"), so it wraps rather than cutting it. */}
         <p className="min-w-0 text-[11px] leading-tight text-muted">
           {ready ? <span className="font-semibold text-emerald-400">{readyLabel}</span> : hint}
         </p>
-        {side ?? (reward != null && (
+        {reward != null && (
           <span className="shrink-0 text-[11px] font-semibold leading-none tabular-nums text-emerald-400">
             {formatCurrency(reward)}
           </span>
-        ))}
+        )}
       </div>
     </Tag>
   );
