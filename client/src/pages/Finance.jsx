@@ -20,7 +20,7 @@ import CommissionsPage from '@/pages/Commissions';
 import clsx from 'clsx';
 import { formatCurrency, formatNumber, formatDate, formatDateTime, sharePercents } from '@/lib/format';
 import { eatISODate, eatDay } from '@/lib/tz';
-import { statementRows, poPayCap } from '@/lib/financeFigures';
+import { statementRows, poPayCap, TXN_TYPE_LABEL } from '@/lib/financeFigures';
 import { figuresAreLive, correctionFrom } from '@/lib/freshness';
 import { wentThrough } from '@/lib/once';
 
@@ -56,16 +56,6 @@ const ACCOUNT_TINT = [
   { ring: 'ring-sky-500/25', glow: 'from-sky-500/[0.10]', chip: 'bg-sky-500/15 text-sky-300' },
   { ring: 'ring-amber-500/25', glow: 'from-amber-500/[0.10]', chip: 'bg-amber-500/15 text-amber-300' },
 ];
-const TXN_TYPE_LABEL = {
-  SETTLEMENT: 'Settlement received', WAREHOUSE_SALE: 'Warehouse sale', INCOME: 'Income',
-  EXPENSE: 'Expense', STOCK_PURCHASE: 'Stock purchase', COMMISSION_PAYMENT: 'Commission paid',
-  // Rep commission and bonuses paid from a business account (15 Nov 2026), shown apart from other expenses.
-  REP_COMMISSION: 'Rep commissions',
-  TRANSFER: 'Transfer', ADJUSTMENT: 'Adjustment',
-  // the owner's own money, in the words of the Overview buttons ("Put my money in" / "Take profit out")
-  OWNER_CONTRIBUTION: 'Your money in', OWNER_DRAWING: 'Profit taken out',
-};
-
 // One tinted stat card — the ring/glow/chip language the Inventory and
 // Settlements pages settled on. Finance was the last page still on the old
 // flat cards.

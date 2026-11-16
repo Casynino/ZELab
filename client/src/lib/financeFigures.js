@@ -44,3 +44,14 @@ export function saleProfit(s) {
   const knownRevenue = known.reduce((n, it) => n + Number(it.lineTotal || 0) * share, 0);
   return { profit: r2(knownRevenue - Number(s.costTotal || 0)), unknownBoxes };
 }
+
+// What each kind of ledger row is called (Finance and the owner's wallet card on Home).
+export const TXN_TYPE_LABEL = {
+  SETTLEMENT: 'Settlement received', WAREHOUSE_SALE: 'Warehouse sale', INCOME: 'Income',
+  EXPENSE: 'Expense', STOCK_PURCHASE: 'Stock purchase', COMMISSION_PAYMENT: 'Commission paid',
+  // Rep commission and bonuses paid from a business account (15 Nov 2026), shown apart from other expenses.
+  REP_COMMISSION: 'Rep commissions',
+  TRANSFER: 'Transfer', ADJUSTMENT: 'Adjustment',
+  // the owner's own money, in the words of the Overview buttons ("Put my money in" / "Take profit out")
+  OWNER_CONTRIBUTION: 'Your money in', OWNER_DRAWING: 'Profit taken out',
+};

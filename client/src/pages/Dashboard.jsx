@@ -33,6 +33,7 @@ import api, { apiError } from '@/lib/api';
 import { pageQueries } from '@/lib/pageQueries';
 import { refreshAfter } from '@/lib/afterWrite';
 import PayWithdrawalModal from '@/components/PayWithdrawalModal';
+import BusinessWallet from '@/components/BusinessWallet';
 import { useAuth } from '@/context/AuthContext';
 import { formatCurrency, formatNumber, formatPercent, formatDateTime } from '@/lib/format';
 import { TrendChart, BarChartCard, DonutChart, MonthBars } from '@/components/chartsLazy';
@@ -113,10 +114,6 @@ function Mini({ label, value, sub }) {
   );
 }
 
-// One colour per account, used by the hero bar and its dots so a pocket is
-// recognisable at a glance.
-const HERO_BAR = ['bg-brand-400', 'bg-violet-400', 'bg-cyan-300', 'bg-amber-300'];
-const HERO_DOT = ['bg-brand-400', 'bg-violet-400', 'bg-cyan-300', 'bg-amber-300'];
 
 // Deciding a withdrawal needs three things in front of you: who is asking, how
 // much, and where they want it sent — plus what they are actually owed, so an
@@ -636,13 +633,6 @@ export default function Dashboard() {
   // A window the server could not read is not offered as a tab and never
   // shown as a row of zeros: the month, which is read separately, stands in.
   const shown = periods[period].available ? periods[period] : periods.month;
-  // Only accounts actually holding money belong in "where it sits". The index
-  // is carried along so each keeps its own colour when another empties. The
-  // Commission account is not one of them: it is the record of what the owner
-  // paid reps from his own pocket, and no money sits in it at all.
-  const withIndex = accounts.filter((a) => !a.isCommissionRecord).map((a, i) => ({ ...a, _i: i }));
-  const funded = withIndex.filter((a) => Number(a.balance) !== 0);
-  const heroAccounts = funded.length ? funded : withIndex;
   const attentionCount =
     attention.stockRequests + attention.settlements + attention.returns +
     attention.overdueSettlements + attention.lowStock.count + attention.outOfStock;
@@ -757,84 +747,11 @@ export default function Dashboard() {
         );
       })()}
 
-      {/* ── The money ──────────────────────────────────────────────────────
-             One band, not a panel. It carried a second column of today's
-             movement — money in, money out, net, boxes sold — which is the
-             same four figures the tiles directly below state better, and
-             holding both made the card tall enough to push the day's business
-             off the screen. The card now answers one question, the one it is
-             named for: how much is there, and which pocket is holding it. ── */}
-      {isAdmin && (
-      <div className="card mb-3 overflow-hidden sm:mb-4">
-        <div className="flex flex-col gap-3 p-4 sm:p-5 lg:flex-row lg:items-center lg:gap-6">
-          <div className="min-w-0 lg:w-[16rem] lg:shrink-0">
-            <div className="flex items-center justify-between gap-2">
-              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-faint">In the accounts</p>
-              <button onClick={() => navigate('/finance?tab=accounts')}
-                className="cursor-pointer text-[11px] font-semibold text-brand-600 transition hover:text-brand-600 lg:hidden">
-                Open accounts →
-              </button>
-            </div>
-            <p className="mt-1 text-[26px] font-bold leading-none tracking-tight text-foreground sm:text-[32px]">
-              {formatCurrency(totalFunds)}
-            </p>
-            {/* The net move in the balance above it, worded as one. It read
-                "TSh 449,000 out today" on a day when 624,000 went out and
-                175,000 came in; both gross figures are on the tooltip. */}
-            <span
-              title={`In ${formatCurrency(today.moneyIn || 0)} · out ${formatCurrency(today.moneyOut || 0)}`}
-              className={clsx(
-                'mt-2 inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold',
-                today.netCash === 0 ? 'bg-white/[0.06] text-muted'
-                  : today.netCash > 0 ? 'bg-emerald-500/15 text-emerald-300' : 'bg-rose-500/15 text-rose-300',
-              )}>
-              {today.netCash === 0 ? null : today.netCash > 0 ? <ArrowDownLeft className="h-3 w-3" /> : <ArrowUpRight className="h-3 w-3" />}
-              {today.netCash === 0
-                ? 'No change today'
-                : <>{formatCurrency(Math.abs(today.netCash))} {today.netCash > 0 ? 'up' : 'down'} today</>}
-            </span>
-          </div>
-
-          {/* Where it sits: the bar carries the proportions, so each pocket
-              only has to name itself. An account holding nothing is not an
-              answer to "where does it sit", so it is left out; its colour
-              stays reserved by its original position, and the others do not
-              shuffle when one empties. */}
-          <div className="min-w-0 flex-1">
-            {totalFunds > 0 && (
-              <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-white/[0.07]">
-                {heroAccounts.map((a) => (
-                  <div key={a.id} className={HERO_BAR[a._i % HERO_BAR.length]}
-                    style={{ width: `${Math.max(0, (a.balance / totalFunds) * 100)}%` }} />
-                ))}
-              </div>
-            )}
-            <div className="mt-2.5 grid grid-cols-1 gap-x-5 gap-y-1.5 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
-              {heroAccounts.map((a) => {
-                const share = totalFunds > 0 ? Math.round((a.balance / totalFunds) * 100) : 0;
-                return (
-                  <button key={a.id} onClick={() => navigate('/finance?tab=accounts')}
-                    className="flex w-full min-w-0 cursor-pointer items-center gap-2 text-left transition hover:opacity-80">
-                    <span className={clsx('h-2 w-2 shrink-0 rounded-full', HERO_DOT[a._i % HERO_DOT.length])} />
-                    <span className="min-w-0 flex-1 truncate text-[13px] text-muted">{a.name}</span>
-                    <span className={clsx('shrink-0 text-[13px] font-bold tabular-nums', a.balance < 0 ? 'text-rose-300' : 'text-foreground')}>
-                      {formatCurrency(a.balance)}
-                    </span>
-                    <span className="w-8 shrink-0 text-right text-[11px] tabular-nums text-faint">{share}%</span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          <button onClick={() => navigate('/finance?tab=accounts')}
-            className="hidden shrink-0 cursor-pointer text-xs font-semibold text-brand-600 transition hover:text-brand-600 lg:block">
-            Open accounts →
-          </button>
-        </div>
-      </div>
-      )}
-
+      {/* ── The money ──
+          The rep's wallet card, worn by the business (Nino, 16 Nov 2026: "exactly like the rep wallet, with the
+          details of the money"): the total and today's move on the card; a swipe or a tap opens the accounts,
+          today's in and out and the latest movements. It was a band of its own here, "In the accounts". ── */}
+      {isAdmin && <BusinessWallet accounts={accounts} totalFunds={totalFunds} today={today} />}
 
       {/* ── Today's business (all from Finance) ──
           A figure on its own says how much and nothing about whether that is
