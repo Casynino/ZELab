@@ -33,6 +33,7 @@ import api, { apiError } from '@/lib/api';
 import { pageQueries } from '@/lib/pageQueries';
 import { refreshAfter } from '@/lib/afterWrite';
 import PayWithdrawalModal from '@/components/PayWithdrawalModal';
+import { Row as ProgressRow } from '@/components/ProgressRows';
 import { useAuth } from '@/context/AuthContext';
 import { formatCurrency, formatNumber, formatPercent, formatDateTime } from '@/lib/format';
 import { TrendChart, BarChartCard, DonutChart, MonthBars } from '@/components/chartsLazy';
@@ -563,6 +564,123 @@ function repStatusBadge(r) {
 }
 
 /* The little heading that sits above a region, with the way deeper into it. */
+// ── The business at a glance ──
+// A rep's home opens on two soft cards under the greeting, his wallet and his bonus. The owner's opens the same way
+// on the business (Nino, 16 Nov 2026: "put there ZELab's wallet … anything important for admin"): the money in the
+// accounts (it was a band further down), this month's sales against last month's, and the stock. Warehouse staff
+// get the sales and the stock, never the money (the server sends them none).
+const side = (text, tone) => <span className={clsx('shrink-0 text-[11px] font-semibold leading-none tabular-nums', tone)}>{text}</span>;
+const Dot = ({ className }) => <span aria-hidden className={clsx('h-1.5 w-1.5 shrink-0 rounded-full', className)} />;
+
+function BusinessRows({ isAdmin, accounts, totalFunds, today, month, analysis, inventory, lowCount, outOfStock, navigate }) {
+  const cards = [];
+
+  if (isAdmin) {
+    const total = Number(totalFunds) || 0;
+    // The Commission account is a record of what the owner paid reps from his own pocket: no money sits in it.
+    // Each account keeps its colour by its place in the list, so the others do not shuffle when one empties.
+    const pockets = accounts
+      .filter((a) => !a.isCommissionRecord)
+      .map((a, i) => ({ ...a, _i: i }))
+      .filter((a) => Number(a.balance) !== 0)
+      .sort((a, b) => b.balance - a.balance);
+    // The biggest four are named; any others are counted (the Accounts page lists them all).
+    const named = pockets.slice(0, 4);
+    const net = today.netCash || 0;
+    cards.push(
+      <ProgressRow
+        key="wallet"
+        label="ZELab wallet"
+        value={formatCurrency(total)}
+        segments={total > 0
+          ? pockets.filter((a) => a.balance > 0).map((a) => ({ key: a.id, pct: (a.balance / total) * 100, className: HERO_BAR[a._i % HERO_BAR.length] }))
+          : undefined}
+        hint={pockets.length ? (
+          <span className="flex flex-wrap gap-x-2.5 gap-y-0.5">
+            {named.map((a) => (
+              <span key={a.id} className="inline-flex min-w-0 max-w-full items-center gap-1 whitespace-nowrap">
+                <Dot className={HERO_DOT[a._i % HERO_DOT.length]} />
+                <span className="min-w-0 truncate">{a.name}</span>
+                <span className={clsx('tabular-nums', a.balance < 0 ? 'text-rose-300' : 'text-foreground/80')}>{formatNumber(a.balance)}</span>
+              </span>
+            ))}
+            {pockets.length > named.length && <span className="text-faint">+{pockets.length - named.length} more</span>}
+          </span>
+        ) : 'Nothing in the accounts yet'}
+        // The day's net move in the balance; both gross figures are on the Cash flow card below.
+        side={net === 0
+          ? side('No change today', 'text-faint')
+          : side(`${net > 0 ? '+' : '−'}${formatNumber(Math.abs(net))} today`, net > 0 ? 'text-emerald-400' : 'text-rose-300')}
+        onClick={() => navigate('/finance?tab=accounts')}
+      />,
+    );
+  }
+
+  // This month against the whole of last month, both from the same reading (the owner's analysis), so the
+  // share is like for like. Until that reading is in, or with no sales last month, the month's total alone.
+  const cur = analysis?.month;
+  const last = analysis?.lastMonth;
+  if (isAdmin && cur && last && last.revenue > 0) {
+    const pct = (cur.revenue / last.revenue) * 100;
+    const ahead = pct >= 100;
+    cards.push(
+      <ProgressRow
+        key="sales"
+        label="Sales this month"
+        pct={pct}
+        value={<>{Math.round(pct)}<span className="text-xs font-semibold text-faint">%</span></>}
+        ready={ahead}
+        readyLabel={`${formatCurrency(cur.revenue)}, past ${last.label}'s ${formatCurrency(last.revenue)}`}
+        hint={`${formatCurrency(cur.revenue)} of ${last.label}'s ${formatCurrency(last.revenue)}`}
+        side={side(`${formatNumber(cur.boxes)} boxes`, 'text-muted')}
+        onClick={() => navigate('/finance')}
+      />,
+    );
+  } else {
+    cards.push(
+      <ProgressRow
+        key="sales"
+        label="Sales this month"
+        value={formatCurrency(month.revenue)}
+        hint={`${formatNumber(month.boxes)} boxes settled`}
+        onClick={() => navigate(isAdmin ? '/finance' : '/sales')}
+      />,
+    );
+  }
+
+  // Every box ZELab is carrying, split where it sits; the right says whether anything needs buying.
+  const wh = Math.max(0, inventory.warehouseBoxes || 0);
+  const withReps = Math.max(0, inventory.repBoxes || 0);
+  const boxes = wh + withReps;
+  cards.push(
+    <ProgressRow
+      key="stock"
+      label="Stock"
+      value={<>{formatNumber(boxes)}<span className="ml-1 text-xs font-semibold text-faint">boxes</span></>}
+      segments={boxes > 0 ? [
+        { key: 'wh', pct: (wh / boxes) * 100, className: 'bg-brand-400' },
+        { key: 'rep', pct: (withReps / boxes) * 100, className: 'bg-violet-400' },
+      ] : undefined}
+      hint={(
+        <span className="flex flex-wrap gap-x-2.5 gap-y-0.5">
+          <span className="inline-flex items-center gap-1 whitespace-nowrap"><Dot className="bg-brand-400" />Warehouse <span className="tabular-nums text-foreground/80">{formatNumber(wh)}</span></span>
+          <span className="inline-flex items-center gap-1 whitespace-nowrap"><Dot className="bg-violet-400" />With reps <span className="tabular-nums text-foreground/80">{formatNumber(withReps)}</span></span>
+        </span>
+      )}
+      side={outOfStock > 0
+        ? side(`${outOfStock} out of stock`, 'text-rose-300')
+        : lowCount > 0 ? side(`${lowCount} running low`, 'text-amber-300') : side('All stocked', 'text-emerald-400')}
+      onClick={() => navigate(outOfStock > 0 || lowCount > 0 ? '/inventory?tab=reorder' : '/inventory')}
+    />,
+  );
+
+  return (
+    <div className={clsx('mb-4 grid grid-cols-1 gap-3', cards.length === 3 ? 'md:grid-cols-3' : 'md:grid-cols-2')}>
+      {cards}
+    </div>
+  );
+}
+
 function SectionHeading({ title, action, navigate }) {
   return (
     <div className="mb-2.5 flex items-end justify-between gap-3">
@@ -636,13 +754,6 @@ export default function Dashboard() {
   // A window the server could not read is not offered as a tab and never
   // shown as a row of zeros: the month, which is read separately, stands in.
   const shown = periods[period].available ? periods[period] : periods.month;
-  // Only accounts actually holding money belong in "where it sits". The index
-  // is carried along so each keeps its own colour when another empties. The
-  // Commission account is not one of them: it is the record of what the owner
-  // paid reps from his own pocket, and no money sits in it at all.
-  const withIndex = accounts.filter((a) => !a.isCommissionRecord).map((a, i) => ({ ...a, _i: i }));
-  const funded = withIndex.filter((a) => Number(a.balance) !== 0);
-  const heroAccounts = funded.length ? funded : withIndex;
   const attentionCount =
     attention.stockRequests + attention.settlements + attention.returns +
     attention.overdueSettlements + attention.lowStock.count + attention.outOfStock;
@@ -651,6 +762,11 @@ export default function Dashboard() {
     <div>
       {/* No quick-action row here: Nino, 10 Nov 2026 — "I don't need these"; the
           phone has the same doors in its bottom bar and the menu. */}
+
+      <BusinessRows
+        isAdmin={isAdmin} accounts={accounts} totalFunds={totalFunds} today={today} month={month} analysis={analysis}
+        inventory={inventory} lowCount={attention.lowStock.count} outOfStock={attention.outOfStock} navigate={navigate}
+      />
 
       {/* ── Attention ──
           The same box as before: three rows showing, the rest by scrolling
@@ -757,84 +873,7 @@ export default function Dashboard() {
         );
       })()}
 
-      {/* ── The money ──────────────────────────────────────────────────────
-             One band, not a panel. It carried a second column of today's
-             movement — money in, money out, net, boxes sold — which is the
-             same four figures the tiles directly below state better, and
-             holding both made the card tall enough to push the day's business
-             off the screen. The card now answers one question, the one it is
-             named for: how much is there, and which pocket is holding it. ── */}
-      {isAdmin && (
-      <div className="card mb-3 overflow-hidden sm:mb-4">
-        <div className="flex flex-col gap-3 p-4 sm:p-5 lg:flex-row lg:items-center lg:gap-6">
-          <div className="min-w-0 lg:w-[16rem] lg:shrink-0">
-            <div className="flex items-center justify-between gap-2">
-              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-faint">In the accounts</p>
-              <button onClick={() => navigate('/finance?tab=accounts')}
-                className="cursor-pointer text-[11px] font-semibold text-brand-600 transition hover:text-brand-600 lg:hidden">
-                Open accounts →
-              </button>
-            </div>
-            <p className="mt-1 text-[26px] font-bold leading-none tracking-tight text-foreground sm:text-[32px]">
-              {formatCurrency(totalFunds)}
-            </p>
-            {/* The net move in the balance above it, worded as one. It read
-                "TSh 449,000 out today" on a day when 624,000 went out and
-                175,000 came in; both gross figures are on the tooltip. */}
-            <span
-              title={`In ${formatCurrency(today.moneyIn || 0)} · out ${formatCurrency(today.moneyOut || 0)}`}
-              className={clsx(
-                'mt-2 inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold',
-                today.netCash === 0 ? 'bg-white/[0.06] text-muted'
-                  : today.netCash > 0 ? 'bg-emerald-500/15 text-emerald-300' : 'bg-rose-500/15 text-rose-300',
-              )}>
-              {today.netCash === 0 ? null : today.netCash > 0 ? <ArrowDownLeft className="h-3 w-3" /> : <ArrowUpRight className="h-3 w-3" />}
-              {today.netCash === 0
-                ? 'No change today'
-                : <>{formatCurrency(Math.abs(today.netCash))} {today.netCash > 0 ? 'up' : 'down'} today</>}
-            </span>
-          </div>
-
-          {/* Where it sits: the bar carries the proportions, so each pocket
-              only has to name itself. An account holding nothing is not an
-              answer to "where does it sit", so it is left out; its colour
-              stays reserved by its original position, and the others do not
-              shuffle when one empties. */}
-          <div className="min-w-0 flex-1">
-            {totalFunds > 0 && (
-              <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-white/[0.07]">
-                {heroAccounts.map((a) => (
-                  <div key={a.id} className={HERO_BAR[a._i % HERO_BAR.length]}
-                    style={{ width: `${Math.max(0, (a.balance / totalFunds) * 100)}%` }} />
-                ))}
-              </div>
-            )}
-            <div className="mt-2.5 grid grid-cols-1 gap-x-5 gap-y-1.5 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
-              {heroAccounts.map((a) => {
-                const share = totalFunds > 0 ? Math.round((a.balance / totalFunds) * 100) : 0;
-                return (
-                  <button key={a.id} onClick={() => navigate('/finance?tab=accounts')}
-                    className="flex w-full min-w-0 cursor-pointer items-center gap-2 text-left transition hover:opacity-80">
-                    <span className={clsx('h-2 w-2 shrink-0 rounded-full', HERO_DOT[a._i % HERO_DOT.length])} />
-                    <span className="min-w-0 flex-1 truncate text-[13px] text-muted">{a.name}</span>
-                    <span className={clsx('shrink-0 text-[13px] font-bold tabular-nums', a.balance < 0 ? 'text-rose-300' : 'text-foreground')}>
-                      {formatCurrency(a.balance)}
-                    </span>
-                    <span className="w-8 shrink-0 text-right text-[11px] tabular-nums text-faint">{share}%</span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          <button onClick={() => navigate('/finance?tab=accounts')}
-            className="hidden shrink-0 cursor-pointer text-xs font-semibold text-brand-600 transition hover:text-brand-600 lg:block">
-            Open accounts →
-          </button>
-        </div>
-      </div>
-      )}
-
+      {/* The money in the accounts was a band here; it is the ZELab wallet card at the top now (16 Nov 2026). */}
 
       {/* ── Today's business (all from Finance) ──
           A figure on its own says how much and nothing about whether that is
