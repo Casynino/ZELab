@@ -892,12 +892,17 @@ export default function Layout() {
   };
 
   // The phone's own bar along the bottom: the five places a day is spent.
+  // No "Menu" in it for anyone (Nino, 16 Nov 2026: "we have two menus, not needed"): the ≡ at the top opens the
+  // same menu. Its place goes to Inventory (the stock), and for warehouse staff, who have no Wallet, to Returns.
   const TABS = [
     { to: '/', label: 'Home', icon: LayoutDashboard },
     { to: '/stock-requests', label: 'Requests', icon: ClipboardList, badge: pendingActions.stockRequests },
     { to: '/settlements', label: 'Settle', icon: Timer, badge: pendingActions.settlements },
+    ...(!isRep ? [{ to: '/inventory', label: 'Inventory', icon: Boxes }] : []),
     // The same word as the sidebar (Nino, 11 Nov 2026: "Wallet"); it read "Money" here (audit ui-r10).
+    // The owner's only: the filter below drops it for anyone without Finance.
     { to: '/finance', label: 'Wallet', icon: Wallet },
+    ...(user?.role === ROLES.WAREHOUSE_STAFF ? [{ to: '/returns', label: 'Returns', icon: Undo2, badge: pendingActions.returns }] : []),
     // A rep has no Finance; their money is the wallet, one tap from anywhere. It takes
     // the place of the bottom "Menu" for them — the burger at the top already opens
     // the same menu (Nino, 11 Nov 2026), so the two were the same thing twice.
@@ -1026,17 +1031,6 @@ export default function Layout() {
             </NavLink>
           );
         })}
-        {/* Opens the menu, and nothing else. It used to open ON the search box
-            with the field already focused, so a phone threw the keyboard up
-            over half the menu before anyone had asked to type (owner, 9 Nov
-            2026: "when I open it, it pushes me to search — when I want to
-            search I will click search"). */}
-        {!isRep && (
-          <button type="button" onClick={() => setDrawer('menu')}
-            className="flex flex-1 cursor-pointer flex-col items-center gap-0.5 py-2 text-[10px] font-medium text-faint transition">
-            <Menu className="h-[19px] w-[19px]" /> Menu
-          </button>
-        )}
       </nav>
 
       {showPasswordModal && <ChangePasswordModal onClose={() => setShowPasswordModal(false)} />}
