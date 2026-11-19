@@ -92,36 +92,36 @@ export default function Reorder({ tabs } = {}) {
 
   const cards = [
     {
-      label: `Runs out within ${s.criticalDays} days`, value: formatNumber(s.criticalCount || 0), icon: AlertTriangle,
-      sub: `at the selling pace of ${pace}`,
+      label: `Empty within ${s.criticalDays} days`, value: formatNumber(s.criticalCount || 0), icon: AlertTriangle,
+      sub: s.criticalCount > 0 ? 'order these now' : 'nothing to rush',
       quiet: !(s.criticalCount > 0),
       ring: 'ring-rose-500/30', glow: 'from-rose-500/[0.14]', chip: 'bg-rose-500/15 text-rose-300', num: 'text-rose-300',
       tone: s.criticalCount > 0 ? 'late' : undefined,
     },
     {
-      label: `Runs out within ${s.highDays} days`, value: formatNumber(s.highCount || 0), icon: Clock,
-      sub: `${(s.criticalDays || 0) + 1} to ${s.highDays} days of cover left`,
+      label: `Empty within ${s.highDays} days`, value: formatNumber(s.highCount || 0), icon: Clock,
+      sub: s.highCount > 0 ? 'order these soon' : 'nothing to rush',
       quiet: !(s.highCount > 0),
       ring: 'ring-amber-500/30', glow: 'from-amber-500/[0.14]', chip: 'bg-amber-500/15 text-amber-300', num: 'text-amber-300',
     },
     isAdmin ? {
-      label: 'Cost of this order', value: formatCurrency(s.estimatedReorderValue || 0), icon: Wallet,
+      label: 'To order', value: formatCurrency(s.estimatedReorderValue || 0), icon: Wallet,
       sub: urgent > 0
         ? `${formatCurrency(s.urgentValue || 0)} of it cannot wait`
-        : `${formatNumber(s.reorderCount || 0)} product${s.reorderCount === 1 ? '' : 's'}, none urgent`,
+        : `${formatNumber(s.reorderCount || 0)} product${s.reorderCount === 1 ? '' : 's'} · none urgent`,
       quiet: !(s.estimatedReorderValue > 0),
       ring: 'ring-brand-500/25', glow: 'from-brand-500/[0.12]', chip: 'bg-brand-500/15 text-brand-600', num: 'text-brand-600',
     } : {
       label: 'Boxes to order', value: formatNumber(orderBoxes), icon: Boxes,
       sub: urgent > 0
         ? `${formatNumber(urgentBoxes)} of them cannot wait`
-        : `${formatNumber(s.reorderCount || 0)} product${s.reorderCount === 1 ? '' : 's'}, none urgent`,
+        : `${formatNumber(s.reorderCount || 0)} product${s.reorderCount === 1 ? '' : 's'} · none urgent`,
       quiet: !(orderBoxes > 0),
       ring: 'ring-white/[0.08]', glow: 'from-white/[0.03]', chip: 'bg-white/10 text-foreground', num: 'text-foreground',
     },
     {
-      label: 'Below minimum, still covered', value: formatNumber(s.lowCount || 0), icon: Gauge,
-      sub: 'old minimums, long cover — not urgent',
+      label: 'Below your minimum', value: formatNumber(s.lowCount || 0), icon: Gauge,
+      sub: 'enough for now · not urgent',
       quiet: true,
       ring: 'ring-white/[0.08]', glow: 'from-white/[0.03]', chip: 'bg-white/10 text-muted', num: 'text-foreground',
     },
@@ -135,7 +135,20 @@ export default function Reorder({ tabs } = {}) {
         tabs={tabs}
       />
 
-      <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+      {/* A phone (Nino, 19 Nov 2026: "the words are too much, make the cards nicer"): the four as one short
+          list, the figure on the right, as on Finance. */}
+      <ul className="glass-list divide-y divide-white/[0.06] sm:hidden">
+        {cards.map((c) => (
+          <li key={c.label} className="flex items-center justify-between gap-3 px-4 py-2.5">
+            <span className="min-w-0">
+              <span className="block truncate text-[13px] font-medium text-foreground">{c.label}</span>
+              <span className="block truncate text-[11px] text-white/50">{c.sub}</span>
+            </span>
+            <span className={`shrink-0 whitespace-nowrap text-[15px] font-semibold tabular-nums ${c.quiet ? 'text-foreground' : c.num}`}>{c.value}</span>
+          </li>
+        ))}
+      </ul>
+      <div className="hidden grid-cols-2 gap-3 sm:grid xl:grid-cols-4">
         {cards.map((c) => (
           <div
             key={c.label}
@@ -152,45 +165,58 @@ export default function Reorder({ tabs } = {}) {
         ))}
       </div>
 
-      {/* The same thing in words — four numbers still need someone to say what they mean. */}
-      {s.productsAnalyzed > 0 && (
-        <p className="text-xs leading-relaxed text-muted">
-          Of <b className="text-foreground">{formatNumber(s.productsAnalyzed)}</b> active products,
-          {' '}<b className="text-foreground">{formatNumber(s.reorderCount || 0)}</b> are worth putting on an order.
-          {s.criticalCount > 0
-            ? <> <b className="text-rose-400">{formatNumber(s.criticalCount)}</b> run out within {s.criticalDays} days</>
-            : <> Nothing runs out within {s.criticalDays} days</>}
-          {s.highCount > 0 && <>, <b className="text-amber-400">{formatNumber(s.highCount)}</b> inside {s.highDays}</>}
-          {' '}at the pace of {pace}.
-          {isAdmin && s.estimatedReorderValue > 0 && (
-            <> The whole order comes to <b className="text-foreground">{formatCurrency(s.estimatedReorderValue)}</b>
-              {urgent > 0 ? <>, of which <b className="text-rose-400">{formatCurrency(s.urgentValue || 0)}</b> cannot wait</> : ' — none of it urgent'}.</>
-          )}
-          {!isAdmin && orderBoxes > 0 && (
-            <> The whole order comes to <b className="text-foreground">{formatNumber(orderBoxes)}</b> boxes
-              {urgent > 0 ? <>, of which <b className="text-rose-400">{formatNumber(urgentBoxes)}</b> cannot wait</> : ' — none of them urgent'}.</>
-          )}
-          {s.belowMinCount > 0 && (
-            <> <b className="text-foreground">{formatNumber(s.belowMinCount)}</b> product{s.belowMinCount === 1 ? ' sits' : 's sit'} at or below the
-              {' '}minimum stock level in the warehouse — where the cover is still long that is printed as a reason, not sounded as an alarm.</>
-          )}
-          {s.coveredCount > 0 && (
-            <> <b className="text-foreground">{formatNumber(s.coveredCount)}</b> more {s.coveredCount === 1 ? 'is' : 'are'} short, but already covered by stock bought and on the way.</>
-          )}
-          {s.noVelocityCount > 0 && (
-            <> {formatNumber(s.noVelocityCount)} sold nothing at all in {pace}, so they have no run-out date to rank by.</>
-          )}
-          {s.newCount > 0 && (
-            <> <b className="text-foreground">{formatNumber(s.newCount)}</b> {s.newCount === 1 ? 'is' : 'are'} new and not stocked yet
-              {' '}({all.filter((i) => i.neverStocked).map((i) => i.name).join(', ')}), so {s.newCount === 1 ? 'it is' : 'they are'} not counted as out of stock or put on the order.</>
-          )}
-        </p>
-      )}
+      {/* The same thing in a few short lines, one fact each (Nino, 19 Nov 2026: the long sentence was "too much
+          and not clear"). A line shows only when it has something to say. */}
+      {s.productsAnalyzed > 0 && (() => {
+        const newNames = all.filter((i) => i.neverStocked).map((i) => i.name);
+        const lines = [
+          {
+            dot: urgent > 0 ? 'bg-rose-400' : 'bg-emerald-400',
+            text: s.criticalCount > 0
+              ? <><b className="text-rose-300">{formatNumber(s.criticalCount)}</b> run out within {s.criticalDays} days{s.highCount > 0 && <>, <b className="text-amber-300">{formatNumber(s.highCount)}</b> within {s.highDays}</>}.</>
+              : s.highCount > 0
+                ? <><b className="text-amber-300">{formatNumber(s.highCount)}</b> run out within {s.highDays} days.</>
+                : <>Nothing runs out in the next {s.highDays} days.</>,
+          },
+          (s.reorderCount || 0) > 0 && {
+            dot: 'bg-white/40',
+            text: <><b className="text-foreground">{formatNumber(s.reorderCount)}</b> product{s.reorderCount === 1 ? '' : 's'} to order
+              {isAdmin ? <> · <b className="text-foreground">{formatCurrency(s.estimatedReorderValue || 0)}</b></> : <> · <b className="text-foreground">{formatNumber(orderBoxes)}</b> boxes</>}
+              {urgent > 0 ? <> · <span className="text-rose-300">{isAdmin ? formatCurrency(s.urgentValue || 0) : `${formatNumber(urgentBoxes)} boxes`} cannot wait</span></> : ' · none urgent'}.</>,
+          },
+          (s.lowCount || 0) > 0 && {
+            dot: 'bg-white/40',
+            text: <><b className="text-foreground">{formatNumber(s.lowCount)}</b> {s.lowCount === 1 ? 'is' : 'are'} below your minimum in the warehouse, but {s.lowCount === 1 ? 'has' : 'have'} enough for now.</>,
+          },
+          (s.coveredCount || 0) > 0 && {
+            dot: 'bg-sky-400',
+            text: <><b className="text-foreground">{formatNumber(s.coveredCount)}</b> {s.coveredCount === 1 ? 'is' : 'are'} short, but already bought and on the way.</>,
+          },
+          (s.noVelocityCount || 0) > 0 && {
+            dot: 'bg-white/25',
+            text: <><b className="text-foreground">{formatNumber(s.noVelocityCount)}</b> sold nothing in {pace}.</>,
+          },
+          newNames.length > 0 && {
+            dot: 'bg-violet-400',
+            text: <>New, not stocked yet: {newNames.join(', ')}.</>,
+          },
+        ].filter(Boolean);
+        return (
+          <ul className="space-y-1.5 px-1">
+            {lines.map((l, k) => (
+              <li key={k} className="flex items-start gap-2 text-[12.5px] leading-snug text-muted">
+                <span aria-hidden="true" className={`mt-[6px] h-1.5 w-1.5 shrink-0 rounded-full ${l.dot}`} />
+                <span>{l.text}</span>
+              </li>
+            ))}
+          </ul>
+        );
+      })()}
 
       <Card>
         <CardHeader
           title="Worth reordering"
-          subtitle={`Ranked by how soon the shelf empties at the pace of ${pace}`}
+          subtitle="Soonest to run out first"
         />
         {/* One swipeable line of filters on a phone, as on Settle. */}
         <div className="flex items-center gap-2 overflow-x-auto border-b border-border p-3 [scrollbar-width:none] sm:flex-wrap sm:p-4 [&>*]:shrink-0">
