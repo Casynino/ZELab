@@ -1522,7 +1522,7 @@ function BusinessWallet({ totals, items = [], wide = false, isAdmin, applying, o
             <p className="text-xs font-medium text-white/60">Available to withdraw</p>
             {/* "Total pending" was earned − paid, which still contained fines the reps will never receive — this
                 is the money actually withdrawable. */}
-            <p className={clsx('whitespace-nowrap font-bold leading-none tabular-nums text-foreground', wide ? 'mt-1.5 text-[26px]' : 'mt-2 text-[28px] sm:text-[32px]')}>
+            <p className={clsx('whitespace-nowrap font-bold leading-none tabular-nums text-foreground', wide ? 'mt-1.5 text-[24px] sm:text-[26px]' : 'mt-1.5 text-[24px] sm:mt-2 sm:text-[32px]')}>
               {formatCurrency(totals.available ?? totals.pending)}
             </p>
             <p className={clsx('mt-1 text-[11px]', totals.requested > 0 ? 'font-medium text-amber-300' : 'text-muted')}>
@@ -1542,7 +1542,7 @@ function BusinessWallet({ totals, items = [], wide = false, isAdmin, applying, o
           )}
         </div>
 
-        <div className={wide ? 'mt-3' : 'mt-5'}>
+        <div className={wide ? 'mt-3' : 'mt-4 sm:mt-5'}>
           <div className="flex items-baseline justify-between gap-3 text-[11px]">
             <span className="text-muted">Paid out of earned</span>
             <span className="font-semibold tabular-nums text-emerald-300">{Math.round(paidPct)}%</span>
@@ -1553,7 +1553,25 @@ function BusinessWallet({ totals, items = [], wide = false, isAdmin, applying, o
         </div>
       </div>
 
-      <dl className={clsx('mt-5 grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-4', wide ? 'lg:mt-0 lg:flex-1 lg:grid-cols-2 xl:grid-cols-4' : 'lg:grid-cols-2 2xl:grid-cols-4')}>
+      {/* A phone (Nino, 19 Nov 2026: "the look here on the phone is not good"): the four figures as a short list,
+          the name on the left and the amount on the right, instead of a grid of big numbers. */}
+      <ul className="mt-4 divide-y divide-white/[0.06] border-t border-white/[0.06] sm:hidden">
+        {[
+          { k: 'earned', label: 'Earned · all time', note: 'since the first sale', value: formatCurrency(totals.earned), tone: 'text-foreground' },
+          { k: 'paid', label: 'Paid out', value: formatCurrency(totals.paid), tone: 'text-emerald-300' },
+          { k: 'fines', label: 'Fines', value: fines > 0 ? minusCurrency(fines) : formatCurrency(0), tone: fines > 0 ? 'text-rose-300' : 'text-foreground' },
+          { k: 'run', label: 'This run', note: `${formatNumber(totals.runBoxes ?? 0)} boxes since each rep's last payout`, value: formatCurrency(totals.runEarned ?? 0), tone: 'text-foreground' },
+        ].map((r) => (
+          <li key={r.k} className="flex items-center justify-between gap-3 py-2">
+            <span className="min-w-0">
+              <span className="block truncate text-[12.5px] text-white/70">{r.label}</span>
+              {r.note && <span className="block truncate text-[11px] text-white/45">{r.note}</span>}
+            </span>
+            <span className={clsx('shrink-0 whitespace-nowrap text-[14px] font-semibold tabular-nums', r.tone)}>{r.value}</span>
+          </li>
+        ))}
+      </ul>
+      <dl className={clsx('mt-5 hidden grid-cols-2 gap-x-4 gap-y-3 sm:grid sm:grid-cols-4', wide ? 'lg:mt-0 lg:flex-1 lg:grid-cols-2 xl:grid-cols-4' : 'lg:grid-cols-2 2xl:grid-cols-4')}>
         {/* Every box settled since the first sale, so it starts before Finance's "All time" (05 Jul). */}
         <Fig label="Earned · all time" value={formatCurrency(totals.earned)} sub="since the first sale" title="Every box settled since the very first sale, including those before the books started — Finance's All time starts on the go-live day" />
         <Fig label="Paid out" value={formatCurrency(totals.paid)} tone="text-emerald-300" />
@@ -1567,12 +1585,12 @@ function BusinessWallet({ totals, items = [], wide = false, isAdmin, applying, o
       </dl>
 
       {isAdmin && (
-        <div className={clsx('mt-auto pt-5', wide && 'lg:mt-0 lg:basis-full xl:basis-52 xl:shrink-0 xl:pt-0')}>
-          <div className={clsx('grid grid-cols-2 gap-2 border-t border-white/[0.06] pt-4', wide && 'xl:grid-cols-1 xl:border-l xl:border-t-0 xl:pl-6 xl:pt-0')}>
-            <Button variant="secondary" className={clsx('justify-center px-2 text-xs', wide && 'xl:py-1.5')} loading={applying} onClick={onApply}>
+        <div className={clsx('mt-auto pt-3 sm:pt-5', wide && 'lg:mt-0 lg:basis-full xl:basis-52 xl:shrink-0 xl:pt-0')}>
+          <div className={clsx('grid grid-cols-2 gap-2 sm:border-t sm:border-white/[0.06] sm:pt-4', wide && 'xl:grid-cols-1 xl:border-l xl:border-t-0 xl:pl-6 xl:pt-0')}>
+            <Button variant="secondary" className={clsx('justify-center px-2 py-2 text-[12px] sm:text-xs', wide && 'xl:py-1.5')} loading={applying} onClick={onApply}>
               <AlertTriangle className="hidden h-4 w-4 shrink-0 min-[400px]:block" /> Apply daily penalties
             </Button>
-            <Button variant="secondary" className={clsx('justify-center px-2 text-xs', wide && 'xl:py-1.5')} onClick={onDeduct}>
+            <Button variant="secondary" className={clsx('justify-center px-2 py-2 text-[12px] sm:text-xs', wide && 'xl:py-1.5')} onClick={onDeduct}>
               <Coins className="hidden h-4 w-4 shrink-0 min-[400px]:block" /> Deduct commission
             </Button>
           </div>
@@ -1997,20 +2015,32 @@ function RepTile({ i, runView, leads, bonus, usualMin, onTime, onOpen, phone }) 
   const focus = 'focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-white/50';
 
   if (phone) {
+    // On time as a plain word among the facts, not a coloured pill (Nino, 19 Nov 2026: the phone looked busy).
+    const rate = hasOnTime ? Math.round(onTime.onTimeRate) : null;
+    const onTimeText = rate != null && (
+      <span title={`${formatNumber(onTime.decided)} closed orders`}
+        className={clsx('whitespace-nowrap font-medium', rate >= 80 ? 'text-emerald-300' : rate >= 50 ? 'text-amber-300' : 'text-rose-300')}>
+        {rate}% on time
+      </span>
+    );
     return (
       <button type="button" onClick={onOpen} aria-haspopup="dialog" data-prefetch={sheetAhead(i)} data-prefetch-hover="off" className={clsx('flex w-full items-center gap-3 px-3.5 py-2 text-left transition active:bg-white/[0.05]', focus)}>
         <Avatar name={i.name} className="h-8 w-8 text-[13px]" />
         <span className="min-w-0 flex-1">
           <span className="flex items-center justify-between gap-3">
             {name}
-            {amount('text-[17px]')}
+            {amount('text-[15px]')}
           </span>
-          {/* The facts get the row's whole width (they shared it with the chip and the note, and lost);
-              the on-time chip, the note and the bar follow on their own line. */}
-          <span className="mt-1 flex">{factLine}</span>
-          {(hasOnTime || requested > 0 || offCommission || show || minTag) && (
+          {/* The facts get the row's whole width, with on time among them as a word; the note and the bar
+              follow on their own quiet line. */}
+          <span className="mt-1 flex">
+            <span className="flex min-w-0 flex-1 flex-wrap gap-x-3 gap-y-0.5 text-[11px] leading-[15px] text-muted">
+              {facts.map((f) => <span key={f.key} className="whitespace-nowrap">{f}</span>)}
+              {onTimeText}
+            </span>
+          </span>
+          {(requested > 0 || offCommission || show || minTag) && (
             <span className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1">
-              <OnTimeChip onTime={onTime} />
               <MinNote i={i} />
               {bar}{minTag}
             </span>
