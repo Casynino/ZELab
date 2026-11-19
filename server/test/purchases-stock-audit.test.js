@@ -88,6 +88,41 @@ test('reorder: fully covered is not a reorder, and is counted as covered', async
   assert.match(pepa.message, /100 more already bought and on the way/);
 });
 
+// A product that has never had a box in (Pepa still being made, 19 Nov 2026) is NEW: not out of stock, not
+// below the minimum, nothing on the order, in no count — while a sold-out product with history still is.
+test('reorder: never stocked is NEW, not out of stock, and puts nothing on the order', async () => {
+  db.product = {
+    findMany: async () => [
+      { id: 'newp', name: 'Pepa Ndogo Kubwa', sku: 'P2', minStockLevel: 50, reorderQuantity: 50, purchasePrice: 14000, baseUnitName: 'Box', isActive: true },
+      { id: 'gone', name: 'OHIS Ndogo', sku: 'O1', minStockLevel: 50, reorderQuantity: 50, purchasePrice: 10000, baseUnitName: 'Box', isActive: true },
+    ],
+  };
+  db.inventoryTransaction = {
+    groupBy: async ({ where = {} }) => {
+      // Only OHIS was ever received or sold; the new product only has a +1 / -1 test adjustment, which is not stock.
+      if (where.type?.in?.includes('PURCHASE_RECEIPT')) return [{ productId: 'gone' }];
+      return []; // nothing sold in the window, nothing on hand anywhere
+    },
+  };
+  db.purchaseOrderItem = { findMany: async () => [] };
+  const r = await reorder.reorderAnalysis();
+  const fresh = r.items.find((i) => i.productId === 'newp');
+  const gone = r.items.find((i) => i.productId === 'gone');
+  assert.equal(fresh.urgency, 'NEW');
+  assert.equal(fresh.neverStocked, true);
+  assert.equal(fresh.recommendedQty, 0);
+  assert.equal(fresh.needsReorder, false);
+  assert.equal(fresh.belowMin, false, 'not "below the minimum" either');
+  assert.match(fresh.reason, /not stocked yet/);
+  assert.equal(gone.urgency, 'MEDIUM', 'sold out with history: still out of stock');
+  assert.equal(gone.recommendedQty, 50);
+  assert.deepEqual(r.recommendations.map((i) => i.productId), ['gone']);
+  assert.equal(r.summary.newCount, 1);
+  assert.equal(r.summary.belowMinCount, 1);
+  assert.equal(r.summary.noVelocityCount, 1, 'the new product is not counted as "sold nothing"');
+  assert.equal(r.summary.estimatedReorderValue, 500000, 'only the sold-out product is on the order');
+});
+
 // ── purc03: ledger rows are never deleted; the cache rebuild is one locked transaction ────────────────
 test('no route deletes a stock ledger row', () => {
   const router = require('../src/routes/inventory.routes');

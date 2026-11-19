@@ -19,6 +19,8 @@ const URGENCY = {
   HIGH: { label: 'High', badge: 'bg-amber-500/15 text-amber-300', num: 'text-amber-300' },
   MEDIUM: { label: 'Medium', badge: 'bg-sky-500/15 text-sky-300', num: 'text-sky-300' },
   LOW: { label: 'Below min', badge: 'bg-white/10 text-muted', num: 'text-foreground' },
+  // Never had a box in (a new product still being made, like Pepa): not out of stock, nothing to reorder.
+  NEW: { label: 'New', badge: 'bg-violet-500/15 text-violet-300', num: 'text-faint' },
   OK: { label: 'OK', badge: 'bg-emerald-500/15 text-emerald-300', num: 'text-foreground' },
 };
 
@@ -36,7 +38,7 @@ function CoverCell({ item }) {
     return (
       <div>
         <span className="text-lg font-bold text-faint">—</span>
-        <div className="text-[11px] text-faint">no sales to measure</div>
+        <div className="text-[11px] text-faint">{item.neverStocked ? 'not stocked yet' : 'no sales to measure'}</div>
       </div>
     );
   }
@@ -177,6 +179,10 @@ export default function Reorder({ tabs } = {}) {
           )}
           {s.noVelocityCount > 0 && (
             <> {formatNumber(s.noVelocityCount)} sold nothing at all in {pace}, so they have no run-out date to rank by.</>
+          )}
+          {s.newCount > 0 && (
+            <> <b className="text-foreground">{formatNumber(s.newCount)}</b> {s.newCount === 1 ? 'is' : 'are'} new and not stocked yet
+              {' '}({all.filter((i) => i.neverStocked).map((i) => i.name).join(', ')}), so {s.newCount === 1 ? 'it is' : 'they are'} not counted as out of stock or put on the order.</>
           )}
         </p>
       )}

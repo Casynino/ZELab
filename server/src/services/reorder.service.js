@@ -44,7 +44,7 @@ async function reorderAnalysis(options = {}) {
   const coverDays = options.coverDays || 30; // target days of stock to hold
   const since = dayjs().subtract(lookbackDays, 'day').toDate();
 
-  const [products, soldRows, onHandMap, warehouseMap, comingMap] = await Promise.all([
+  const [products, soldRows, onHandMap, warehouseMap, comingMap, stockedRows] = await Promise.all([
     prisma.product.findMany({
       where: { isActive: true },
       include: { brand: { select: { name: true } }, category: { select: { name: true } } },
@@ -57,7 +57,15 @@ async function reorderAnalysis(options = {}) {
     inventory.productOnHand(prisma),
     inventory.warehouseOnHand(prisma),
     onTheWayByProduct(prisma),
+    // Every product ever really stocked: received (a purchase receipt or a stock-in) or ever sold. Not an
+    // adjustment or a count: on live both Pepa boxes carry a +1 / -1 test adjustment (15 Nov 2026), and that
+    // is not stock. Transfers and returns only move boxes that came in one of those ways first.
+    prisma.inventoryTransaction.groupBy({
+      by: ['productId'],
+      where: { type: { in: ['PURCHASE_RECEIPT', 'STOCK_IN', 'CASH_SALE', 'CREDIT_SALE'] } },
+    }),
   ]);
+  const everStocked = new Set(stockedRows.map((r) => r.productId));
 
   const soldMap = new Map(soldRows.map((r) => [r.productId, Math.abs(r._sum.baseQuantity || 0)]));
 
@@ -80,6 +88,10 @@ async function reorderAnalysis(options = {}) {
       ? `${groupDigits(inWarehouse)} in the warehouse, below your minimum of ${groupDigits(p.minStockLevel)}`
       : `below your minimum of ${groupDigits(p.minStockLevel)}`;
     const shortCover = daysRemaining !== null && daysRemaining <= coverDays;
+    // Never had a single box in — a new product still being made (Pepa, 19 Nov 2026: it read "out of stock"
+    // and put 100 boxes on the order). There is nothing to run out of: it is NEW, counted in no band, puts
+    // nothing on the order, and is not "below the minimum" either. Its first stock is a first order, not a reorder.
+    const neverStocked = onHand <= 0 && !everStocked.has(p.id);
 
     // Days of cover decides the rank, and nothing else does. The minimum-stock
     // levels were set once and never checked against real selling pace, so
@@ -88,7 +100,8 @@ async function reorderAnalysis(options = {}) {
     // nothing. Below the minimum is still worth topping up, so it earns LOW and
     // says so in its reason; it no longer overrides the clock.
     let urgency = 'OK';
-    if (shortCover && daysRemaining <= CRITICAL_DAYS) urgency = 'CRITICAL';
+    if (neverStocked) urgency = 'NEW';
+    else if (shortCover && daysRemaining <= CRITICAL_DAYS) urgency = 'CRITICAL';
     else if (shortCover && daysRemaining <= HIGH_DAYS) urgency = 'HIGH';
     else if (shortCover) urgency = 'MEDIUM';
     else if (onHand <= 0 && belowMin) urgency = 'MEDIUM'; // nothing on the shelf to sell at all
@@ -99,7 +112,7 @@ async function reorderAnalysis(options = {}) {
     // rounding a one-box top-up up to a 50-box pack is how a product with years of cover came to ask for
     // millions of shillings of stock — and only while something is still missing after the cargo.
     let recommendedQty = 0;
-    if (urgency !== 'OK') {
+    if (urgency !== 'OK' && urgency !== 'NEW') {
       const gap = Math.max(target - onHand - onTheWay, p.minStockLevel - inWarehouse - onTheWay, 0);
       if (onTheWay > 0 && gap <= 0) recommendedQty = 0;
       else recommendedQty = urgency === 'LOW' ? gap : Math.max(gap, p.reorderQuantity || 0);
@@ -107,12 +120,14 @@ async function reorderAnalysis(options = {}) {
     // Fully covered by cargo on the way: nothing to buy, so it is not a reorder (nor a reorder alert). Its
     // cover and urgency still say how soon the shelf runs dry.
     const covered = onTheWay > 0 && recommendedQty === 0;
-    const needsReorder = urgency !== 'OK' && !covered;
+    const needsReorder = urgency !== 'OK' && urgency !== 'NEW' && !covered;
 
     // One line saying why this row is on the list, so long cover reads as long
     // cover instead of hiding behind a colour.
     let reason;
-    if (shortCover && daysRemaining <= 0) {
+    if (neverStocked) {
+      reason = 'new — not stocked yet';
+    } else if (shortCover && daysRemaining <= 0) {
       reason = `out of stock — was selling ${avgDaily}/day`;
     } else if (shortCover) {
       reason = `runs out in ${groupDigits(daysRemaining)} day${daysRemaining === 1 ? '' : 's'} at ${avgDaily}/day`;
@@ -131,7 +146,9 @@ async function reorderAnalysis(options = {}) {
     if (onTheWay > 0) reason += `; ${groupDigits(onTheWay)} already bought and on the way`;
 
     let message = `${p.name} has ${onHand} ${p.baseUnitName}(s) on hand`;
-    if (avgDaily > 0 && daysRemaining !== null) {
+    if (neverStocked) {
+      message = `${p.name} is new and has not been stocked yet.`;
+    } else if (avgDaily > 0 && daysRemaining !== null) {
       message += `, selling ~${avgDaily}/day — projected to run out in approximately ${daysRemaining} day(s).`;
     } else {
       message += ' with no recent sales activity.';
@@ -152,7 +169,8 @@ async function reorderAnalysis(options = {}) {
       minStockLevel: p.minStockLevel,
       avgDailySales: avgDaily,
       daysRemaining,
-      belowMin,
+      belowMin: belowMin && !neverStocked,
+      neverStocked,
       covered,
       needsReorder,
       urgency,
@@ -163,7 +181,7 @@ async function reorderAnalysis(options = {}) {
     };
   });
 
-  const urgencyRank = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3, OK: 4 };
+  const urgencyRank = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3, NEW: 4, OK: 5 };
   items.sort((a, b) => {
     if (urgencyRank[a.urgency] !== urgencyRank[b.urgency]) {
       return urgencyRank[a.urgency] - urgencyRank[b.urgency];
@@ -196,7 +214,9 @@ async function reorderAnalysis(options = {}) {
       belowMinCount: items.filter((i) => i.belowMin).length,
       // Short of stock, but what is already bought and on the way covers it: nothing to buy for these.
       coveredCount: items.filter((i) => i.covered).length,
-      noVelocityCount: items.filter((i) => i.avgDailySales === 0).length,
+      noVelocityCount: items.filter((i) => i.avgDailySales === 0 && !i.neverStocked).length,
+      // New products not stocked yet: shown, never ordered or counted as out of stock.
+      newCount: items.filter((i) => i.neverStocked).length,
       estimatedReorderValue: round2(recommendations.reduce((s, i) => s + i.recommendedValue, 0)),
       urgentValue: round2(urgentValue),
     },
