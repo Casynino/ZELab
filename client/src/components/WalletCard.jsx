@@ -129,13 +129,16 @@ export default function WalletCard({
           aria-label="Withdraw"
           className={clsx('flex shrink-0 flex-col items-center gap-1 transition active:scale-95', !canWithdraw && 'cursor-not-allowed')}
         >
+          {/* Open (the minimum reached, or a bonus waiting): a soft gold ring — the commission colour — and the
+              arrow nudging up and out, the same way the swipe hint's arrow nudges (Nino, 19 Nov 2026). Closed: grey
+              and still. */}
           <span
             className={clsx(
               'flex h-11 w-11 items-center justify-center rounded-full ring-1 ring-inset backdrop-blur-sm',
-              canWithdraw ? 'bg-white/[0.16] text-white ring-white/25' : 'bg-white/[0.06] text-white/40 ring-white/10',
+              canWithdraw ? 'bg-white/[0.16] text-white ring-earn-300/60' : 'bg-white/[0.06] text-white/40 ring-white/10',
             )}
           >
-            <ArrowUpRight className="h-[18px] w-[18px]" strokeWidth={2.4} />
+            <ArrowUpRight className={clsx('h-[18px] w-[18px]', canWithdraw && 'wallet-nudge-up')} strokeWidth={2.4} />
           </span>
           <span className={clsx('text-[11px] font-semibold', canWithdraw ? 'text-white' : 'text-white/45')}>Withdraw</span>
         </button>
