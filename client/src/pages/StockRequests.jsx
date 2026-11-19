@@ -783,24 +783,36 @@ function PendingRequestApprovals({ onReview }) {
         {pending.map((r) => {
           const boxes = boxCount(r);
           return (
-            <div key={r.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
+            // One request across the whole width — the rep and the money on the first line, where and how many
+            // boxes under it, then each product — with Reject and Approve side by side under it on a phone
+            // (Nino, 19 Nov 2026: the buttons beside it squeezed the request into a narrow column). From a
+            // tablet up the buttons sit on the right again.
+            <div key={r.id} className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center">
               <button onClick={() => onReview(r)} className="min-w-0 flex-1 text-left" title="Open to review or adjust quantities">
-                <div className="text-sm font-semibold text-foreground">
-                  {r.salesRep?.user?.name} ({r.salesRep?.code}){requestCities(r).length ? ` · ${requestCities(r).join(' · ')}` : ''} · {formatNumber(boxes)} box{boxes !== 1 ? 'es' : ''} · {formatCurrency(orderDisplayValue(r))}
+                <div className="flex items-baseline justify-between gap-3">
+                  <span className="min-w-0 truncate text-[14px] font-semibold text-foreground">
+                    {r.salesRep?.user?.name} <span className="text-[12px] font-normal text-muted">{r.salesRep?.code}</span>
+                  </span>
+                  <span className="shrink-0 whitespace-nowrap text-[14px] font-semibold tabular-nums text-foreground">{formatCurrency(orderDisplayValue(r))}</span>
                 </div>
-                {r.items.map((i) => (
-                  <div key={i.id} className="mt-0.5 text-xs text-faint">
-                    <span className="font-semibold text-muted">{i.quantityRequested}×</span> {i.product?.name}
-                    {requestCities(r).length > 1 && i.region ? <span className="text-muted"> · {shortRegion(i.region)}</span> : null}
-                  </div>
-                ))}
-                <div className="mt-0.5 text-xs text-faint">
+                <div className="mt-0.5 text-[12px] text-muted">
+                  {[...requestCities(r), `${formatNumber(boxes)} box${boxes !== 1 ? 'es' : ''}`].join(' · ')}
+                </div>
+                <ul className="mt-1.5 space-y-0.5">
+                  {r.items.map((i) => (
+                    <li key={i.id} className="text-[12.5px] text-white/75">
+                      <span className="font-semibold tabular-nums text-foreground">{i.quantityRequested}×</span> {i.product?.name}
+                      {requestCities(r).length > 1 && i.region ? <span className="text-muted"> · {shortRegion(i.region)}</span> : null}
+                    </li>
+                  ))}
+                </ul>
+                <div className="mt-1 text-[11px] text-faint">
                   {r.requestNumber} · {formatDateTime(r.requestedAt)}{r.notes ? ` · ${r.notes}` : ''}
                 </div>
               </button>
-              <div className="flex shrink-0 gap-2">
-                <Button variant="ghost" className="text-rose-500" disabled={deciding} onClick={() => setRejecting(r)}>Reject</Button>
-                <Button loading={approve.isPending && approve.variables === r.id} disabled={deciding} onClick={() => once.run(() => approve.mutate(r.id))}>
+              <div className="grid grid-cols-2 gap-2 sm:flex sm:shrink-0">
+                <Button variant="ghost" className="justify-center text-rose-500 ring-1 ring-inset ring-white/10 sm:ring-0" disabled={deciding} onClick={() => setRejecting(r)}>Reject</Button>
+                <Button className="justify-center" loading={approve.isPending && approve.variables === r.id} disabled={deciding} onClick={() => once.run(() => approve.mutate(r.id))}>
                   <CheckCircle2 className="h-4 w-4" /> Approve
                 </Button>
               </div>
@@ -873,8 +885,8 @@ function StaffRequestTable({ onView }) {
   return (
     <div className="space-y-4">
       {/* What left the warehouse, in the view you are looking at. */}
-      <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
-        {[
+      {(() => {
+        const cards = [
           {
             label: 'Boxes issued', value: formatNumber(sum?.boxes ?? 0), icon: Boxes,
             sub: span ? `everything ${span}` : 'nothing issued yet',
@@ -899,17 +911,36 @@ function StaffRequestTable({ onView }) {
             ring: 'ring-emerald-500/25', glow: 'from-emerald-500/[0.12]', chip: 'bg-emerald-500/15 text-emerald-300', num: 'text-emerald-300',
           },
         // A failed load shows dashes, not "0 boxes, nothing owed" (as the Products cards do; audit pwa-brand-load-2).
-        ].map((c) => (isError && !data ? { ...c, value: '—', sub: "couldn't load" } : c)).map((c) => (
-          <div key={c.label} className="stat-glass p-4">
-            <div className="relative flex items-start justify-between gap-2">
-              <p className="text-xs font-medium text-muted">{c.label}</p>
-              <span className={`rounded-full p-1.5 ring-1 ring-inset ring-white/10 ${c.chip}`}><c.icon className="h-3.5 w-3.5" /></span>
+        ].map((c) => (isError && !data ? { ...c, value: '—', sub: "couldn't load" } : c));
+        return (
+          <>
+            {/* A phone (Nino, 19 Nov 2026): the four as one short list, the figure on the right, as on Finance. */}
+            <ul className="glass-list divide-y divide-white/[0.06] sm:hidden">
+              {cards.map((c) => (
+                <li key={c.label} className="flex items-center justify-between gap-3 px-4 py-2.5">
+                  <span className="min-w-0">
+                    <span className="block truncate text-[13px] font-medium text-foreground">{c.label}</span>
+                    <span className="block truncate text-[11px] text-white/50">{c.sub}</span>
+                  </span>
+                  <span className={`shrink-0 whitespace-nowrap text-[14px] font-semibold tabular-nums ${c.num}`}>{c.value}</span>
+                </li>
+              ))}
+            </ul>
+            <div className="hidden grid-cols-2 gap-3 sm:grid xl:grid-cols-4">
+              {cards.map((c) => (
+                <div key={c.label} className="stat-glass p-4">
+                  <div className="relative flex items-start justify-between gap-2">
+                    <p className="text-xs font-medium text-muted">{c.label}</p>
+                    <span className={`rounded-full p-1.5 ring-1 ring-inset ring-white/10 ${c.chip}`}><c.icon className="h-3.5 w-3.5" /></span>
+                  </div>
+                  <p className={`relative mt-2 text-2xl font-bold tabular-nums ${c.num}`}>{c.value}</p>
+                  <p className="relative mt-0.5 text-[11px] text-faint">{c.sub}</p>
+                </div>
+              ))}
             </div>
-            <p className={`relative mt-2 text-2xl font-bold tabular-nums ${c.num}`}>{c.value}</p>
-            <p className="relative mt-0.5 text-[11px] text-faint">{c.sub}</p>
-          </div>
-        ))}
-      </div>
+          </>
+        );
+      })()}
 
       {/* Said in a sentence, because four numbers still need a story. */}
       {sum && sum.totalRequests > 0 && (
